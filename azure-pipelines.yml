@@ -4,18 +4,30 @@
 # https://docs.microsoft.com/azure/devops/pipelines/languages/javascript
 
 trigger:
-- main
+  branches:
+    include:
+      - main
 
 pool:
-  vmImage: ubuntu-latest
+  vmImage: 'ubuntu-latest'
+
+variables:
+  DB_PATH: './db/articulos.sqlite'
+  NODE_ENV: 'production'
 
 steps:
-- task: NodeTool@0
-  inputs:
-    versionSpec: '20.x'
-  displayName: 'Install Node.js'
+  - task: NodeTool@0
+    inputs:
+      versionSpec: '18.x'
+    displayName: 'Usar Node.js 18'
 
-- script: |
-    npm install
-    npm run build
-  displayName: 'npm install and build'
+  - script: npm install
+    displayName: 'Instalar dependencias'
+
+  - script: |
+      echo "Base de datos en $DB_PATH"
+      npm start
+    displayName: 'Iniciar backend (modo prueba)'
+
+  # Aquí podrías agregar tareas de despliegue a Azure App Service, contenedor, FTP, etc.
+

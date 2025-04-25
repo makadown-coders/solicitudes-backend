@@ -5,6 +5,6 @@ import ArticulosController from '../controllers/articulos.controller';
 const router = express.Router();
 const articulosController = new ArticulosController();
 
-router.get('/', articulosController.buscarArticulos);
+router.get('/', articulosController.buscarArticulos.bind(articulosController));
 
 export default router;

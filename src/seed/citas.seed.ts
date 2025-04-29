@@ -3,7 +3,7 @@ import XLSX from 'xlsx';
 import { Pool, PoolClient } from 'pg';
 import axios, { AxiosResponse } from 'axios';
 import dotenv from 'dotenv';
-import { excelDateToDatestring, excelDateToJSDate } from '../helpers/helper';
+import { excelDateToDatestring, formatFechaMultiple } from '../helpers/helper';
 
 dotenv.config();
 
@@ -163,10 +163,10 @@ export async function seedCitasSiNecesario(): Promise<void> {
                         piezasEmitidas !== null && piezasEmitidas !== undefined ? Number(piezasEmitidas) : null,
                         fechaLimiteEntrega,
                         piezasRecibidas !== null && piezasRecibidas !== undefined ? Number(piezasRecibidas) : null,
-                        (excelDateToDatestring(fechaRecepcionAlmacen as string | null)),
+                        (formatFechaMultiple(fechaRecepcionAlmacen as string | null)),
                         numeroRemision,
                         lote,
-                        (excelDateToDatestring(caducidad as string | null)),
+                        (formatFechaMultiple(caducidad as string | null)),
                         estatus,
                         folioAbasto,
                         almacenHospital,

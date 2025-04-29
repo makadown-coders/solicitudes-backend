@@ -8,11 +8,12 @@ class CitasController {
   async obtenerPaginado(req: Request, res: Response): Promise<void> {
     try {
       const query: PaginationQuery = {
+        ...req.query,
         page: req.query.page ? parseInt(req.query.page as string, 10) : undefined,
         limit: req.query.limit ? parseInt(req.query.limit as string, 10) : undefined,
         sortBy: req.query.sortBy as string,
         sortOrder: req.query.sortOrder as 'ASC' | 'DESC',
-        search: req.query.search as string
+       // search: req.query.search as string
       };
 
       const result = await this.citasService.obtenerCitas(query);

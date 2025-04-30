@@ -1,3 +1,4 @@
+// src/services/citas.service.ts
 import { PaginationQuery } from '../models/PaginationQuery';
 import { PaginationResult } from '../models/PaginationResult';
 import { Cita } from '../models/Cita';
@@ -13,17 +14,21 @@ const pool = new Pool({
 
 class CitasService {
   async obtenerCitas(query: PaginationQuery): Promise<PaginationResult<Cita>> {
+    console.log('PaginationQuery recibido', query);
     const page = query.page ?? 1;
     const limit = query.limit ?? 10;
     const offset = (page - 1) * limit;
     const sortBy = query.sortBy ?? 'fecha_de_cita';
     const sortOrder = (query.sortOrder ?? 'DESC').toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+    const search = query.search?.trim();
 
-    const allowedSortFields = [
+    console.log('sortBy', sortBy);
+
+    /*const allowedSortFields = [
       'fecha_de_cita', 'orden_de_suministro', 'tipo_de_entrega',
       'clave_cnis', 'institucion', 'unidad'
-    ];
-    const sortField = allowedSortFields.includes(sortBy) ? sortBy : 'fecha_de_cita';
+    ];*/
+    const sortField = sortBy; // allowedSortFields.includes(sortBy) ? sortBy : 'fecha_de_cita';
 
     const camposTexto: (keyof Cita)[] = [
       'orden_de_suministro', 'institucion', 'tipo_de_entrega', 'clues_destino', 'unidad',
@@ -44,11 +49,13 @@ class CitasService {
     const condiciones: string[] = [];
     const values: any[] = [];
     let idx = 1;
-   // console.log('Query: ', query);
 
+    // Filtros explícitos del frontend
+    const filtrosExplicitos = new Set(Object.keys(query).filter(k => !['page', 'limit', 'sortBy', 'sortOrder', 'search'].includes(k)));
+
+    // Aplica filtros explícitos
     for (const campo of [...camposTexto, ...camposNumericos, ...camposFecha]) {
       const valor = (query as any)[campo];
-     // console.log('Iterando sobre campo', campo, 'con valor', valor);
       if (valor !== undefined && valor !== null && valor !== '') {
         if (camposTexto.includes(campo)) {
           condiciones.push(`${campo} ILIKE $${idx}`);
@@ -60,36 +67,45 @@ class CitasService {
           idx++;
         } else if (camposFecha.includes(campo)) {
           condiciones.push(`${campo} = $${idx}`);
-          values.push(valor); // formato 'YYYY-MM-DD'
+          values.push(valor);
           idx++;
         }
       }
     }
 
-    const whereClause = condiciones.length > 0 ? `WHERE ${condiciones.join(' AND ')}` : '';
+    // Aplica filtro global 'search' sobre los campos no enviados explícitamente
+    if (search) {
+      const orSearch: string[] = [];
+      for (const campo of [...camposTexto, ...camposNumericos, ...camposFecha]) {
+        if (!filtrosExplicitos.has(campo)) {
+          orSearch.push(`${campo}::text ILIKE $${idx}`);
+          values.push(`%${search}%`);
+          idx++; // << AQUI es crítico incrementar idx
+        }
+      }
+      if (orSearch.length > 0) {
+        condiciones.push(`(${orSearch.join(' OR ')})`);
+      }
+    }
 
-    // Guarda los valores de filtros aparte
-    const filtrosValues = [...values];
+    const whereClause = condiciones.length > 0 ? `WHERE ${condiciones.join(' AND ')}` : '';
+    let filtrosValues = [...values];
 
     const limitPlaceholder = `$${idx++}`;
     const offsetPlaceholder = `$${idx++}`;
     values.push(limit, offset);
 
+    /*if (search) {
+      filtrosValues = values.slice(0, idx - 2);
+    }*/
+
     let client: PoolClient | null = null;
     try {
       client = await pool.connect();
-
-      console.log('FULL QUERY');
-console.log(        `SELECT * FROM citas ${whereClause} 
-  ORDER BY ${sortField} ${sortOrder}
-  LIMIT ${limitPlaceholder} OFFSET ${offsetPlaceholder}`,
-  values);
-
-
+      console.log(`SELECT * FROM citas ${whereClause} ORDER BY ${sortField} ${sortOrder} LIMIT ${limitPlaceholder} OFFSET ${offsetPlaceholder}`,
+        values);
       const citasResult = await client.query<Cita>(
-        `SELECT * FROM citas ${whereClause} 
-        ORDER BY ${sortField} ${sortOrder}
-        LIMIT ${limitPlaceholder} OFFSET ${offsetPlaceholder}`,
+        `SELECT * FROM citas ${whereClause} ORDER BY ${sortField} ${sortOrder} LIMIT ${limitPlaceholder} OFFSET ${offsetPlaceholder}`,
         values
       );
 
@@ -106,11 +122,7 @@ console.log(        `SELECT * FROM citas ${whereClause}
         page,
         limit
       };
-    } catch (err: any) {
-      console.error('Error en obtenerCitas:', err);
-      throw new Error('Error al obtener citas');
-    }
-     finally {
+    } finally {
       if (client) client.release();
     }
   }

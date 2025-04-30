@@ -126,6 +126,28 @@ class CitasService {
       if (client) client.release();
     }
   }
+
+  async buscarOrdenes(orden: string): Promise<any[]> {
+    const client = await pool.connect();
+    try {
+      const result = await client.query(
+        `SELECT 
+          orden_de_suministro, clues_destino, unidad, proveedor, clave_cnis,
+          descripcion, tipo_de_red, no_de_piezas_emitidas AS cantidad, fecha_de_cita
+         FROM citas
+         WHERE orden_de_suministro ILIKE $1
+         GROUP BY orden_de_suministro, clues_destino, unidad, proveedor, clave_cnis,
+           descripcion, tipo_de_red, no_de_piezas_emitidas, fecha_de_cita
+         ORDER BY fecha_de_cita DESC
+         LIMIT 10`,
+        [`%${orden}%`]
+      );
+      return result.rows;
+    } finally {
+      client.release();
+    }
+  }
+
 }
 
 export default CitasService;

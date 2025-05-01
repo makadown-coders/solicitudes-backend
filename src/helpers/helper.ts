@@ -73,6 +73,6 @@ export function formatFechaMultiple(input: string | null | undefined): string | 
       }
     }
   
-    return fechas.length > 0 ? fechas.join('/') : null;
+    return fechas.length > 0 ? fechas.join('/').replace('NaN-NaN-NaN', '') : null;
   }
   

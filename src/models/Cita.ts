@@ -1,4 +1,4 @@
-export interface Cita {
+export class Cita {
     ejercicio: number | null;
     orden_de_suministro: string;
     institucion: string;

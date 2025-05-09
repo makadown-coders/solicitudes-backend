@@ -54,13 +54,12 @@ class CitasController {
   async obtenerDesdePowerAutomate(req: Request, res: Response): Promise<void> {
     try {
       const citas = await this.citasService.obtenerCitasDePowerAutomate();
-      res.json({ citas });
+      res.json( citas );
     } catch (error: any) {
       console.error('❌ Error en obtenerDesdePowerAutomate:', error);
       res.status(500).json({ error: 'Error al obtener citas' });
     }
-  }
-  
+  }  
   
 }
 

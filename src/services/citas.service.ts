@@ -177,6 +177,8 @@ class CitasService {
       const workbook = XLSX.read(buffer, { type: 'buffer' });
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
       const rows: CitaRow[] = XLSX.utils.sheet_to_json<CitaRow>(sheet, { header: 1 });
+      console.log('🔁 Procesando', rows.length, 'filas.');
+
       let headerLeido = false;
       for (const popo of rows) {
         fila = popo;
@@ -186,6 +188,10 @@ class CitasService {
         }
         // console.log('🔁 Procesando fila:', fila);
         const ejercicio = fila[0];
+        if ( !ejercicio || (ejercicio + '').trim().length === 0 ) {
+          console.log('🔁 fin de archivo detectado. Finalizando obtención de datos', fila);
+          break;
+        }
         const ordenSuministro = fila[1];
         const institucion = fila[2];
         const tipoEntrega = fila[3];

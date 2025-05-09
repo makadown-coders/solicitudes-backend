@@ -3,7 +3,8 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import articulosRoutes from './routes/articulos';
 import citasRoutes from './routes/citas';
-import { seedCitasSiNecesario } from './seed/citas.seed';
+import compression from 'compression';
+// import { seedCitasSiNecesario } from './seed/citas.seed';
  
 dotenv.config();
 
@@ -13,11 +14,12 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
+app.use(compression());
 // Rutas
 app.use('/api/articulos', articulosRoutes);
 app.use('/api/citas', citasRoutes);
 
 app.listen(PORT, async () => {
-  console.log(`Servidor backend escuchando en http://localhost:${PORT}`);
-  await seedCitasSiNecesario();
+  console.log(`Servidor backend escuchando en http://xxxxxx:${PORT}`);
+ // await seedCitasSiNecesario();
 });

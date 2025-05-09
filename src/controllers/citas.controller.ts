@@ -40,6 +40,26 @@ class CitasController {
       res.status(500).json({ error: 'Error del servidor' });
     }
   }
+
+  async refrescarDesdePowerAutomate(req: Request, res: Response): Promise<void> {
+    try {
+      const actualizado = await this.citasService.refrescarCitasDesdePowerAutomate();
+      res.json({ mensaje: `Proceso terminado. Registros actualizados: ${actualizado}` });
+    } catch (error: any) {
+      console.error('❌ Error en refrescarDesdePowerAutomate:', error);
+      res.status(500).json({ error: 'Error al refrescar citas' });
+    }
+  }
+
+  async obtenerDesdePowerAutomate(req: Request, res: Response): Promise<void> {
+    try {
+      const citas = await this.citasService.obtenerCitasDePowerAutomate();
+      res.json( citas );
+    } catch (error: any) {
+      console.error('❌ Error en obtenerDesdePowerAutomate:', error);
+      res.status(500).json({ error: 'Error al obtener citas' });
+    }
+  }  
   
 }
 

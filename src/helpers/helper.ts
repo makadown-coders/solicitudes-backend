@@ -32,7 +32,7 @@ export function excelDateToDatestring(serial: string | null): string | null {
         const dateString = `${year}-${month}-${day}`;
         // console.log('dateString', dateString);
         // console.log('es fecha?', (dateString as any) instanceof Date);
-        return dateString;
+        return !dateString.includes('NaN-NaN-NaN') ? dateString : null;
     } catch (error) {
         console.error('Error al convertir la fecha (excelDateToDatestring):', error);
         console.error('Serial:', serial);
@@ -73,6 +73,6 @@ export function formatFechaMultiple(input: string | null | undefined): string | 
       }
     }
   
-    return fechas.length > 0 ? fechas.join('/') : null;
+    return fechas.length > 0 ? fechas.join('/').replace('NaN-NaN-NaN', '') : null;
   }
   

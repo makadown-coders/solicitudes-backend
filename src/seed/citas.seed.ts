@@ -4,6 +4,8 @@ import { Pool, PoolClient } from 'pg';
 import axios, { AxiosResponse } from 'axios';
 import dotenv from 'dotenv';
 import { excelDateToDatestring, formatFechaMultiple } from '../helpers/helper';
+import { CitaRow } from '../models/CitaRow';
+import { PowerAutomateResponse } from '../models/PowerAutomateResponse';
 
 dotenv.config();
 
@@ -14,46 +16,6 @@ const pool = new Pool({
     password: process.env.POSTGRES_PASSWORD,
     port: process.env.POSTGRES_PORT ? parseInt(process.env.POSTGRES_PORT, 10) : 5432,
 });
-
-// Define una interfaz para la estructura de una fila del Excel
-interface CitaRow {
-    [key: string]: string | number | Date | null | undefined;
-    0?: string;   // ejercicio
-    1?: string;   // ordenSuministro
-    2?: string;   // institucion
-    3?: string;   // tipoEntrega
-    4?: string;   // cluesDestino
-    5?: string;   // unidad
-    6?: string;   // fuenteFormato
-    7?: string;   // proveedor
-    8?: string;   // claveCNIS
-    9?: string;   // descripcion
-    10?: string;  // compra
-    11?: string;  // tipoRed
-    12?: string;  // tipoInsumo
-    13?: string;  // grupoTerapeutico
-    14?: string | number | null; // precioUnitario
-    15?: string | number | null; // piezasEmitidas
-    16?: string | Date;   // fechaLimiteEntrega
-    17?: string | number | null; // piezasRecibidas
-    18?: string | Date | null;   // fechaRecepcionAlmacen
-    19?: string;  // numeroRemision
-    20?: string;  // lote
-    21?: string | Date | null;   // caducidad
-    22?: string;  // estatus
-    23?: string;  // folioAbasto
-    24?: string;  // almacenHospital
-    25?: string;  // evidencia
-    26?: string;  // carga
-    27?: string | Date | null;   // fechaCita
-    28?: string;  // observacion
-}
-
-// Define una interfaz para la respuesta del flujo de Power Automate
-interface PowerAutomateResponse {
-    mensaje: string;
-    archivo?: string;
-}
 
 export async function seedCitasSiNecesario(): Promise<void> {
     let client: PoolClient | null = null;
@@ -111,10 +73,27 @@ export async function seedCitasSiNecesario(): Promise<void> {
                     (excelDateToDatestring(fila[16]));
                 const fechaLimiteEntrega = fila[16];
                 const piezasRecibidas = fila[17];
-                const fechaRecepcionAlmacen = fila[18];
+                // console.log('fechaRecepcionAlmacen before', fila[18]);
+                
+                /* Condiciono a que la fecha de recepción siempre sea null 
+                   si no tiene numero de remision (fila[19]) porque están intimamente ligados
+                */
+                const fechaRecepcionAlmacen = 
+                    fila[19] === null ? null :
+                        (fila[18] instanceof Date ? fila[18] :
+                            (!(fila[18] + '').includes('/') ? excelDateToDatestring(fila[18] + '') :
+                                (formatFechaMultiple(fila[18] as string | null))
+                            ))
+                    ;
+                // console.log('fechaRecepcionAlmacen after', fechaRecepcionAlmacen);
                 const numeroRemision = fila[19];
                 const lote = fila[20];
-                const caducidad = fila[21];
+                const caducidad = fila[21] === null ? null :
+                    (fila[21] instanceof Date ? fila[21] :
+                        (!(fila[21] + '').includes('/') ? excelDateToDatestring(fila[21] + '') :
+                            (formatFechaMultiple(fila[21] as string | null))
+                        ))
+                    ;
                 const estatus = fila[22];
                 const folioAbasto = fila[23];
                 const almacenHospital = fila[24];
@@ -163,10 +142,12 @@ export async function seedCitasSiNecesario(): Promise<void> {
                         piezasEmitidas !== null && piezasEmitidas !== undefined ? Number(piezasEmitidas) : null,
                         fechaLimiteEntrega,
                         piezasRecibidas !== null && piezasRecibidas !== undefined ? Number(piezasRecibidas) : null,
-                        (formatFechaMultiple(fechaRecepcionAlmacen as string | null)),
+                        fechaRecepcionAlmacen ? 
+                            (fechaRecepcionAlmacen+'').replace('NaN-NaN-NaN', '') : null,
                         numeroRemision,
                         lote,
-                        (formatFechaMultiple(caducidad as string | null)),
+                        caducidad ?
+                            (caducidad+'').replace('NaN-NaN-NaN', '') : null,
                         estatus,
                         folioAbasto,
                         almacenHospital,

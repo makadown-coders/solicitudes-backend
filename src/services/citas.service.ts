@@ -158,6 +158,7 @@ class CitasService {
   }
 
   async obtenerCitasDePowerAutomate(): Promise<Cita[]> {
+    console.log('🔁 Obteniendo info con Power Automate');
     let citasRetorno: Cita[] = [];
     let fila: any = null;
     try {
@@ -186,7 +187,7 @@ class CitasService {
           headerLeido = true;
           continue;
         }
-        // console.log('🔁 Procesando fila:', fila);
+        console.log('🔁 Procesando orden de suministro:', fila[1]);
         const ejercicio = fila[0];
         if (!ejercicio || (ejercicio + '').trim().length === 0) {
           console.log('🔁 fin de archivo detectado. Finalizando obtención de datos', fila);

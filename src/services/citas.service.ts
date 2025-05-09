@@ -188,7 +188,7 @@ class CitasService {
         }
         // console.log('🔁 Procesando fila:', fila);
         const ejercicio = fila[0];
-        if ( !ejercicio || (ejercicio + '').trim().length === 0 ) {
+        if (!ejercicio || (ejercicio + '').trim().length === 0) {
           console.log('🔁 fin de archivo detectado. Finalizando obtención de datos', fila);
           break;
         }
@@ -238,12 +238,14 @@ class CitasService {
         const almacenHospital = fila[24];
         const evidencia = fila[25];
         const carga = fila[26];
-        const fechaCita = fila[27];
+        const fechaCita = (fila[27] instanceof Date ?
+          fila[27] :
+          (excelDateToDatestring(fila[27]+'')) )! as Date | null;
         // columnas 28 y 29 no se usan en el excel        
         const observacion = fila[30];
 
         const nuevoRegistro: Cita = new Cita();
-        nuevoRegistro.ejercicio =  ejercicio;
+        nuevoRegistro.ejercicio = ejercicio;
         nuevoRegistro.orden_de_suministro = ordenSuministro;
         nuevoRegistro.institucion = institucion;
         nuevoRegistro.tipo_de_entrega = tipoEntrega;
@@ -260,14 +262,14 @@ class CitasService {
         nuevoRegistro.grupo_terapeutico = grupoTerapeutico;
         nuevoRegistro.precio_unitario = precioUnitario !== null && precioUnitario !== undefined ? Number(precioUnitario) : null;
         nuevoRegistro.no_de_piezas_emitidas = piezasEmitidas !== null && piezasEmitidas !== undefined ? Number(piezasEmitidas) : null;
-        nuevoRegistro.fecha_de_cita = fechaLimiteEntrega;
+        nuevoRegistro.fecha_de_cita = fechaCita;
         nuevoRegistro.pzas_recibidas_por_la_entidad = piezasRecibidas !== null && piezasRecibidas !== undefined ? Number(piezasRecibidas) : null;
-        nuevoRegistro.fecha_recepcion_almacen= fechaRecepcionAlmacen ?
-                (fechaRecepcionAlmacen + '').replace('NaN-NaN-NaN', '') : null;
+        nuevoRegistro.fecha_recepcion_almacen = fechaRecepcionAlmacen ?
+          (fechaRecepcionAlmacen + '').replace('NaN-NaN-NaN', '') : null;
         nuevoRegistro.numero_de_remision = numeroRemision;
         nuevoRegistro.lote = lote;
         nuevoRegistro.caducidad = caducidad ?
-              (caducidad + '').replace('NaN-NaN-NaN', '') : null;
+          (caducidad + '').replace('NaN-NaN-NaN', '') : null;
         nuevoRegistro.estatus = estatus;
         nuevoRegistro.folio_abasto = folioAbasto;
         nuevoRegistro.almacen_hospital_que_recibio = almacenHospital;
@@ -275,7 +277,7 @@ class CitasService {
         nuevoRegistro.carga = carga ?? null;
         nuevoRegistro.fecha_de_cita = fechaCita;
         nuevoRegistro.observacion = observacion;
-        
+
         citasRetorno.push(nuevoRegistro);
       }
 

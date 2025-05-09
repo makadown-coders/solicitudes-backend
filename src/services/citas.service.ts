@@ -157,6 +157,7 @@ class CitasService {
     }
   }
 
+  // TODO: Crear funcion para regresar el puro base 64
   async obtenerCitasDePowerAutomate(): Promise<Cita[]> {
     console.log('🔁 Obteniendo info con Power Automate');
     let citasRetorno: Cita[] = [];

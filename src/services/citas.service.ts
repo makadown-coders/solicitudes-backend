@@ -156,8 +156,7 @@ class CitasService {
       client.release();
     }
   }
-
-  // TODO: Crear funcion para regresar el puro base 64
+  
   async obtenerCitasDePowerAutomate(): Promise<Cita[]> {
     console.log('🔁 Obteniendo info con Power Automate');
     let citasRetorno: Cita[] = [];
@@ -286,7 +285,7 @@ class CitasService {
       console.log(`✅ Datos cargados desde Power Automate. Total: ${citasRetorno.length} registros.`);
 
     } catch (err: any) {
-      console.error('❌ Error al ejecutar el seed de citas:', err);
+      console.error('❌ Error al obtener de power automate:', err);
       console.log('🔁 Procesando fila:', fila);
     }
     return citasRetorno;
@@ -482,6 +481,33 @@ class CitasService {
       }
       return actualizado;
     }
+  }
+
+  async obtenerCitasDePowerAutomate64(): Promise<string> {
+    console.log('🔁 Obteniendo info con Power Automate');
+    let citasRetorno: Cita[] = [];
+    let fila: any = null;
+    try {
+      // Hacer POST al flujo de Power Automate
+      const response: AxiosResponse<PowerAutomateResponse> = await axios.post(
+        process.env.AZURE_URL as string, // Aseguramos que AZURE_URL no sea undefined
+        { claveSecreta: process.env.AZURE_PAYLOAD_SECRET },
+        { headers: { 'Content-Type': 'application/json' } }
+      );
+
+      if (!response.data?.archivo) {
+        console.error('❌ No se recibió el archivo base64 en la respuesta.');
+        return;
+      }
+      
+      console.log(`✅ Datos en Base64 cargados desde Power Automate.`);
+      return response.data.archivo;     
+
+    } catch (err: any) {
+      console.error('❌ Error al ejecutar el seed de citas:', err);
+      console.log('🔁 Procesando fila:', fila);
+    }
+    return null;
   }
 }
 

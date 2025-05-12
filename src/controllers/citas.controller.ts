@@ -51,6 +51,11 @@ class CitasController {
     }
   }
 
+  /**
+   * Regresa todas las citas de Power Automate en formato json
+   * @param req 
+   * @param res 
+   */
   async obtenerDesdePowerAutomate(req: Request, res: Response): Promise<void> {
     try {
       const citas = await this.citasService.obtenerCitasDePowerAutomate();
@@ -59,7 +64,22 @@ class CitasController {
       console.error('❌ Error en obtenerDesdePowerAutomate:', error);
       res.status(500).json({ error: 'Error al obtener citas' });
     }
-  }  
+  }
+
+  /**
+   * Regresa todas las citas de Power Automate en formato base64
+   * @param req 
+   * @param res 
+   */
+  async obtenerDesdePowerAutomate64(req: Request, res: Response): Promise<void> {
+    try {
+      const citas = await this.citasService.obtenerCitasDePowerAutomate64();
+      res.json( {citas} );
+    } catch (error: any) {
+      console.error('❌ Error en obtenerDesdePowerAutomate64:', error);
+      res.status(500).json({ error: 'Error al obtener citas' });
+    }
+  }
   
 }
 

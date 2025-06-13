@@ -17,6 +17,10 @@ const pool = new Pool({
     port: process.env.POSTGRES_PORT ? parseInt(process.env.POSTGRES_PORT, 10) : 5432,
 });
 
+/**
+ * @deprecated Por el momento ya no se usa este backend para gestionar citas
+ * @returns 
+ */
 export async function seedCitasSiNecesario(): Promise<void> {
     let client: PoolClient | null = null;
     let fila: any = null;

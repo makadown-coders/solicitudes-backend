@@ -2,7 +2,7 @@
 
 Aplicación backend en Node.js + Express que expone servicios RESTful para dos módulos:
 - **Solicitudes de artículos** con base SQLite.
-- **Citas de abasto** con base PostgreSQL.
+- **Citas de abasto** usando power automate para extraer un archivo compartido de Excel y comprimirlo en base64.
 
 ## 🚀 Características por módulo
 
@@ -12,19 +12,13 @@ Aplicación backend en Node.js + Express que expone servicios RESTful para dos m
 - Base de datos local SQLite.
 
 ### 🩺 Módulo: Citas Abasto (v1.0.0)
-- API REST con soporte de paginación, ordenamiento y filtrado.
-- Conexión a PostgreSQL.
-- Búsqueda global (`search`) sobre múltiples campos.
-- Filtros individuales combinables.
-- Ordenamiento por columna (`sortBy`, `sortOrder`).
-- Paginación controlada (`page`, `limit`), con compatibilidad de frontend para control dinámico.
-- Carga inicial de datos desde archivo Excel (vía Power Automate).
+- Carga de datos desde archivo Excel (vía Power Automate) y enviado en base64 comprimido.
 
 ---
 
 ## 🛠️ Stack Tecnológico
 - **Backend:** Node.js + Express
-- **Base de datos:** SQLite (artículos) + PostgreSQL (citas)
+- **Base de datos:** SQLite (artículos) 
 - **Excel parsing:** `xlsx`
 
 ---
@@ -54,8 +48,6 @@ npm start
 
 ---
 
-## 🌱 Semilla automática de citas
-Al iniciar el servidor, si la tabla `citas` en PostgreSQL está vacía, se invoca automáticamente un flujo de Power Automate para recuperar un archivo `.xlsx`, se transforma y se inserta en la tabla.
 
 ## 📄 Variables de entorno requeridas
 
@@ -66,7 +58,7 @@ PORT=3000
 # Artículos
 DB_PATH=./db/articulos.sqlite
 
-# PostgreSQL para citas
+# PostgreSQL para citas (pendiente de uso)
 POSTGRES_USERNAME=usuario
 POSTGRES_PASSWORD=clave
 POSTGRES_HOST=localhost
@@ -101,19 +93,13 @@ GET /api/articulos?q=paracetamol
 
 ### 📘 Citas Abasto
 ```
-GET /api/citas?page=1&limit=25&search=ceftriaxona
+GET /api/citas/full
 ```
-Parámetros soportados:
-- `page`, `limit`
-- `search` global
-- Filtros por campo (e.g. `proveedor=Roche`)
-- Ordenamiento: `sortBy=clave_cnis&sortOrder=ASC`
-
 ---
 
 ## 👨‍💻 Autor
 
-Desarrollado por Mario Arturo Serrano Flores 🧑‍💻
+Desarrollado por Ing. Mario Arturo Serrano Flores 🧑‍💻
 
 ---
 

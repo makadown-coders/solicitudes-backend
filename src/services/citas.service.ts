@@ -136,6 +136,15 @@ class CitasService {
     }
   }
 
+  /**
+   * @deprecated Por el momento ya no se usa para gestionar citas.
+   * Si bien este método funciona, es muy complicado mantener actualizada la
+   * base de datos de postgres con las citas de Power Automate debido al volumen
+   * y las limitaciones de tiempo de procesamiento en versión gratuita del backend en Koyeb.
+   * Se optó por usar otro método.
+   * @param orden 
+   * @returns 
+   */
   async buscarOrdenes(orden: string): Promise<any[]> {
     const client = await pool.connect();
     try {
@@ -157,6 +166,12 @@ class CitasService {
     }
   }
   
+  /**
+   * @deprecated Por el momento ya no se usa para gestionar citas.
+   * Si bien este método funciona, no es conveniente generar el json de un archivo de mas
+   * de 9000+ citas. Se optó por usar otro método.
+   * @returns 
+   */
   async obtenerCitasDePowerAutomate(): Promise<Cita[]> {
     console.log('🔁 Obteniendo info con Power Automate');
     let citasRetorno: Cita[] = [];
@@ -291,6 +306,10 @@ class CitasService {
     return citasRetorno;
   }
 
+  /**
+   * @deprecated Por el momento ya no se usa este backend para gestionar citas
+   * @returns 
+   */
   async refrescarCitasDesdePowerAutomate(): Promise<number> {
     let client: PoolClient | null = null;
     let fila: any = null;

@@ -14,6 +14,7 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
+// la libreria de compresion es extremadamente util para enviar el archivo de excel en base64
 app.use(compression());
 // Rutas
 app.use('/api/articulos', articulosRoutes);

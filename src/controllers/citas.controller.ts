@@ -5,6 +5,15 @@ import { PaginationQuery } from '../models/PaginationQuery';
 class CitasController {
   private citasService = new CitasService();
 
+  /**
+   * @deprecated Por el momento ya no se usa este backend para gestionar citas
+   * Si bien este método funciona, es muy complicado mantener actualizada la
+   * base de datos de postgres con las citas de Power Automate debido al volumen
+   * y las limitaciones de tiempo de procesamiento en versión gratuita del backend en Koyeb.
+   * Se optó por usar otro método.
+   * @param req 
+   * @param res 
+   */
   async obtenerPaginado(req: Request, res: Response): Promise<void> {
     try {
       const query: PaginationQuery = {
@@ -24,6 +33,16 @@ class CitasController {
     }
   }
 
+  /**
+   * @deprecated Por el momento ya no se usa para gestionar citas.
+   * Si bien este método funciona, es muy complicado mantener actualizada la
+   * base de datos de postgres con las citas de Power Automate debido al volumen
+   * y las limitaciones de tiempo de procesamiento en versión gratuita del backend en Koyeb.
+   * Se optó por usar otro método.
+   * @param req 
+   * @param res 
+   * @returns 
+   */
   async buscarPorOrden(req: Request, res: Response): Promise<void> {
     try {
       const q = (req.query.q as string)?.trim();
@@ -41,6 +60,11 @@ class CitasController {
     }
   }
 
+  /**
+   * @deprecated Por el momento ya no se usa este backend para gestionar citas
+   * @param req 
+   * @param res 
+   */
   async refrescarDesdePowerAutomate(req: Request, res: Response): Promise<void> {
     try {
       const actualizado = await this.citasService.refrescarCitasDesdePowerAutomate();
@@ -52,6 +76,8 @@ class CitasController {
   }
 
   /**
+   * @deprecated Si bien este método funciona, no es conveniente generar el 
+   * json de un archivo de mas de 9000+ citas. Se optó por usar otro método.
    * Regresa todas las citas de Power Automate en formato json
    * @param req 
    * @param res 
@@ -67,7 +93,9 @@ class CitasController {
   }
 
   /**
-   * Regresa todas las citas de Power Automate en formato base64
+   * Regresa todas las citas de Power Automate en formato base64.
+   * Unico método activo para obtener las citas del archivo excel del
+   * heróico cuerpo del Abasto.
    * @param req 
    * @param res 
    */

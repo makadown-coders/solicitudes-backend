@@ -67,6 +67,7 @@ POSTGRES_DATABASE=nombrebd
 
 # Flujo de Power Automate
 AZURE_URL=https://prod-xx.westus.logic.azure.com:... (URL del flujo)
+AZURE_INV_URL=https://prod-xx.westus.logic.azure.com:... (URL del flujo para inventario en prueba)
 AZURE_PAYLOAD_SECRET=... (clave secreta esperada por el flujo)
 ```
 

@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import articulosRoutes from './routes/articulos';
 import citasRoutes from './routes/citas';
 import inventarioRoutes from './routes/inventario';
+import cpmsRoutes from './routes/cpm';
 import compression from 'compression';
 // import { seedCitasSiNecesario } from './seed/citas.seed';
  
@@ -21,6 +22,7 @@ app.use(compression());
 app.use('/api/articulos', articulosRoutes);
 app.use('/api/citas', citasRoutes);
 app.use('/api/inventario', inventarioRoutes);
+app.use('/api/cpms', cpmsRoutes);
 
 app.listen(PORT, async () => {
   console.log(`Servidor backend escuchando en http://xxxxxx:${PORT}`);

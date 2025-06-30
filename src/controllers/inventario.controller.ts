@@ -18,7 +18,7 @@ class InventarioController {
           res.json( {inventario} );
         } catch (error: any) {
           console.error('❌ Error en obtenerDesdePowerAutomate64:', error);
-          res.status(500).json({ error: 'Error al obtener citas' });
+          res.status(500).json({ error: 'Error al obtener inventario' });
         }
       }
 }

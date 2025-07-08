@@ -1,18 +1,29 @@
+// src/services/inventario.service.ts
 import axios, { AxiosResponse } from 'axios';
 import dotenv from 'dotenv';
 import { PowerAutomateResponse } from '../models/PowerAutomateResponse';
+import { AzureEndpoint } from '../enums/AzureEndpoint.enum';
 
 dotenv.config();
 
 class InventarioService {
-    async obtenerInventarioDePowerAutomate64(): Promise<string> {
-        console.log('🔁 Obteniendo inventario con Power Automate');
-        
-        let fila: any = null;
+    /**
+     * Obtiene inventario desde Power Automate según el endpoint especificado
+     * @param endpoint - El endpoint definido en AzureEndpoint.enum.ts
+     * @returns 
+     */
+    async obtenerInventarioDePowerAutomate64(endpoint: AzureEndpoint = AzureEndpoint.INVENTARIO): Promise<string> {
+        console.log(`🔁 Obteniendo inventario desde Azure: ${endpoint}`);        
         try {
-            // Hacer POST al flujo de Power Automate
+             const url = process.env[endpoint] as string;
+            if (!url) {
+                console.error(`❌ La variable de entorno "${endpoint}" no está definida.`);
+                return null;
+            }
+
+             // Hacer POST al flujo de Power Automate
             const response: AxiosResponse<PowerAutomateResponse> = await axios.post(
-                process.env.AZURE_INV_URL as string, // Aseguramos que AZURE_INV_URL no sea undefined
+                url,
                 { claveSecreta: process.env.AZURE_PAYLOAD_SECRET },
                 { headers: { 'Content-Type': 'application/json' } }
             );
@@ -22,15 +33,15 @@ class InventarioService {
                 return;
             }
 
-            console.log(`✅ Inventario en Base64 cargado desde Power Automate.`);
+            console.log(`✅ Inventario ${endpoint} en Base64 cargado desde Power Automate.`);
             return response.data.archivo;
 
         } catch (err: any) {
-            console.error('❌ Error al ejecutar el seed de citas:', err);
-            console.log('🔁 Procesando fila:', fila);
+            console.error('❌ Error al obtener informacion desde Power Automate', err);            
         }
         return null;
     }
+
 }
 
 

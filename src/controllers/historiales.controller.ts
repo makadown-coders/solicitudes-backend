@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import HistorialesService from "../services/historiales.service";
 import fs from 'fs';
-import { SolicitudArchivo } from '../models/SolicitudArchivo';
+import { SolicitudArchivo } from '../models/solicitudArchivo.model';
 
 class HistorialesController {
     private historialesService: HistorialesService

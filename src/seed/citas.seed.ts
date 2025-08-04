@@ -4,8 +4,8 @@ import { Pool, PoolClient } from 'pg';
 import axios, { AxiosResponse } from 'axios';
 import dotenv from 'dotenv';
 import { excelDateToDatestring, formatFechaMultiple } from '../helpers/helper';
-import { CitaRow } from '../models/CitaRow';
-import { PowerAutomateResponse } from '../models/PowerAutomateResponse';
+import { CitaRow } from '../models/citaRow.model';
+import { PowerAutomateResponse } from '../models/powerAutomateResponse.model';
 
 dotenv.config();
 

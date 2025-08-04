@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { SolicitudArchivo } from '../models/SolicitudArchivo';
+import { SolicitudArchivo } from '../models/solicitudArchivo.model';
 
 const FLOW_URL = process.env.AZURE_SP_ABASTO_URL!;
 

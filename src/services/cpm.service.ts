@@ -1,6 +1,6 @@
 import axios, { AxiosResponse } from 'axios';
 import dotenv from 'dotenv';
-import { PowerAutomateResponse } from '../models/PowerAutomateResponse';
+import { PowerAutomateResponse } from '../models/powerAutomateResponse.model';
 
 dotenv.config();
 

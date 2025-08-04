@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import InventarioService from "../services/inventario.service";
-import { AzureEndpoint } from '../enums/AzureEndpoint.enum';
+import { AzureAbastoEndpoint } from '../enums/AzureEndpoint.enum';
 
 class InventarioController {
   private inventarioService: InventarioService;
@@ -26,7 +26,7 @@ class InventarioController {
 
   async obtenerHGENS(req: Request, res: Response): Promise<void> {
     try {
-      const inventario = await this.inventarioService.obtenerInventarioDePowerAutomate64(AzureEndpoint.HGENS);
+      const inventario = await this.inventarioService.obtenerInventarioDePowerAutomate64(AzureAbastoEndpoint.HGENS);
       res.json({ inventario });
     } catch (error: any) {
       console.error('❌ Error en obtenerHGENS:', error);
@@ -36,7 +36,7 @@ class InventarioController {
 
   async obtenerHGMXL(req: Request, res: Response): Promise<void> {
     try {
-      const inventario = await this.inventarioService.obtenerInventarioDePowerAutomate64(AzureEndpoint.HGMXL);
+      const inventario = await this.inventarioService.obtenerInventarioDePowerAutomate64(AzureAbastoEndpoint.HGMXL);
       res.json({ inventario });
     } catch (error: any) {
       console.error('❌ Error en obtenerHGMXL:', error);
@@ -46,7 +46,7 @@ class InventarioController {
 
   async obtenerHGTKT(req: Request, res: Response): Promise<void> {
     try {
-      const inventario = await this.inventarioService.obtenerInventarioDePowerAutomate64(AzureEndpoint.HGTKT);
+      const inventario = await this.inventarioService.obtenerInventarioDePowerAutomate64(AzureAbastoEndpoint.HGTKT);
       res.json({ inventario });
     } catch (error: any) {
       console.error('❌ Error en obtenerHGTKT:', error);
@@ -56,7 +56,7 @@ class InventarioController {
 
   async obtenerHGTIJ(req: Request, res: Response): Promise<void> {
     try {
-      const inventario = await this.inventarioService.obtenerInventarioDePowerAutomate64(AzureEndpoint.HGTIJ);
+      const inventario = await this.inventarioService.obtenerInventarioDePowerAutomate64(AzureAbastoEndpoint.HGTIJ);
       res.json({ inventario });
     } catch (error: any) {
       console.error('❌ Error en obtenerHGTIJ:', error);
@@ -66,7 +66,7 @@ class InventarioController {
 
   async obtenerHMITIJ(req: Request, res: Response): Promise<void> {
     try {
-      const inventario = await this.inventarioService.obtenerInventarioDePowerAutomate64(AzureEndpoint.HMITIJ);
+      const inventario = await this.inventarioService.obtenerInventarioDePowerAutomate64(AzureAbastoEndpoint.HMITIJ);
       res.json({ inventario });
     } catch (error: any) {
       console.error('❌ Error en obtenerHMITIJ:', error);
@@ -77,7 +77,7 @@ class InventarioController {
 
   async obtenerHGPR(req: Request, res: Response): Promise<void> {
     try {
-      const inventario = await this.inventarioService.obtenerInventarioDePowerAutomate64(AzureEndpoint.HGPR);
+      const inventario = await this.inventarioService.obtenerInventarioDePowerAutomate64(AzureAbastoEndpoint.HGPR);
       res.json({ inventario });
     } catch (error: any) {
       console.error('❌ Error en obtenerHGPR:', error);
@@ -87,7 +87,7 @@ class InventarioController {
 
   async obtenerHMIMXL(req: Request, res: Response): Promise<void> {
     try {
-      const inventario = await this.inventarioService.obtenerInventarioDePowerAutomate64(AzureEndpoint.HMIMXL);
+      const inventario = await this.inventarioService.obtenerInventarioDePowerAutomate64(AzureAbastoEndpoint.HMIMXL);
       res.json({ inventario });
     } catch (error: any) {
       console.error('❌ Error en obtenerHMIMXL:', error);
@@ -97,7 +97,7 @@ class InventarioController {
 
   async obtenerUOMXL(req: Request, res: Response): Promise<void> {
     try {
-      const inventario = await this.inventarioService.obtenerInventarioDePowerAutomate64(AzureEndpoint.UOMXL);
+      const inventario = await this.inventarioService.obtenerInventarioDePowerAutomate64(AzureAbastoEndpoint.UOMXL);
       res.json({ inventario });
     } catch (error: any) {
       console.error('❌ Error en obtenerUOMXL:', error);
@@ -107,7 +107,7 @@ class InventarioController {
 
   async obtenerHGTZE(req: Request, res: Response): Promise<void> {
     try {
-      const inventario = await this.inventarioService.obtenerInventarioDePowerAutomate64(AzureEndpoint.HGTZE);
+      const inventario = await this.inventarioService.obtenerInventarioDePowerAutomate64(AzureAbastoEndpoint.HGTZE);
       res.json({ inventario });
     } catch (error: any) {
       console.error('❌ Error en obtenerHGTZE:', error);

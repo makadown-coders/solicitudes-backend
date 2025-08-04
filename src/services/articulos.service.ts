@@ -2,7 +2,7 @@
 import { open, Database } from 'sqlite';
 import sqlite3 from 'sqlite3';
 import dotenv from 'dotenv';
-import { Articulo } from '../models/Articulo';
+import { Articulo } from '../models/articulo.model';
 
 /**
  * Esta configuración es para la base de datos 

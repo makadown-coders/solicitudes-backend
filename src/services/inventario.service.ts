@@ -1,8 +1,8 @@
 // src/services/inventario.service.ts
 import axios, { AxiosResponse } from 'axios';
 import dotenv from 'dotenv';
-import { PowerAutomateResponse } from '../models/PowerAutomateResponse';
-import { AzureEndpoint } from '../enums/AzureEndpoint.enum';
+import { PowerAutomateResponse } from '../models/powerAutomateResponse.model';
+import { AzureAbastoEndpoint } from '../enums/AzureEndpoint.enum';
 
 dotenv.config();
 
@@ -12,7 +12,7 @@ class InventarioService {
      * @param endpoint - El endpoint definido en AzureEndpoint.enum.ts
      * @returns 
      */
-    async obtenerInventarioDePowerAutomate64(endpoint: AzureEndpoint = AzureEndpoint.INVENTARIO): Promise<string> {
+    async obtenerInventarioDePowerAutomate64(endpoint: AzureAbastoEndpoint = AzureAbastoEndpoint.INVENTARIO): Promise<string> {
         console.log(`🔁 Obteniendo inventario desde Azure: ${endpoint}`);        
         try {
              const url = process.env[endpoint] as string;

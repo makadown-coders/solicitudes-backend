@@ -4,6 +4,7 @@ import CitasController from '../controllers/citas.controller';
 const router = express.Router();
 const controller = new CitasController();
 
+/*********************************** RUTAS DE ABASTO ***********************************/
 // NOTA: El unico endpoint activo es el de /full ya que postgres es el que maneja la base de datos
 // y nos topamos con que 
 // - tener version gratuita de backend es muy complicado porque como se duerme, a veces

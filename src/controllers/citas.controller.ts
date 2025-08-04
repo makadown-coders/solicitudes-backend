@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import CitasService from '../services/citas.service';
-import { PaginationQuery } from '../models/PaginationQuery';
+import { PaginationQuery } from '../models/paginationQuery.model';
 
 class CitasController {
   private citasService = new CitasService();

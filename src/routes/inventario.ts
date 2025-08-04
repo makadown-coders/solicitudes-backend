@@ -4,6 +4,7 @@ import InventarioController from '../controllers/inventario.controller';
 const router = express.Router();
 const controller = new InventarioController();
 
+/*********************************** RUTAS DE ABASTO ***********************************/
 router.get('/', controller.obtenerDesdePowerAutomate64.bind(controller));
 router.get('/HGENS', controller.obtenerHGENS.bind(controller));
 router.get('/HGMXL', controller.obtenerHGMXL.bind(controller));

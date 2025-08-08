@@ -31,7 +31,7 @@ class CargaMasivaController {
     }
 
     async initSalidas(req: Request, res: Response) {
-        try {            
+        try {
             await this.service.limpiarTabla('salida');
             res.json({ message: 'Tabla salidas limpia y lista' });
         } catch (error) {
@@ -69,6 +69,33 @@ class CargaMasivaController {
         } catch (error) {
             console.error(error);
             res.status(500).json({ error: 'Error al insertar batch de traspasos' });
+        }
+    }
+
+    // 🔹 NUEVOS
+    async initInventarioInicial(req: Request, res: Response) {
+        try {
+            // Si quieres borrar TODO (todos los años):
+            await this.service.limpiarTabla('inventario_inicial');
+            res.json({ message: 'Tabla inventario_inicial limpia y lista' });
+        } catch (error) {
+            console.error(error);
+            res.status(500).json({ error: 'Error al limpiar inventario_inicial' });
+        }
+    }
+
+    async batchInventarioInicial(req: Request, res: Response) {
+        try {
+            const { anio, resetAnio = true } = req.query;
+            if (!anio) return res.status(400).json({ error: 'Falta parámetro ?anio=YYYY' });
+
+            const datos = req.body; // array de objetos normalizados desde tu front
+            await this.service.insertarInventarioInicial(datos, Number(anio), String(resetAnio) !== 'false');
+
+            res.json({ message: `Inventario inicial insertado (${datos.length} registros)`, anio: Number(anio) });
+        } catch (error) {
+            console.error(error);
+            res.status(500).json({ error: 'Error al insertar inventario_inicial' });
         }
     }
 }

@@ -1,10 +1,6 @@
 /* /src/services/cargaMasiva.service.ts  */
 import { Pool } from 'pg';
 import dotenv from 'dotenv';
-import { EntradaDTO } from '../models/cargaMasiva/entrada.dto'; // no se usa
-import { TraspasoDTO } from '../models/cargaMasiva/traspaso.dto'; // no se usa
-import { SalidaDTO } from '../models/cargaMasiva/salida.dto'; // no se usa
-
 
 dotenv.config();
 
@@ -40,10 +36,10 @@ class CargaMasivaService {
     async insertarBatchGenerico(tabla: string, datos: any[]) {
         if (!datos.length) return;
 
-        // 1️⃣ Precargar mapa de alias (solo si es necesario)
+        // 1) Precargar alias
         const aliasMap = await this.precargarAlias();
 
-        // 2️⃣ Asignar unidad_medica_id según corresponda
+        // 2) Mapear origen/destino por texto → id
         for (const row of datos) {
             if (row.unidad_origen_texto) {
                 const key = row.unidad_origen_texto.toLowerCase().trim();
@@ -55,17 +51,93 @@ class CargaMasivaService {
             }
         }
 
-        // 3️⃣ Insertar
+        // 3) Insertar
         const columnas = Object.keys(datos[0]);
         const registros = datos.map(obj => columnas.map(col => obj[col] ?? null));
         await this.insertarBatch(tabla, columnas, registros);
     }
 
+    // 🔹 NUEVO: Inventario Inicial
+    /**
+     * datos: array de objetos desde el front. Se espera algo como:
+     * {
+     *   unidad: string,   // texto (CLUES, alias_sas o nombre)
+     *   partida?: string,
+     *   articulo: string, // clave CNIS
+     *   lote?: string,
+     *   fecha_caducidad?: string (YYYY-MM-DD),
+     *   tipo?: string,
+     *   cantidades: number,
+     *   costo?: number
+     * }
+     * anio: número (e.g., 2025)
+     * resetAnio: si true, borra inventario_inicial de ese año antes de insertar
+     */
+    async insertarInventarioInicial(datos: any[], anio: number, resetAnio = true) {
+        if (!datos?.length) return;
+
+        const aliasMap = await this.precargarAlias();
+
+        // Normalizar/Mapear columnas a la tabla inventario_inicial
+        const normalizados = datos.map(d => {
+            const unidadTexto = (d.unidad ?? '').toString().trim();
+            const unidadKey = unidadTexto.toLowerCase();
+            const unidad_id = aliasMap.get(unidadKey) ?? null;
+
+            return {
+                unidad_id,
+                unidad_texto: unidad_id ? null : (unidadTexto || null),
+                partida: d.partida ?? null,
+                clave_cnis: d.articulo ?? null,
+                descripcion: d.descripcion ?? null, // el excel no la trae; puedes calcularla si gustas
+                lote: d.lote ?? null,
+                fecha_caducidad: d.fecha_caducidad ?? null, // ya la mandas yyyy-mm-dd desde front
+                tipo: d.tipo ?? null,
+                cantidad: d.cantidades ?? null,
+                costo: d.costo ?? null,
+                anio,
+            };
+        });
+
+        const columnas = [
+            'unidad_id', 'unidad_texto', 'partida', 'clave_cnis', 'descripcion',
+            'lote', 'fecha_caducidad', 'tipo', 'cantidad', 'costo', 'anio'
+        ];
+        const registros = normalizados.map(n => columnas.map(c => (n as any)[c] ?? null));
+
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            if (resetAnio) {
+                await client.query(`DELETE FROM inventario_inicial WHERE anio = $1`, [anio]);
+            }
+
+            // Si quieres UPSERT por (anio, unidad_id/lote/clave):
+            // await client.query(`
+            //   INSERT INTO inventario_inicial(${columnas.join(',')})
+            //   VALUES ${/* placeholders… */''}
+            //   ON CONFLICT (anio, clave_cnis, lote, unidad_id) DO UPDATE SET
+            //     cantidad = EXCLUDED.cantidad,
+            //     costo    = EXCLUDED.costo
+            // `, flatValues);
+
+            // Por ahora, insert simple:
+            await this.insertarBatch('inventario_inicial', columnas, registros);
+
+            await client.query('COMMIT');
+        } catch (err) {
+            await client.query('ROLLBACK');
+            throw err;
+        } finally {
+            client.release();
+        }
+    }
+
     private async precargarAlias(): Promise<Map<string, number>> {
         const map = new Map<string, number>();
         const { rows } = await pool.query(`
-        SELECT id, LOWER(alias_sas) AS alias_sas, LOWER(alias_dash) AS alias_dash
-        FROM unidad_medica_alias
+      SELECT id, LOWER(alias_sas) AS alias_sas, LOWER(alias_dash) AS alias_dash
+      FROM unidad_medica_alias
     `);
         rows.forEach(r => {
             if (r.alias_sas) map.set(r.alias_sas.trim(), r.id);

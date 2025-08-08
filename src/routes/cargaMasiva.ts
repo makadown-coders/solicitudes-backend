@@ -13,4 +13,7 @@ router.post('/traspasos/batch', controller.batchTraspasos.bind(controller));
 router.post('/salidas/init', controller.initSalidas.bind(controller));
 router.post('/salidas/batch', controller.batchSalidas.bind(controller));
 
+router.post('/inventario-inicial/init',   controller.initInventarioInicial.bind(controller));
+router.post('/inventario-inicial/batch',  controller.batchInventarioInicial.bind(controller));
+
 export default router;

@@ -1,3 +1,4 @@
+// src/routes/historial.routes.ts
 import { Router } from 'express';
 import HistorialesController from '../controllers/historiales.controller';
 

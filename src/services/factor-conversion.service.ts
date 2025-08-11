@@ -40,7 +40,7 @@ class FactorConversionService {
         };
     }
 
-    // 👇 Nuevo: por clave + CLUES (prioriza por-unidad, con fallback al global)
+    // 👇 Nuevo: por clave + CLUES
     async obtenerPorClaveYClues(clave: string, clues: string): Promise<FactorConversion> {
         const q = `
       SELECT 
@@ -66,8 +66,11 @@ class FactorConversionService {
             };
         }
 
+        // regresar null 
+        return null;
+
         // 🧯 fallback: usa el global
-        return this.obtenerPorClave(clave);
+        // return this.obtenerPorClave(clave);
     }
 }
 

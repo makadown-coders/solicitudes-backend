@@ -27,13 +27,18 @@ class TrazabilidadService {
         return (rows[0]?.nombre_tipo || '').toUpperCase() === 'ALMACENES';
     }
 
-    private async obtenerFactorConversion(clave: string): Promise<{ aplicar: boolean; factor: number }> {
+    private async obtenerFactorConversion(clave: string, cluesimb: string): 
+                                        Promise<{ aplicar: boolean; factor: number }> {
         const { rows } = await pool.query(
-            `SELECT en_dispensacion, cantidad_fc
-         FROM factores_conversion
-        WHERE clave = $1
-        LIMIT 1`,
-            [clave]
+            ` SELECT 
+        f.en_dispensacion as en_dispensacion,
+        COALESCE(f.cantidad_fc, 1) AS cantidad_fc
+      FROM factores_conversion f
+      JOIN unidad_medica um ON um.cluesimb  = f.cluesimb
+      WHERE f.clave = $1
+        AND um.cluesimb = $2
+      LIMIT 1`,
+            [clave, cluesimb]
         );
         if (!rows.length) return { aplicar: false, factor: 1 };
         const aplicar = Number(rows[0].en_dispensacion) === 1;
@@ -49,7 +54,7 @@ class TrazabilidadService {
             // ¿el modal es de ALMACÉN?
             const esModalDeAlmacen = await this.esCluesAlmacen(cluesimb);
             // factor de conversión de la clave
-            const { aplicar: aplicarFC, factor } = await this.obtenerFactorConversion(clave);
+            const { aplicar: aplicarFC, factor } = await this.obtenerFactorConversion(clave, cluesimb);
 
             // 🟩 ENTRADAS
             currentQuery = `

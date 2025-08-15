@@ -2,8 +2,9 @@
 
 /**
  * Enumerador para los endpoints de Azure para existencias
+ * EXCLUSIVO DE ABASTO
  */
-export enum AzureEndpoint {
+export enum AzureAbastoEndpoint {
   INVENTARIO = 'AZURE_INV_URL', // inventario de los 3 almacenes  
   HGENS = 'AZURE_HGENS_URL',
   HGMXL = 'AZURE_HGMXL_URL',

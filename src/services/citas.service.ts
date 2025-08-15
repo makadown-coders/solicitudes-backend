@@ -1,15 +1,15 @@
 // src/services/citas.service.ts
-import { PaginationQuery } from '../models/PaginationQuery';
-import { PaginationResult } from '../models/PaginationResult';
-import { Cita } from '../models/Cita';
+import { PaginationQuery } from '../models/paginationQuery.model';
+import { PaginationResult } from '../models/paginationResult.model';
+import { Cita } from '../models/cita.model';
 import { Pool, PoolClient } from 'pg';
 import dotenv from 'dotenv';
 import { excelDateToDatestring, formatFechaMultiple } from '../helpers/helper';
 import { AxiosResponse } from 'axios';
 import axios from 'axios';
 import XLSX from 'xlsx';
-import { CitaRow } from '../models/CitaRow';
-import { PowerAutomateResponse } from '../models/PowerAutomateResponse';
+import { CitaRow } from '../models/citaRow.model';
+import { PowerAutomateResponse } from '../models/powerAutomateResponse.model';
 
 dotenv.config();
 

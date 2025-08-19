@@ -205,8 +205,24 @@ class TrazabilidadService {
         WHERE ii.clave_cnis = $1
           AND um.cluesimb  = $2
       `;
+
+            // ✅ APLICAR FACTOR (solo unidad, y solo entradas/traspasos)
+            let final = resultados;
+            if (!esModalDeAlmacen && aplicarFC && factor !== 1) {
+                final = resultados.map((m) => {
+                    const esEntradaOTR = m.tipo_movimiento === 'entrada' || m.tipo_movimiento === 'traspaso';
+                   /* const vieneDeAlmacen =
+                        m._origen_es_almacen === true ||
+                        (m.tipo_movimiento === 'entrada' && (m.proveedor || '').toUpperCase().includes('ALMACEN'));*/
+                    if (esEntradaOTR /*&& vieneDeAlmacen*/) {
+                        return { ...m, cantidad: Number(m.cantidad) * factor };
+                    }
+                    return m;
+                });
+            }
+            // inventario inicial no maneja factor
             const inventarioInicial = await pool.query(currentQuery, [clave, cluesimb]);
-            resultados.push(
+            final.push(
                 ...inventarioInicial.rows.map((row) => ({
                     tipo_movimiento: 'entrada',
                     fecha: row.fecha,
@@ -224,21 +240,6 @@ class TrazabilidadService {
                     _origen_es_almacen: false,
                 }))
             );
-
-            // ✅ APLICAR FACTOR (solo unidad, y solo entradas/traspasos desde almacén)
-            let final = resultados;
-            if (!esModalDeAlmacen && aplicarFC && factor !== 1) {
-                final = resultados.map((m) => {
-                    const esEntradaOTR = m.tipo_movimiento === 'entrada' || m.tipo_movimiento === 'traspaso';
-                    const vieneDeAlmacen =
-                        m._origen_es_almacen === true ||
-                        (m.tipo_movimiento === 'entrada' && (m.proveedor || '').toUpperCase().includes('ALMACEN'));
-                    if (esEntradaOTR && vieneDeAlmacen) {
-                        return { ...m, cantidad: Number(m.cantidad) * factor };
-                    }
-                    return m;
-                });
-            }
 
             // limpiar flags internos y ordenar asc
             final.forEach((m: any) => delete m._origen_es_almacen);

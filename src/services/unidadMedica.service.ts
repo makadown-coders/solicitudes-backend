@@ -20,6 +20,7 @@ class UnidadMedicaService {
         um.cluessa,
         um.cluesimb,
         um.nombre,
+        uma.alias_sas,
         um.direccion,
         um.latitud,
         um.longitud,
@@ -31,7 +32,8 @@ class UnidadMedicaService {
       FROM unidad_medica um
       JOIN tipo_unidad tu ON um.tipo_unidad_id = tu.id
       JOIN localidad l ON um.localidad_id = l.id
-      JOIN municipio m ON l.municipio_id = m.id
+      JOIN municipio m ON l.municipio_id = m.id 
+      left join unidad_medica_alias uma on um.id = uma.unidad_medica_id 
       ORDER BY m.nombre_municipio, l.nombre_localidad;
     `;
     const { rows } = await pool.query(query);

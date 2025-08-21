@@ -3,6 +3,7 @@ export interface UnidadMedica {
   cluessa: string | null;
   cluesimb: string | null;
   nombre: string;
+  alias_sas: string | null;
   direccion: string | null;
   latitud: number | null;
   longitud: number | null;

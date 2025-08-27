@@ -14,6 +14,7 @@ import trazabilidadRoutes from './routes/trazabilidad';
 import cpmsRoutes from './routes/cpm';
 import factorRoutes from './routes/factor-conversion';
 import rdlsRoutes from './routes/rdls';
+import authRoutes from './routes/auth';
 
 import compression from 'compression';
 // import { seedCitasSiNecesario } from './seed/citas.seed';
@@ -45,6 +46,7 @@ app.use('/api/carga', cargaMasivaRoutes);
 app.use('/api/trazabilidad', trazabilidadRoutes);
 app.use('/api/factores', factorRoutes);
 app.use('/api/rdls', rdlsRoutes);
+app.use('/api/auth', authRoutes);
 
 app.listen(PORT, async () => {
   console.log(`Servidor backend escuchando en http://xxxxx:${PORT}`);

@@ -7,5 +7,8 @@ const controller = new HistorialesController();
 
 /************************ PARA ABASTO *******************************/
 router.post('/', controller.postArchivoSolicitud.bind(controller));
+// encuesta piloto
+router.post('/encuesta', controller.postEncuestaPiloto.bind(controller));
+
 
 export default router;

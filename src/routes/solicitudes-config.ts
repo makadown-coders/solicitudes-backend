@@ -9,5 +9,6 @@ const c = new FeatureFlagsController();
 r.get('/effective', c.getEffective.bind(c));
 r.get('/', c.list.bind(c));
 r.patch('/', c.patch.bind(c));
+r.get('/allowlist-unidades', c.listAllowlistUnidades.bind(c));
 
 export default r;

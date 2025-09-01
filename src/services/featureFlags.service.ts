@@ -2,6 +2,7 @@
 import { Pool } from 'pg';
 import { EffectiveFlags, FlagKey, FeatureFlagRow, FlagScope } from '../models/featureFlags';
 import dotenv from 'dotenv';
+import { UnidadAllow } from '../models/UnidadAllow';
 
 dotenv.config();
 
@@ -73,11 +74,11 @@ class FeatureFlagsService {
     async upsertFlag(input: {
         flag_key: FlagKey;
         scope: FlagScope;
-        scope_id?: string | null;
-        value: any;                 // boolean, number, string, object…
+        scope_id?: string;
+        value: any; // boolean, number, string, object…
         updated_by?: string;
     }) {
-        const scope_id = input.scope === 'global' ? null : (input.scope_id ?? '').trim();
+        const scope_id = input.scope === 'global' ? 'global' : (input.scope_id ?? '').trim();
         const json = typeof input.value === 'boolean' ? { bool: input.value } : input.value;
 
         const sql = `
@@ -91,6 +92,44 @@ class FeatureFlagsService {
             input.flag_key, input.scope, scope_id, json, input.updated_by ?? null
         ]);
         return rows[0] as FeatureFlagRow;
+    }
+
+    async listAllowedUnidades(q?: string): Promise<UnidadAllow[]> {
+        const params: any[] = [];
+        const whereQ = `
+    AND (
+      $1::text IS NULL
+      OR um.cluesimb ILIKE '%'||$1||'%'
+      OR uma.alias_dash ILIKE '%'||$1||'%'
+      OR um.nombre ILIKE '%'||$1||'%'
+    )
+  `;
+        params.push(q ?? null);
+
+        const sql = `
+    WITH allow AS (
+      SELECT jsonb_array_elements_text(
+               COALESCE(
+                 CASE WHEN jsonb_typeof(value_json)='object' THEN (value_json->'list')
+                      ELSE value_json
+                 END,
+                 '[]'::jsonb
+               )
+             ) AS alias_dash
+      FROM feature_flags
+      WHERE flag_key='CLUES_EXISTENCIAS_ALLOWLIST' AND scope='global'
+    )
+    SELECT um.cluesimb, um.nombre, uma.alias_dash
+    FROM unidad_medica um
+    JOIN unidad_medica_alias uma ON uma.unidad_medica_id = um.id
+    JOIN allow a ON a.alias_dash = uma.alias_dash
+    WHERE uma.alias_dash IS NOT NULL
+    ${whereQ}
+    ORDER BY uma.alias_dash, um.nombre
+    LIMIT 100;
+  `;
+        const { rows } = await pool.query(sql, params);
+        return rows as UnidadAllow[];
     }
 }
 

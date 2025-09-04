@@ -17,9 +17,15 @@ import rdlsRoutes from './routes/rdls';
 import authRoutes from './routes/auth';
 import configRoutes from './routes/solicitudes-config';
 import compression from 'compression';
+import { fetch, Headers } from 'undici';
 // import { seedCitasSiNecesario } from './seed/citas.seed';
  
 dotenv.config();
+
+// @ts-ignore
+globalThis.fetch = fetch;
+// @ts-ignore
+globalThis.Headers = Headers;
 
 const app = express();
 const PORT = process.env.PORT || 3000; 

@@ -27,7 +27,9 @@ class AuthService {
    * Si prefieres respetar RLS del usuario, podrías usar PostgREST con el accessToken de req.
    */
   async me(authUserId: string) {
+    console.log('authUserId', authUserId);
     if (!supabaseAdmin) {
+      console.error('SUPABASE_SERVICE_ROLE_KEY not configured on server');
       throw new Error('SUPABASE_SERVICE_ROLE_KEY not configured on server');
     }
 
@@ -37,7 +39,10 @@ class AuthService {
       .eq('id', authUserId)
       .single();
 
-    if (error) throw new Error(error.message);
+    if (error) {
+      console.error(error);
+      throw new Error(error.message);
+    }
 
     let persona: any = null;
     if (profile?.persona_id) {

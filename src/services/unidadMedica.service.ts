@@ -1,6 +1,6 @@
 import { Pool } from 'pg';
 import dotenv from 'dotenv';
-import { UnidadMedica } from '../models/unidadMedica.model';
+import { UnidadMedica, UnidadMedicaDetalle } from '../models/unidadMedica.model';
 
 dotenv.config();
 
@@ -13,37 +13,57 @@ const pool = new Pool({
 });
 
 class UnidadMedicaService {
-  async getAll(): Promise<UnidadMedica[]> {
-    const query = `
-      SELECT 
-        um.id,
-        um.cluessa,
-        um.cluesimb,
-        um.nombre,
-        uma.alias_sas,
-        um.direccion,
-        um.latitud,
-        um.longitud,
-        um.estrato_unidad,
-        um.nivel_atencion,
-        tu.nombre_tipo AS tipo_unidad,
-        l.nombre_localidad,
-        m.nombre_municipio
-      FROM unidad_medica um
-      JOIN tipo_unidad tu ON um.tipo_unidad_id = tu.id
-      JOIN localidad l ON um.localidad_id = l.id
-      JOIN municipio m ON l.municipio_id = m.id 
-      left join unidad_medica_alias uma on um.id = uma.unidad_medica_id 
-      ORDER BY m.nombre_municipio, l.nombre_localidad;
+  async getAll(): Promise<UnidadMedicaDetalle[]> {
+    const sql = `
+      SELECT
+        id,
+        cluessa,
+        cluesimb,
+        nombre_municipio,
+        nombre_localidad,
+        nombre_tipologia,
+        es_segundo_nivel,
+        nombre_de_unidad,
+        tipo_unidad,
+        alias_sas,                 -- ⬅️ nuevo
+        direccion,
+        latitud,
+        longitud,
+        estrato_unidad,
+        nivel_atencion
+      FROM public.v_unidad_medica_detalle
+      ORDER BY nombre_municipio, nombre_localidad, nombre_de_unidad;
     `;
-    const { rows } = await pool.query(query);
+    const { rows } = await pool.query<UnidadMedicaDetalle>(sql);
     return rows;
   }
 
-  async getById(id: number): Promise<UnidadMedica | null> {
-    const { rows } = await pool.query('SELECT * FROM unidad_medica WHERE id = $1', [id]);
-    return rows[0] || null;
+  async getById(id: number): Promise<UnidadMedicaDetalle | null> {
+    const sql = `
+      SELECT
+        id,
+        cluessa,
+        cluesimb,
+        nombre_municipio,
+        nombre_localidad,
+        nombre_tipologia,
+        es_segundo_nivel,
+        nombre_de_unidad,
+        tipo_unidad,
+        alias_sas,                 -- ⬅️ nuevo
+        direccion,
+        latitud,
+        longitud,
+        estrato_unidad,
+        nivel_atencion
+      FROM public.v_unidad_medica_detalle
+      WHERE id = $1
+      LIMIT 1;
+    `;
+    const { rows } = await pool.query<UnidadMedicaDetalle>(sql, [id]);
+    return rows[0] ?? null;
   }
+
 
   async create(data: UnidadMedica): Promise<UnidadMedica> {
     const query = `

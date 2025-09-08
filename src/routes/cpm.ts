@@ -5,6 +5,22 @@ const router = express.Router();
 const controller = new CpmController();
 
 /********************** RUTAS DE ABASTO / UNIDADES MEDICAS **********************/
+// TODO: meter requireAuth
 router.get('/', controller.obtenerDesdePowerAutomate64.bind(controller));
+// TODO: meter requireAuth
+router.get('/expected-vs', controller.expectedVs.bind(controller));
+/**
+ * Ejemplos:
+ *   /api/cpms/expected-vs?cluesimb=BCIMB001656
+ *   /api/cpms/expected-vs?cluessa=BCSSA000123&kit=KIT_147
+ *   /api/cpms/expected-vs?cluesimb=BCIMB001656&clave=010.000.5720.01
+ */
+// TODO: meter requireAuth
+router.get('/by-unidad', controller.byUnidadGt0.bind(controller));
+/**
+ * Ejemplos:
+ *   /api/cpms/by-unidad?cluesimb=BCIMB001656
+ *   /api/cpms/by-unidad?cluessa=BCSSA000123
+ */
 
 export default router;

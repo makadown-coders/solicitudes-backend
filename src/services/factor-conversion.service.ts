@@ -1,6 +1,7 @@
 // src/services/factor-conversion.service.ts
 import { Pool } from 'pg';
 import dotenv from 'dotenv';
+import { FactorConversion } from '../models/factor-conversion';
 dotenv.config();
 
 const pool = new Pool({
@@ -10,13 +11,6 @@ const pool = new Pool({
     user: process.env.POSTGRES_USERNAME,
     password: process.env.POSTGRES_PASSWORD,
 });
-
-export interface FactorConversion {
-    clave: string;
-    en_dispensacion: boolean;
-    cantidad_fc: number;
-    cluesimb?: string; // opcional, solo informativo si vino por unidad
-}
 
 class FactorConversionService {
     async obtenerPorClave(clave: string): Promise<FactorConversion> {

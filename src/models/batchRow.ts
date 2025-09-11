@@ -23,3 +23,8 @@ export type TemporalExistenciaRow = {
   fecha_caducidad?: string | null; // 'YYYY-MM-DD' o null
   existencia: number;
 };
+
+export type ExistenciaUnidadRow = {
+  clave_cnis: string;
+  existencia_total: number;
+};

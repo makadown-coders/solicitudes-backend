@@ -20,6 +20,7 @@ const KNOWN_FLAGS: FlagKey[] = [
     'APLICAR_ENCUESTAS',
     'APLICAR_EQUIVALENCIAS',
     'CLUES_EXISTENCIAS_ALLOWLIST',
+    'IMPORT_LIMIT_TO_KIT',
 ];
 
 class FeatureFlagsService {

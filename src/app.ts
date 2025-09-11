@@ -16,6 +16,7 @@ import factorRoutes from './routes/factor-conversion';
 import rdlsRoutes from './routes/rdls';
 import authRoutes from './routes/auth';
 import configRoutes from './routes/solicitudes-config';
+import existenciasRoutes from './routes/existencias';
 import compression from 'compression';
 import { fetch, Headers } from 'undici';
 // import { seedCitasSiNecesario } from './seed/citas.seed';
@@ -54,6 +55,7 @@ app.use('/api/factores', factorRoutes);
 app.use('/api/rdls', rdlsRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/solicitudes-config', configRoutes);
+app.use('/api/existencias-temp', existenciasRoutes);
 
 app.listen(PORT, async () => {
   console.log(`Servidor backend escuchando en http://xxxxx:${PORT}`);

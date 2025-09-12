@@ -49,6 +49,45 @@ class CpmController {
       res.status(400).json({ error: e?.message || 'Bad request' });
     }
   };
+
+  /** GET /api/cpms/by-unidad-all?cluesimb=... | ?cluessa=...  (incluye cpm=0) */
+  byUnidadAll: RequestHandler = async (req, res) => {
+    try {
+      const { cluesimb, cluessa } = req.query as Record<string, string | undefined>;
+      const rows = await this.service.getUnidadCpmAll({ cluesimb, cluessa });
+      res.json({ count: rows.length, rows });
+    } catch (e: any) {
+      res.status(400).json({ error: e?.message || 'Bad request' });
+    }
+  };
+
+  /** PATCH /api/cpms  body: { um: string, clave: string, cpm: number, fuente?: string } */
+  upsertOne: RequestHandler = async (req, res): Promise<void> => {
+    try {
+      const { um, clave, cpm, fuente } = req.body ?? {};
+      if (!um || !clave || cpm === undefined || cpm === null) {
+        res.status(400).json({ error: 'um, clave y cpm son requeridos' });
+        return;
+      }
+      await this.service.upsertOne(um, clave, cpm, fuente);
+      res.json({ ok: true });
+      return;
+    } catch (e: any) {
+      res.status(400).json({ error: e?.message || 'Bad request' });
+      return;
+    }
+  };
+
+  /** POST /api/cpms/batch  body: { um: string, items: [{clave, cpm, fuente?}] } */
+  upsertBatch: RequestHandler = async (req, res) => {
+    try {
+      const { um, items } = req.body || {};
+      const count = await this.service.upsertBatch(um, items);
+      res.json({ ok: true, count });
+    } catch (e: any) {
+      res.status(400).json({ error: e?.message || 'Bad request' });
+    }
+  };
 }
 
 export default CpmController;

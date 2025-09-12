@@ -17,6 +17,11 @@ router.get('/expected-vs', controller.expectedVs.bind(controller));
  */
 // TODO: meter requireAuth
 router.get('/by-unidad', controller.byUnidadGt0.bind(controller));
+// Consulta (todo y >0)
+router.get('/by-unidad-all', controller.byUnidadAll.bind(controller));
+// Edición
+router.patch('/', controller.upsertOne.bind(controller));
+router.post('/batch', controller.upsertBatch.bind(controller));
 /**
  * Ejemplos:
  *   /api/cpms/by-unidad?cluesimb=BCIMB001656

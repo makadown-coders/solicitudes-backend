@@ -6,11 +6,11 @@ import { UnidadCpmParams } from '../models/unidad-cpm-params.model';
 import { ExpectedVsParams } from '../models/expected-vs-params.model';
 
 const pool = new Pool({
-  user: process.env.POSTGRES_USERNAME,
-  host: process.env.POSTGRES_HOST,
-  database: process.env.POSTGRES_DATABASE,
-  password: process.env.POSTGRES_PASSWORD,
-  port: parseInt(process.env.POSTGRES_PORT || '5432', 10)
+    user: process.env.POSTGRES_USERNAME,
+    host: process.env.POSTGRES_HOST,
+    database: process.env.POSTGRES_DATABASE,
+    password: process.env.POSTGRES_PASSWORD,
+    port: parseInt(process.env.POSTGRES_PORT || '5432', 10)
 });
 
 dotenv.config();
@@ -102,36 +102,111 @@ class CPMService {
      *  SELECT * FROM v_unidad_cpm WHERE cluesimb = $1 AND cpm > 0;
      * También admite 'cluessa' (hace join para resolver la cluesimb).
      */
-    async getUnidadCpmGt0(p: UnidadCpmParams) {
-        if (!p.cluesimb && !p.cluessa) {
-            throw new Error('Parámetro requerido: cluesimb o cluessa');
-        }
+    async getUnidadCpmGt0(params: UnidadCpmParams) {
+        const { cluesimb, cluessa } = params || {};
+        let sql = '';
+        let values: any[] = [];
 
-        const params: any[] = [];
-        let sql: string;
-
-        if (p.cluesimb) {
-            params.push(p.cluesimb);
+        if (cluesimb) {
             sql = `
-        SELECT v.unidad_medica_id, v.cluesimb, v.nombre_unidad, v.clave_cnis, v.cpm
-        FROM public.v_unidad_cpm v
-        WHERE v.cluesimb = $1 AND v.cpm > 0
-        ORDER BY v.clave_cnis
-      `;
+      SELECT c.clave_cnis, c.cpm, c.fuente
+      FROM public.v_cpm_bc c
+      WHERE upper(c.cluesimb) = upper($1) AND c.cpm > 0
+      ORDER BY c.clave_cnis
+    `;
+            values = [cluesimb];
+        } else if (cluessa) {
+            sql = `
+      SELECT c.clave_cnis, c.cpm, c.fuente
+      FROM public.v_cpm_bc c
+      WHERE upper(c.cluessa) = upper($1) AND c.cpm > 0
+      ORDER BY c.clave_cnis
+    `;
+            values = [cluessa];
         } else {
-            // buscar por CLUESSA: unimos para resolver la CLUESIMB
-            params.push(p.cluessa);
-            sql = `
-        SELECT v.unidad_medica_id, v.cluesimb, v.nombre_unidad, v.clave_cnis, v.cpm
-        FROM public.v_unidad_cpm v
-        JOIN public.unidad_medica um ON um.cluesimb = v.cluesimb
-        WHERE um.cluessa = $1 AND v.cpm > 0
-        ORDER BY v.clave_cnis
-      `;
+            throw new Error('Se requiere cluesimb o cluessa');
         }
 
-        const { rows } = await pool.query(sql, params);
+        const { rows } = await pool.query(sql, values);
         return rows;
+    }
+
+    async getUnidadCpmAll(params: UnidadCpmParams): Promise<any[]> {
+        const { cluesimb, cluessa } = params || {};
+        let sql = '';
+        let values: any[] = [];
+
+        if (cluesimb) {
+            sql = `
+      SELECT c.clave_cnis, c.cpm, c.fuente
+      FROM public.v_cpm_bc c
+      WHERE upper(c.cluesimb) = upper($1)
+      ORDER BY c.clave_cnis
+    `;
+            values = [cluesimb];
+        } else if (cluessa) {
+            sql = `
+      SELECT c.clave_cnis, c.cpm, c.fuente
+      FROM public.v_cpm_bc c
+      WHERE upper(c.cluessa) = upper($1)
+      ORDER BY c.clave_cnis
+    `;
+            values = [cluessa];
+        } else {
+            throw new Error('Se requiere cluesimb o cluessa');
+        }
+
+        const { rows } = await pool.query(sql, values);
+        return rows;
+    }
+
+    async upsertOne(
+        umIdent: string,
+        clave: string,
+        cpm: number | string,
+        fuente: string = 'manual'
+    ): Promise<void> {
+        const um = (umIdent ?? '').trim();
+        const k = (clave ?? '').trim();
+        const val = Number(cpm);
+
+        if (!um || !k || Number.isNaN(val)) {
+            throw new Error('umIdent, clave y cpm válidos son requeridos');
+        }
+        if (val < 0) {
+            throw new Error('cpm debe ser >= 0');
+        }
+
+        await pool.query(
+            'SELECT public.fn_upsert_cpm_bc($1,$2,$3,$4)',
+            [um, k, val, (fuente ?? 'manual').trim() || 'manual']
+        );
+    }
+
+    async upsertBatch(umIdent: string, items: { clave: string; cpm: number; fuente?: string }[]): Promise<number> {
+        if (!umIdent) throw new Error('umIdent requerido');
+        if (!Array.isArray(items) || items.length === 0) throw new Error('items[] requerido');
+
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            for (const it of items) {
+                if (!it?.clave || it.cpm === undefined || it.cpm === null) continue;
+                await client.query('SELECT public.fn_upsert_cpm_bc($1,$2,$3,$4)', [
+                    umIdent,
+                    it.clave,
+                    it.cpm,
+                    it.fuente ?? 'manual',
+                ]);
+            }
+            await client.query('COMMIT');
+            return items.length;
+        } catch (err) {
+            await client.query('ROLLBACK');
+            throw err;
+        } finally {
+            client.release();
+        }
     }
 }
 

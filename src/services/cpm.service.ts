@@ -1,19 +1,8 @@
-import { Pool } from 'pg';
 import axios, { AxiosResponse } from 'axios';
-import dotenv from 'dotenv';
 import { PowerAutomateResponse } from '../models/powerAutomateResponse.model';
 import { UnidadCpmParams } from '../models/unidad-cpm-params.model';
 import { ExpectedVsParams } from '../models/expected-vs-params.model';
-
-const pool = new Pool({
-    user: process.env.POSTGRES_USERNAME,
-    host: process.env.POSTGRES_HOST,
-    database: process.env.POSTGRES_DATABASE,
-    password: process.env.POSTGRES_PASSWORD,
-    port: parseInt(process.env.POSTGRES_PORT || '5432', 10)
-});
-
-dotenv.config();
+import { pool } from '../db/pool';
 
 class CPMService {
     /**

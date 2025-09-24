@@ -1,10 +1,7 @@
 // src/services/inventario.service.ts
 import axios, { AxiosResponse } from 'axios';
-import dotenv from 'dotenv';
 import { PowerAutomateResponse } from '../models/powerAutomateResponse.model';
 import { AzureAbastoEndpoint } from '../enums/AzureEndpoint.enum';
-
-dotenv.config();
 
 class InventarioService {
     /**

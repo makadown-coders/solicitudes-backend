@@ -1,18 +1,7 @@
 /* /src/services/cargaMasiva.service.ts  */
-import { Pool } from 'pg';
 import { Readable } from 'stream';
 import { from as copyFrom } from 'pg-copy-streams';
-import dotenv from 'dotenv';
-
-dotenv.config();
-
-const pool = new Pool({
-  host: process.env.POSTGRES_HOST,
-  port: Number(process.env.POSTGRES_PORT),
-  database: process.env.POSTGRES_DATABASE,
-  user: process.env.POSTGRES_USERNAME,
-  password: process.env.POSTGRES_PASSWORD,
-});
+import { pool } from '../db/pool';
 
 type TipoMov = 'entradas' | 'traspasos' | 'salidas';
 

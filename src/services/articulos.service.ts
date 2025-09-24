@@ -4,19 +4,6 @@ import sqlite3 from 'sqlite3';
 import dotenv from 'dotenv';
 import { Articulo } from '../models/articulo.model';
 
-/**
- * Esta configuración es para la base de datos 
- * para la herramienta de creacion de solicitudes, en 
- * donde se realiza la consulta de articulos para alimentar
- * el autocompletado en el front end.
- * 
- * Esta es la unica seccion hecha con SQLite para agilizar
- * la creacion de solicitudes.
- */
-
-
-dotenv.config();
-
 // Promesa de base de datos tipada
 const dbPromise: Promise<Database> = open({
   filename: process.env.DB_PATH ?? './db/articulos.sqlite',

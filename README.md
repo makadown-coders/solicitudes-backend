@@ -236,6 +236,19 @@ SUPABASE_SERVICE_ROLE_KEY=...     # opcional (admin ops)
 - Cache opcional en Redis para `existencias-temp`.
 - Endpoints protegidos por rol/claim (admin para flags).
 
+## SSO Local
+
+Esta version agrega un **SSO local** (JWT RS256 + refresh rotatorio en Postgres) sin romper el contrato actual de rutas:
+- `POST /api/auth/login` → `{ access_token, refresh_token, user }`
+- `POST /api/auth/refresh` → `{ access_token }`
+- `GET  /api/auth/me` (Bearer) → perfil básico
+- `POST /api/auth/logout`
+
+Se conserva compatibilidad con Supabase mediante `AUTH_PROVIDER`:
+- `AUTH_PROVIDER=supabase` (comportamiento actual)
+- `AUTH_PROVIDER=local` (nuevo SSO)
+
+Para más detalles consultar README_SSO.MD
 ---
 
 ## 👤 Autor

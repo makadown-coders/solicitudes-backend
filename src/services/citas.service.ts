@@ -2,24 +2,14 @@
 import { PaginationQuery } from '../models/paginationQuery.model';
 import { PaginationResult } from '../models/paginationResult.model';
 import { Cita } from '../models/cita.model';
-import { Pool, PoolClient } from 'pg';
-import dotenv from 'dotenv';
+import { PoolClient } from 'pg';
 import { excelDateToDatestring, formatFechaMultiple } from '../helpers/helper';
 import { AxiosResponse } from 'axios';
 import axios from 'axios';
 import XLSX from 'xlsx';
 import { CitaRow } from '../models/citaRow.model';
 import { PowerAutomateResponse } from '../models/powerAutomateResponse.model';
-
-dotenv.config();
-
-const pool = new Pool({
-  user: process.env.POSTGRES_USERNAME,
-  host: process.env.POSTGRES_HOST,
-  database: process.env.POSTGRES_DATABASE,
-  password: process.env.POSTGRES_PASSWORD,
-  port: parseInt(process.env.POSTGRES_PORT || '5432', 10)
-});
+import { pool } from '../db/pool';
 
 class CitasService {
   async obtenerCitas(query: PaginationQuery): Promise<PaginationResult<Cita>> {

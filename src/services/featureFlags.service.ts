@@ -1,18 +1,7 @@
 // src/services/featureFlags.service.ts
-import { Pool } from 'pg';
 import { EffectiveFlags, FlagKey, FeatureFlagRow, FlagScope } from '../models/featureFlags';
-import dotenv from 'dotenv';
 import { UnidadAllow } from '../models/UnidadAllow';
-
-dotenv.config();
-
-const pool = new Pool({
-    host: process.env.POSTGRES_HOST,
-    port: Number(process.env.POSTGRES_PORT),
-    database: process.env.POSTGRES_DATABASE,
-    user: process.env.POSTGRES_USERNAME,
-    password: process.env.POSTGRES_PASSWORD,
-});
+import { pool } from '../db/pool';
 
 const KNOWN_FLAGS: FlagKey[] = [
     'SOLO_CPMS',

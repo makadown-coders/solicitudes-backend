@@ -18,7 +18,7 @@ router.post('/login', controller.login.bind(controller));
 router.post('/refresh', controller.refresh.bind(controller));
 
 /**
- * GET /api/auth/me (protegido con Bearer)
+ * GET /api/auth/me (protegido con Bearer token)
  */
 router.get('/me', requireAuth, controller.me.bind(controller));
 
@@ -26,5 +26,10 @@ router.get('/me', requireAuth, controller.me.bind(controller));
  * POST /api/auth/logout
  */
 router.post('/logout', controller.logout.bind(controller));
+
+/**
+ * POST /api/auth/logout-all
+ */
+router.post('/logout-all', controller.logoutAll.bind(controller));
 
 export default router;

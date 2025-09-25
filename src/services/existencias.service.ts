@@ -6,17 +6,17 @@ import { pool } from '../db/pool';
  * Servicio de existencias (temporales)
  */
 export default class ExistenciasService {
-    async init(reset: boolean) {
-        if (reset) {
-            await pool.query('TRUNCATE TABLE public.tmp_existencias;');
-        }
-        return { ok: true };
+  async init(reset: boolean) {
+    if (reset) {
+      await pool.query('TRUNCATE TABLE public.tmp_existencias;');
     }
+    return { ok: true };
+  }
 
-    async batch(rows: TemporalExistenciaRow[]) {
-        if (!rows?.length) return { inserted: 0 };
+  async batch(rows: TemporalExistenciaRow[]) {
+    if (!rows?.length) return { inserted: 0 };
 
-        const sql = `
+    const sql = `
       INSERT INTO public.tmp_existencias
       (fuente, alias_sas, cluessa, cluesimb, clave_cnis, lote, fecha_caducidad, existencia)
       SELECT
@@ -30,15 +30,24 @@ export default class ExistenciasService {
         COALESCE((x->>'existencia')::numeric, 0)
       FROM jsonb_array_elements($1::jsonb) AS x;
     `;
-        const { rowCount } = await pool.query(sql, [JSON.stringify(rows)]);
-        return { inserted: rowCount || 0 };
-    }
+    const { rowCount } = await pool.query(sql, [JSON.stringify(rows)]);
+    return { inserted: rowCount || 0 };
+  }
 
-    async getByUnidad(cluesimb: string): Promise<ExistenciaUnidadRow[]> {
-        const key = (cluesimb || '').trim().toUpperCase();
-        if (!key) return [];
+  /**
+   * Devuelve existencias por cluesimb (con resolución de unidad:
+   *   - si ya trae cluesimb, lo usamos (UPPER/trim)
+   *   - si no, resolvemos por alias_sas -> unidad_medica_alias -> unidad_medica
+   *   - si no, resolvemos por cluessa -> unidad_medica
+   * )
+   * @param cluesimb Cluesimb a buscar
+   * @returns Promesa con array de ExistenciaUnidadRow
+   */
+  async getByUnidad(cluesimb: string): Promise<ExistenciaUnidadRow[]> {
+    const key = (cluesimb || '').trim().toUpperCase();
+    if (!key) return [];
 
-        const sql = `
+    const sql = `
       WITH e AS (
         SELECT
           t.clave_cnis,
@@ -72,16 +81,16 @@ export default class ExistenciasService {
       ORDER BY clave_cnis;
     `;
 
-        const { rows } = await pool.query(sql, [key]);
-        return rows as ExistenciaUnidadRow[];
-    }
+    const { rows } = await pool.query(sql, [key]);
+    return rows as ExistenciaUnidadRow[];
+  }
 
-    /** Opcional: saber si hay staging para una unidad (útil para toggles en el front) */
-    async hasForUnidad(cluesimb: string): Promise<boolean> {
-        const key = (cluesimb || '').trim().toUpperCase();
-        if (!key) return false;
+  /** Opcional: saber si hay staging para una unidad (útil para toggles en el front) */
+  async hasForUnidad(cluesimb: string): Promise<boolean> {
+    const key = (cluesimb || '').trim().toUpperCase();
+    if (!key) return false;
 
-        const sql = `
+    const sql = `
       WITH e AS (
         SELECT
           COALESCE(
@@ -104,8 +113,39 @@ export default class ExistenciasService {
       WHERE resolved_cluesimb = $1
       LIMIT 1;
     `;
-        const { rowCount } = await pool.query(sql, [key]);
-        return (rowCount ?? 0) > 0;
-    }
+    const { rowCount } = await pool.query(sql, [key]);
+    return (rowCount ?? 0) > 0;
+  }
+
+
+
+  /**
+   * Devuelve todos los registros de existencias temporales para una unidad en particular.
+   * @param cluesimb Clave de la unidad (CLUES)
+   * @returns Un array de objetos con los campos de la existencia (fuente, clave_cnis, alias_sas, cluessa, clave_cnis, lote, fecha_caducidad, existencia)
+   */
+  async getByUnidadFull(cluesimb: string): Promise<TemporalExistenciaRow[]> {
+    console.info('Cargando Existencias de la unidad ', cluesimb );
+    const key = (cluesimb || '').trim().toUpperCase();
+    if (!key) return [];
+
+    const sql = `
+       SELECT
+          t.fuente,
+          t.clave_cnis,
+          t.alias_sas,
+          t.cluessa,
+          t.cluesimb,
+          t.clave_cnis,
+          t.lote,
+          t.fecha_caducidad,
+          t.existencia
+        FROM public.tmp_existencias t
+      WHERE t.cluesimb = $1;
+    `;
+
+    const { rows } = await pool.query(sql, [key]);
+    return rows as TemporalExistenciaRow[];
+  }
 
 }

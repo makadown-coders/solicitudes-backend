@@ -27,7 +27,7 @@ export default class ExistenciasController {
         }
     };
 
-    /** NUEVO: GET /api/existencias/by-unidad?cluesimb=... */
+    /** NUEVO: GET /api/existencias-temp/by-unidad?cluesimb=... */
     byUnidad = async (req: Request, res: Response) => {
         try {
             const cluesimb = String(req.query.cluesimb || '').trim().toUpperCase();
@@ -50,6 +50,19 @@ export default class ExistenciasController {
             res.json({ has: ok });
         } catch (e: any) {
             res.status(500).json({ error: 'has_by_unidad_failed', detail: e?.message });
+        }
+    };
+
+    /** NUEVO: GET /api/existencias-temp/by-unidad-full?cluesimb=... */
+    getByUnidadFull = async (req: Request, res: Response) => {
+        try {
+            const cluesimb = String(req.query.cluesimb || '').trim().toUpperCase();
+            if (!cluesimb) return res.status(400).json({ error: 'missing_cluesimb' });
+
+            const rows = await this.svc.getByUnidadFull(cluesimb);
+            res.json({ rows });
+        } catch (e: any) {
+            res.status(500).json({ error: 'get_by_unidad_full_failed', detail: e?.message });
         }
     };
 }

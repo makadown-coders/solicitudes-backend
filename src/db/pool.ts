@@ -1,3 +1,4 @@
+// src/db/pool.ts
 import { Pool } from 'pg';
 
 /**

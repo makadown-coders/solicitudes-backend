@@ -18,6 +18,12 @@ import rdlsRoutes from './routes/rdls';
 import authRoutes from './routes/auth';
 import configRoutes from './routes/solicitudes-config';
 import existenciasRoutes from './routes/existencias';
+import tipoDispositivoRoutes from './routes/tipoDispositivo';
+import estadoDispositivoRoutes from './routes/estadoDispositivo';
+import dispositivosRoutes from './routes/dispositivos';
+import asignacionesRoutes from './routes/asignaciones';
+import unidadMedicaTIRoutes from './routes/unidadMedica-ti';
+
 import compression from 'compression';
 import { fetch, Headers } from 'undici';
 // import { seedCitasSiNecesario } from './seed/citas.seed';
@@ -47,6 +53,7 @@ app.use('/api/inventario', inventarioRoutes);
 app.use('/api/cpms', cpmsRoutes);
 app.use('/api/historial', historialRoutes);
 app.use('/api/unidades', unidadMedicaRoutes);
+app.use('/api/ti/unidades', unidadMedicaTIRoutes);
 app.use('/api/municipios', municipioRoutes);
 app.use('/api/localidades', localidadRoutes);
 app.use('/api/tipo-unidad', tipoUnidadRoutes);
@@ -57,6 +64,10 @@ app.use('/api/rdls', rdlsRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/solicitudes-config', configRoutes);
 app.use('/api/existencias-temp', existenciasRoutes);
+app.use('/api/catalogos/tipos-dispositivo', tipoDispositivoRoutes);
+app.use('/api/catalogos/estados-dispositivo', estadoDispositivoRoutes);
+app.use('/api/dispositivos', dispositivosRoutes);
+app.use('/api', asignacionesRoutes);
 
 app.listen(PORT, async () => {
   console.log(`Servidor backend escuchando en http://xxxxx:${PORT}`);

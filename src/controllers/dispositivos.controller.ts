@@ -7,13 +7,21 @@ export default class DispositivosController {
 
   list = async (req: Request, res: Response) => {
     try {
-      const limit  = Math.min(Number(req.query.pageSize ?? 20), 100);
-      const offset = (Math.max(Number(req.query.page ?? 1),1)-1)*limit;
-      const unidad_medica_id    = req.query.unidad_medica_id ? Number(req.query.unidad_medica_id) : null;
+      const pageSize = Math.min(Number(req.query.pageSize ?? 20), 100);
+      const page = Math.max(Number(req.query.page ?? 1), 1);
+      const unidad_medica_id = req.query.unidad_medica_id ? Number(req.query.unidad_medica_id) : null;
       const tipo_dispositivo_id = req.query.tipo_dispositivo_id ? Number(req.query.tipo_dispositivo_id) : null;
+      const estado_dispositivo_id= req.query.estado_dispositivo_id ? Number(req.query.estado_dispositivo_id) : null;
       const q = req.query.q ? String(req.query.q) : null;
-      res.json(await this.svc.list({ unidad_medica_id, tipo_dispositivo_id, q, limit, offset }));
-    } catch (e) { res.status(500).json({ message: 'Error al listar dispositivos' }); }
+
+      const out = await this.svc.listPaged({
+        unidad_medica_id, tipo_dispositivo_id, estado_dispositivo_id, q, page, pageSize
+      });
+
+      res.json(out);
+    } catch (e) {
+      res.status(500).json({ message: 'Error al listar dispositivos' });
+    }
   };
 
   create = async (req: Request, res: Response) => {

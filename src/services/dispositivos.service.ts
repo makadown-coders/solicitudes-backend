@@ -91,8 +91,9 @@ export default class DispositivosService {
               lugar_especifico      ILIKE '%'||$3||'%' OR
               EXISTS (
                 SELECT 1 FROM dispositivo_nic n
-                  WHERE n.dispositivo_id = asignacion_dispositivo_id
+                  WHERE n.dispositivo_id = filtrado.id
                     AND n.mac ILIKE '%'||$3||'%'
+                    OR n.mac_norm ILIKE '%'||regexp_replace($3, '[^0-9A-Fa-f]', '', 'g')||'%'
               )
        ))
          AND ($4::int IS NULL OR estado_dispositivo_id = $4) 
@@ -388,6 +389,14 @@ export default class DispositivosService {
     } finally { client.release(); }
   }
 
+  async deleteMonitor(dispositivoId: number, monitorId: number) {
+    await pool.query(
+      'DELETE FROM monitor WHERE dispositivo_id=$1 AND id=$2',
+      [dispositivoId, monitorId]
+    );
+    return { ok: true };
+  }
+
   // ========= PERIFÉRICOS =========
   async addPeriferico(payload: {
     dispositivo_id: number;
@@ -424,4 +433,6 @@ export default class DispositivosService {
     const { rows } = await pool.query(sql, values);
     return rows[0];
   }
+
+  
 }

@@ -16,5 +16,6 @@ router.post('/:id/monitores', requireAuth, requireRole('ADMIN_TIC','OPER_TIC'), 
 router.put('/:id/monitores/:monitorId', requireAuth, requireRole('ADMIN_TIC','OPER_TIC'), c.actualizarMonitor.bind(c));
 router.post('/:id/perifericos', requireAuth, requireRole('ADMIN_TIC','OPER_TIC'), c.agregarPeriferico.bind(c));
 router.put('/:id/perifericos/:perifericoId', requireAuth, requireRole('ADMIN_TIC','OPER_TIC'), c.actualizarPeriferico.bind(c));
+router.delete('/:id/monitores/:monitorId', requireAuth, requireRole('ADMIN_TIC','OPER_TIC'), c.eliminarMonitor.bind(c));
 
 export default router;

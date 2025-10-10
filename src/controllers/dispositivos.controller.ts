@@ -117,4 +117,13 @@ export default class DispositivosController {
       res.json({ ok: true, id: out.id });
     } catch (e: any) { res.status(500).json({ ok: false, error: e.message }); }
   };
+
+  eliminarMonitor = async (req, res) => {
+    try {
+      const dispositivo_id = Number(req.params.id);
+      const monitor_id = Number(req.params.monitorId);
+      await this.svc.deleteMonitor(dispositivo_id, monitor_id);
+      res.json({ ok: true });
+    } catch (e: any) { res.status(500).json({ ok: false, error: e.message }); }
+  };
 }

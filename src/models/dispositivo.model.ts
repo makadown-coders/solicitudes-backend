@@ -48,7 +48,7 @@ export type DispositivoDetail = {
   ip?: string | null; conexion?: string | null; serial?: string | null;
   marca?: string | null; modelo?: string | null; observaciones?: string | null;
   monitores: { id: number; dispositivo_id: number; serial?: string | null; marca?: string | null; modelo?: string | null; es_principal: boolean; }[];
-  perifericos: { id: number; dispositivo_id: number; tipo: string; serial?: string | null; marca?: string | null; modelo?: string | null; }[];
+  perifericos: { id: number; dispositivo_id: number; tipo_id: number; serial?: string | null; marca?: string | null; modelo?: string | null; }[];
   asignacion_actual: {
     id: number; persona_id?: number | null; lugar_especifico?: string | null;
     estado_dispositivo_id?: number | null; fecha_asignacion: string; fecha_retiro?: string | null;

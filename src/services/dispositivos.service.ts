@@ -133,6 +133,11 @@ export default class DispositivosService {
     return rows[0];
   }
 
+  /**
+   * OBTIENE DATO DE DISPOSITIVO + MONITORES + PERIFÉRICOS + ASIGNACIÓN ACTUAL   * 
+   * @param id 
+   * @returns 
+   */
   async byId(id: number) {
     const dev = await pool.query(`SELECT * FROM dispositivo WHERE id=$1`, [id]);
     if (!dev.rowCount) return null;
@@ -144,7 +149,15 @@ export default class DispositivosService {
      ORDER BY en_uso DESC, id
   `, [id]);
     const mon = await pool.query(`SELECT * FROM monitor WHERE dispositivo_id=$1 ORDER BY id`, [id]);
-    const per = await pool.query(`SELECT * FROM periferico WHERE dispositivo_id=$1 ORDER BY id`, [id]);
+    // const per = await pool.query(`SELECT * FROM periferico WHERE dispositivo_id=$1 ORDER BY id`, [id]);
+    const per = await pool.query(`
+  SELECT p.id, 
+         p.serial, p.marca, p.modelo,
+         t.nombre AS tipo, p.tipo_id
+    FROM periferico p
+    JOIN cat_periferico_tipo t ON t.id = p.tipo_id
+   WHERE p.dispositivo_id=$1
+   ORDER BY p.id`, [id]);
 
     const asig = await pool.query(`
       SELECT a.*, p.nombre_completo, ed.nombre AS estado_nombre
@@ -281,6 +294,7 @@ export default class DispositivosService {
   // ========= CAMBIAR ASIGNACIÓN (cierra la activa e inserta una nueva) =========
   async changeAssignment(payload: {
     dispositivo_id: number;
+    unidad_medica_id?: number | null;
     persona_id?: number | null;
     lugar_especifico?: string | null;
     estado_dispositivo_id?: number | null;
@@ -289,6 +303,15 @@ export default class DispositivosService {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+
+      // (opcional) mover el dispositivo de unidad si viene
+      if (payload.unidad_medica_id) {
+        await client.query(
+          `UPDATE dispositivo SET unidad_medica_id=$2
+         WHERE id=$1`,
+          [payload.dispositivo_id, payload.unidad_medica_id]
+        );
+      }
 
       // Cerrar la asignación anterior (si existe activa)
       await client.query(`
@@ -400,27 +423,30 @@ export default class DispositivosService {
   // ========= PERIFÉRICOS =========
   async addPeriferico(payload: {
     dispositivo_id: number;
-    tipo: string;
+    tipo_id: number;
     serial?: string | null; marca?: string | null; modelo?: string | null;
   }) {
     const { rows } = await pool.query(
-      `INSERT INTO periferico (dispositivo_id, tipo, serial, marca, modelo)
+      `INSERT INTO periferico (dispositivo_id, tipo_id, serial, marca, modelo)
        VALUES ($1,$2,$3,$4,$5) RETURNING id`,
-      [payload.dispositivo_id, payload.tipo, payload.serial ?? null, payload.marca ?? null, payload.modelo ?? null]
+      [payload.dispositivo_id, payload.tipo_id, payload.serial ?? null, payload.marca ?? null, payload.modelo ?? null]
     );
     return rows[0];
   }
 
   async updatePeriferico(payload: {
     id: number; dispositivo_id: number;
-    tipo?: string | null; serial?: string | null; marca?: string | null; modelo?: string | null;
+    tipo_id?: number | null;
+    serial?: string | null;
+    marca?: string | null;
+    modelo?: string | null;
   }) {
     const fields: string[] = [];
     const values: any[] = [];
     let idx = 1;
     const push = (col: string, val: any) => { fields.push(`${col}=$${idx++}`); values.push(val); };
 
-    if (payload.tipo !== undefined) push('tipo', payload.tipo);
+    if (payload.tipo_id !== undefined) push('tipo_id', payload.tipo_id);
     if (payload.serial !== undefined) push('serial', payload.serial);
     if (payload.marca !== undefined) push('marca', payload.marca);
     if (payload.modelo !== undefined) push('modelo', payload.modelo);
@@ -434,5 +460,12 @@ export default class DispositivosService {
     return rows[0];
   }
 
-  
+  async deletePeriferico(dispositivoId: number, perifericoId: number) {
+    await pool.query(
+      'DELETE FROM periferico WHERE dispositivo_id=$1 AND id=$2',
+      [dispositivoId, perifericoId]
+    );
+    return { ok: true };
+  }
+
 }

@@ -1,4 +1,5 @@
-import { pool } from '../db/pool';  
+// src/services/personas.service.ts
+import { pool } from '../db/pool';
 import { PersonaLite } from '../models/persona.model';
 
 export default class PersonasService {
@@ -16,11 +17,26 @@ export default class PersonasService {
     let idx = 1;
 
     let where = 'WHERE 1=1';
-    if (opts.q?.trim()) {
-      params.push(opts.q.trim());
-      // si tienes EXTENSION unaccent, cambia a: unaccent(p.nombre_completo) ILIKE '%'||unaccent($idx)||'%'
-      where += ` AND p.nombre_completo ILIKE '%'||$${idx++}||'%'`;
+
+    // Filtro por texto: nombre de persona, nombre de unidad o correo de persona
+    const q = (opts.q ?? '').trim();
+    if (q.length >= 2) {
+      params.push(q.toLowerCase());
+      const qParam = `$${idx}`;
+      where += `
+    AND (
+      LOWER(p.nombre_completo) LIKE '%'||${qParam}||'%'
+      OR LOWER(um.nombre)      LIKE '%'||${qParam}||'%'
+      OR EXISTS (
+        SELECT 1
+          FROM persona_correo pc
+         WHERE pc.persona_id = p.id
+           AND LOWER(pc.correo) LIKE '%'||${qParam}||'%'
+      )
+    )`;
+      idx++;
     }
+
     if (opts.unidad_medica_id) {
       params.push(opts.unidad_medica_id);
       where += ` AND p.unidad_medica_id = $${idx++}`;
@@ -28,15 +44,34 @@ export default class PersonasService {
 
     const sql = `
       SELECT p.id,
-             p.nombre_completo,
-             p.unidad_medica_id,
-             um.nombre AS unidad_medica,
-             COUNT(*) OVER() AS total
-        FROM persona p
-        LEFT JOIN unidad_medica um ON um.id = p.unidad_medica_id
-       ${where}
-       ORDER BY p.nombre_completo ASC
-       LIMIT ${pageSize} OFFSET ${offset}
+         p.nombre_completo,
+         p.unidad_medica_id,
+         um.nombre AS unidad_medica,
+         pe.email_principal,
+         pec.n_correos,
+         COUNT(*) OVER() AS total
+    FROM persona p
+    LEFT JOIN unidad_medica um ON um.id = p.unidad_medica_id
+
+    -- correo principal (el marcado es_principal, si no hay, toma el más nuevo por id)
+    LEFT JOIN LATERAL (
+      SELECT pc.correo AS email_principal
+        FROM persona_correo pc
+       WHERE pc.persona_id = p.id
+       ORDER BY pc.es_principal DESC, pc.id DESC
+       LIMIT 1
+    ) pe ON TRUE
+
+    -- conteo de correos
+    LEFT JOIN LATERAL (
+      SELECT COUNT(*)::int AS n_correos
+        FROM persona_correo pc2
+       WHERE pc2.persona_id = p.id
+    ) pec ON TRUE
+
+   ${where}
+   ORDER BY LOWER(p.nombre_completo) ASC
+   LIMIT ${pageSize} OFFSET ${offset}
     `;
 
     const { rows } = await pool.query(sql, params);
@@ -49,4 +84,25 @@ export default class PersonasService {
     }));
     return { items, page, pageSize, total };
   }
+
+  async byId(id: number) {
+    const p = await pool.query(`
+    SELECT p.id, p.nombre_completo, p.unidad_medica_id, um.nombre AS unidad_medica
+      FROM persona p
+      LEFT JOIN unidad_medica um ON um.id = p.unidad_medica_id
+     WHERE p.id = $1
+  `, [id]);
+
+    if (!p.rowCount) return null;
+
+    const correos = await pool.query(`
+    SELECT id, correo, es_principal
+      FROM persona_correo
+     WHERE persona_id = $1
+     ORDER BY es_principal DESC, id DESC
+  `, [id]);
+
+    return { ...p.rows[0], correos: correos.rows };
+  }
+
 }

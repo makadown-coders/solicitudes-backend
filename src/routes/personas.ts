@@ -9,5 +9,6 @@ const c = new PersonasController();
 
 // Conservamos el prefijo /api/ti/personas que ya usa el front
 router.get('/', requireAuth, requireRole('ADMIN_TIC','OPER_TIC'), c.list.bind(c));
+router.get('/:id', requireAuth, requireRole('ADMIN_TIC','OPER_TIC'), c.byId.bind(c));
 
 export default router;

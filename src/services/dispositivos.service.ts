@@ -122,15 +122,39 @@ export default class DispositivosService {
   }
 
   async create(payload: Dispositivo) {
-    const { unidad_medica_id, tipo_dispositivo_id, ip, conexion, serial, marca, modelo, observaciones } = payload;
-    const { rows } = await pool.query(
-      `INSERT INTO dispositivo
+    try {
+      const { unidad_medica_id, tipo_dispositivo_id, ip, conexion, serial, marca, modelo, observaciones } = payload;
+      const { rows } = await pool.query(
+        `INSERT INTO dispositivo
         (unidad_medica_id, tipo_dispositivo_id, ip, conexion, serial, marca, modelo, observaciones)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-      [unidad_medica_id ?? null, tipo_dispositivo_id, ip ?? null, conexion ?? null,
-      serial ?? null, marca ?? null, modelo ?? null, observaciones ?? null]
-    );
-    return rows[0];
+        [unidad_medica_id ?? null, tipo_dispositivo_id, ip ?? null, conexion ?? null,
+        serial ?? null, marca ?? null, modelo ?? null, observaciones ?? null]
+      );
+
+      const dispositivoId = rows[0].id;
+      console.log('Dispositivo creado con ID:', dispositivoId);
+      // Insertar nuevo asignacion_dispositivo vacío para indicar que está sin asignar
+      await pool.query(
+        `INSERT INTO asignacion_dispositivo
+           (dispositivo_id, persona_id, lugar_especifico, estado_dispositivo_id, fecha_asignacion, observaciones)
+         VALUES ($1,$2,$3,$4, COALESCE($5::timestamptz, NOW()), $6)
+         RETURNING id`,
+        [
+          +dispositivoId,
+          null,
+          'sin asignar',
+          3, // en resguardo
+          null,
+          'Dispositivo creado sin asignación inicial.'
+        ]
+      );
+
+      return rows[0];
+    } catch (e) {
+      console.error(e);
+      throw e;
+    }
   }
 
   /**

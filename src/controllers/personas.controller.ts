@@ -19,4 +19,15 @@ export default class PersonasController {
       res.status(500).json({ ok: false, error: 'Error al listar personas' });
     }
   };
+
+  byId = async (req: Request, res: Response) => {
+    try {
+      const id = Number(req.params.id);
+      const out = await this.svc.byId(id);
+      if (!out) return res.sendStatus(404);
+      res.json(out);
+    } catch (e) {
+      res.status(500).json({ ok: false, error: 'Error al obtener persona' });
+    }
+  };
 }

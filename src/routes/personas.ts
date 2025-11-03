@@ -11,4 +11,9 @@ const c = new PersonasController();
 router.get('/', requireAuth, requireRole('ADMIN_TIC','OPER_TIC'), c.list.bind(c));
 router.get('/:id', requireAuth, requireRole('ADMIN_TIC','OPER_TIC'), c.byId.bind(c));
 
+// Crear / Actualizar / Eliminar (para tu PersonasApiService)
+router.post('/', requireAuth, requireRole('ADMIN_TIC','OPER_TIC'), c.create.bind(c));
+router.put('/:id', requireAuth, requireRole('ADMIN_TIC','OPER_TIC'), c.update.bind(c));
+router.delete('/:id', requireAuth, requireRole('ADMIN_TIC','OPER_TIC'), c.softDelete.bind(c));
+
 export default router;

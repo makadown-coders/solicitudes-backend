@@ -1,3 +1,4 @@
+// src/models/UpdatePayload.ts
 export type UpdatePayload = {
     id: number;
     nombre_completo?: string | undefined;

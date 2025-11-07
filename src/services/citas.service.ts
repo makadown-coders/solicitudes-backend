@@ -5,13 +5,15 @@ import { pool } from '../db/pool';
 import { AxiosResponse } from 'axios';
 import { PowerAutomateResponse } from '../models/powerAutomateResponse.model';
 
+type OneOrMany = string | string[] | number[] | undefined | null;
+
 type SearchParams = {
   page?: string;            // 1..n
   limit?: string;           // 1..200
-  ejercicio?: string;       // 2025
+  ejercicio?: OneOrMany;       // 2025
   proveedor?: string;       // like
-  tipo_de_entrega?: string; // exact
-  estatus?: string;         // exact
+  tipo_de_entrega?: OneOrMany; // exact
+  estatus?: OneOrMany;         // exact
   clues?: string;           // exact
   unidad?: string;          // like
   clave?: string;           // clave_cnis exact
@@ -22,18 +24,38 @@ type SearchParams = {
   q?: string;               // texto libre
   orderBy?: string; // 'emitidas' | 'recibidas' | 'cumplimiento_pct' | 'ordenes' | 'proveedor' | 'clave_cnis'
   sort?: string;    // 'asc' | 'desc'
-  compra?: string;
+  compra?: OneOrMany;
 };
 
+
 function onlyEjercicio(p: SearchParams) {
-  // Únicamente ejercicio presente; ningún otro filtro/texto/fecha/flag
-  const { ejercicio, page, limit, orderBy, sort, ...rest } = p;
-  if (!ejercicio) return false;
+  const ejercicios = toIntArray(p.ejercicio);
+  if (ejercicios.length !== 1) return false;
+
+  const { page, limit, orderBy, sort, ejercicio, ...rest } = p;
   for (const k of Object.keys(rest)) {
     const v = (rest as any)[k];
     if (v !== undefined && v !== null && String(v).trim() !== '') return false;
   }
   return true;
+}
+
+function toArray(v: OneOrMany): string[] {
+  if (v == null) return [];
+  if (Array.isArray(v)) return v.map(x => String(x).trim()).filter(Boolean);
+  // CSV: "A,B,C"
+  return String(v).split(',').map(s => s.trim()).filter(Boolean);
+}
+
+function normTipoEntrega(v: string): string {
+  const s = (v || '').trim().toUpperCase();
+  if (s.includes('OPERADOR')) return 'Operador Logístico';
+  if (s.includes('ENTREGA')) return 'Entrega directa';
+  return v;
+}
+
+function toIntArray(v: OneOrMany): number[] {
+  return toArray(v).map(x => Number(x)).filter(n => Number.isFinite(n));
 }
 
 const allowedOrderColsProveedores = new Set(['emitidas', 'recibidas', 'cumplimiento_pct', 'ordenes', 'proveedor']);
@@ -158,70 +180,23 @@ export default class CitasService {
     const page = Math.max(Number(p.page ?? 1), 1);
     const ofs = (page - 1) * limit;
 
-    const wh: string[] = [];
     const args: any[] = [];
-    const push = (sql: string, val: any) => {
-      args.push(val);
-      wh.push(sql.replace(/\?/g, `$${args.length}`));
-    };
-
-    if (p.ejercicio) push('ejercicio = ?', Number(p.ejercicio));
-    if (p.proveedor) push('lower(proveedor) LIKE ?', `%${String(p.proveedor).toLowerCase()}%`);
-    if (p.tipo_de_entrega) push('tipo_de_entrega = ?', p.tipo_de_entrega);
-    if (p.estatus) push('estatus = ?', p.estatus);
-    if (p.clues) push('clues_destino = ?', p.clues);
-    if (p.unidad) push('lower(unidad) LIKE ?', `%${String(p.unidad).toLowerCase()}%`);
-    if (p.clave) push('clave_cnis = ?', p.clave);
-
-    if (p.recibido === 'true') wh.push('recibido = true');
-    if (p.recibido === 'false') wh.push('recibido = false');
-
-    // fecha exacta de recepción: 'YYYY-MM-DD' EN cualquiera de las fechas recibidas
-    if (p.fechaExacta) {
-      push('(?::date) = ANY(COALESCE(fecha_recepcion_lista, \'{}\'))', p.fechaExacta);
-    }
-
-    // rango por alguna de las fechas individuales recibidas
-    if (p.desde && p.hasta) {
-      // EXISTS sobre unnest del array (soporta N fechas por registro)
-      args.push(p.desde, p.hasta);
-      wh.push(`EXISTS (
-        SELECT 1 FROM unnest(COALESCE(fecha_recepcion_lista, '{}')) AS f
-        WHERE f BETWEEN $${args.length - 1} AND $${args.length}
-      )`);
-    } else if (p.desde) {
-      push('fecha_recepcion_max >= ?', p.desde);
-    } else if (p.hasta) {
-      push('fecha_recepcion_min <= ?', p.hasta);
-    }
-
-    if (p.q) {
-      const q = `%${String(p.q).toLowerCase()}%`;
-      // ojo con índices: limita a columnas razonables
-      args.push(q, q, q);
-      wh.push(`(
-        lower(orden_de_suministro) LIKE $${args.length - 2}
-        OR lower(descripcion)      LIKE $${args.length - 1}
-        OR lower(numero_de_remision) LIKE $${args.length}
-      )`);
-    }
-
-    const where = wh.length ? 'WHERE ' + wh.join(' AND ') : '';
+    const where = this.buildWhere(p, args);
 
     const sql = `
-      SELECT id, ejercicio, orden_de_suministro, institucion, contrato,
-             tipo_de_entrega, clues_destino, unidad, proveedor,
-             clave_cnis, descripcion, compra, tipo_de_red, tipo_de_insumo,
-             grupo_terapeutico, precio_unitario,
-             no_de_piezas_emitidas, pzas_recibidas_por_la_entidad,
-             fecha_emision, fecha_limite_de_entrega, fecha_de_cita,
-             fecha_recepcion_lista, fecha_recepcion_min, fecha_recepcion_max,
-             numero_de_remision, estatus, folio_abasto, recibido, atraso_dias
-      FROM public.citas
-      ${where}
-      ORDER BY fecha_de_cita NULLS LAST, id
-      LIMIT $${args.length + 1} OFFSET $${args.length + 2};
-    `;
+    SELECT id, ejercicio, orden_de_suministro, institucion, contrato,
+           tipo_de_entrega, clues_destino, unidad, proveedor,
+           clave_cnis, descripcion, compra, tipo_de_red, tipo_de_insumo,
+           grupo_terapeutico, precio_unitario,
+           no_de_piezas_emitidas, pzas_recibidas_por_la_entidad,
+           fecha_emision, fecha_limite_de_entrega, fecha_de_cita,
+           fecha_recepcion_lista, fecha_recepcion_min, fecha_recepcion_max,
+           numero_de_remision, estatus, folio_abasto, recibido, atraso_dias
+    FROM public.citas
+    ${where}
+    ORDER BY fecha_de_cita NULLS LAST, id
+    LIMIT $${args.length + 1} OFFSET $${args.length + 2};
+  `;
     const countSql = `SELECT COUNT(*)::bigint AS total FROM public.citas ${where};`;
 
     const [rows, count] = await Promise.all([
@@ -229,12 +204,7 @@ export default class CitasService {
       pool.query(countSql, args),
     ]);
 
-    return {
-      data: rows.rows,
-      total: Number(count.rows[0].total),
-      page,
-      limit
-    };
+    return { data: rows.rows, total: Number(count.rows[0].total), page, limit };
   }
 
   async statsResumen(qs: any) {
@@ -310,49 +280,9 @@ export default class CitasService {
     const p: SearchParams = qs;
     console.log('statsResumen_live called with params:', p);
     // Reusa la misma construcción de WHERE que en search()
-    const wh: string[] = [];
+    
     const args: any[] = [];
-    const push = (sql: string, val: any) => {
-      args.push(val);
-      wh.push(sql.replace(/\?/g, `$${args.length}`));
-    };
-
-    if (p.ejercicio) push('ejercicio = ?', Number(p.ejercicio));
-    if (p.proveedor) push('lower(proveedor) LIKE ?', `%${String(p.proveedor).toLowerCase()}%`);
-    if (p.tipo_de_entrega) push('tipo_de_entrega = ?', p.tipo_de_entrega);
-    if (p.estatus) push('estatus = ?', p.estatus);
-    if (p.clues) push('clues_destino = ?', p.clues);
-    if (p.unidad) push('lower(unidad) LIKE ?', `%${String(p.unidad).toLowerCase()}%`);
-    if (p.clave) push('clave_cnis = ?', p.clave);
-
-    if (p.recibido === 'true') wh.push('recibido = true');
-    if (p.recibido === 'false') wh.push('recibido = false');
-
-    if (p.fechaExacta) push('(?::date) = ANY(COALESCE(fecha_recepcion_lista, \'{}\'))', p.fechaExacta);
-
-    if (p.desde && p.hasta) {
-      args.push(p.desde, p.hasta);
-      wh.push(`EXISTS (
-        SELECT 1 FROM unnest(COALESCE(fecha_recepcion_lista, '{}')) AS f
-        WHERE f BETWEEN $${args.length - 1} AND $${args.length}
-      )`);
-    } else if (p.desde) {
-      push('fecha_recepcion_max >= ?', p.desde);
-    } else if (p.hasta) {
-      push('fecha_recepcion_min <= ?', p.hasta);
-    }
-
-    if (p.q) {
-      const q = `%${String(p.q).toLowerCase()}%`;
-      args.push(q, q, q);
-      wh.push(`(
-        lower(orden_de_suministro) LIKE $${args.length - 2}
-        OR lower(descripcion)      LIKE $${args.length - 1}
-        OR lower(numero_de_remision) LIKE $${args.length}
-      )`);
-    }
-
-    const where = wh.length ? `WHERE ${wh.join(' AND ')}` : '';
+    const where = this.buildWhere(p, args);
 
     // 🔸 Query 1: KPIs generales + rango fechas
     const sqlKpis = `
@@ -441,7 +371,7 @@ export default class CitasService {
     console.log('SQL Por Estatus:', sqlPorEstatus, 'ARGS:', args);
     console.log('SQL Por Tipo Entrega:', sqlPorTipoEntrega, 'ARGS:', args);
     console.log('SQL Cumplimiento:', sqlCumplimiento, 'ARGS:', args);
-    
+
 
     const [kpis, porEstatus, porTipo, cumplimiento] = await Promise.all([
       pool.query(sqlKpis, args),
@@ -479,10 +409,33 @@ export default class CitasService {
       wh.push(sql.replace(/\?/g, `$${args.length}`));
     };
 
-    if (p.ejercicio) push('ejercicio = ?', Number(p.ejercicio));
+    if (p.ejercicio) {
+      const ej = toIntArray(p.ejercicio);
+      if (ej.length === 1) {
+        push('ejercicio = ?', ej[0]);
+      } else if (ej.length > 1) {
+        // = ANY(int[])
+        push('ejercicio = ANY(?::int[])', ej);
+      }
+    }
     if (p.proveedor) push('lower(proveedor) LIKE ?', `%${String(p.proveedor).toLowerCase()}%`);
-    if (p.tipo_de_entrega) push('tipo_de_entrega = ?', p.tipo_de_entrega);
-    if (p.estatus) push('estatus = ?', p.estatus);
+    if (p.tipo_de_entrega) {
+      const tipos = toArray(p.tipo_de_entrega).map(normTipoEntrega);
+      if (tipos.length === 1) {
+        push('tipo_de_entrega = ?', tipos[0]);
+      } else if (tipos.length > 1) {
+        // exacto, case sensitive en BD; si quieres case-insensitive, usa LOWER(col) = ANY(lower[])
+        push('LOWER(tipo_de_entrega) = ANY(?::text[])', tipos.map(t => t.toLowerCase()));
+      }
+    }
+    if (p.estatus) {
+      const est = toArray(p.estatus);
+      if (est.length === 1) {
+        push('LOWER(estatus) = ?', est[0].toLowerCase());
+      } else if (est.length > 1) {
+        push('LOWER(estatus) = ANY(?::text[])', est.map(s => s.toLowerCase()));
+      }
+    }
     if (p.clues) push('clues_destino = ?', p.clues);
     if (p.unidad) push('lower(unidad) LIKE ?', `%${String(p.unidad).toLowerCase()}%`);
     if (p.clave) push('clave_cnis = ?', p.clave);
@@ -491,7 +444,14 @@ export default class CitasService {
     if (p.recibido === 'false') wh.push('recibido = false');
 
     if (p.fechaExacta) push('(?::date) = ANY(COALESCE(fecha_recepcion_lista, \'{}\'))', p.fechaExacta);
-    if (p.compra) push('compra = ?', p.compra);
+    if (p.compra) {
+      const compras = toArray(p.compra);
+      if (compras.length === 1) {
+        push('LOWER(compra) = ?', compras[0].toLowerCase());
+      } else if (compras.length > 1) {
+        push('LOWER(compra) = ANY(?::text[])', compras.map(c => c.toLowerCase()));
+      }
+    }
 
     if (p.desde && p.hasta) {
       args.push(p.desde, p.hasta);

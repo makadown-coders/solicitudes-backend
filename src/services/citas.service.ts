@@ -175,8 +175,9 @@ export default class CitasService {
   }
 
   async search(qs: any) {
+    console.log('CitasService.search called with params:', qs);
     const p: SearchParams = qs;
-    const limit = Math.min(Math.max(Number(p.limit ?? 50), 1), 200);
+    const limit = Math.min(Math.max(Number(p.limit ?? 50), 1), 10000);
     const page = Math.max(Number(p.page ?? 1), 1);
     const ofs = (page - 1) * limit;
 
@@ -209,10 +210,10 @@ export default class CitasService {
 
   async statsResumen(qs: any) {
     const p: SearchParams = qs;
-    console.log('statsResumen called with params:', p);
+    // console.log('statsResumen called with params:', p);
 
     if (onlyEjercicio(p)) {
-      console.log('statsResumen: onlyEjercicio');
+      // console.log('statsResumen: onlyEjercicio');
       // ⚡️ MV directa
       const { rows } = await pool.query(
         `SELECT * FROM public.mv_citas_resumen WHERE ejercicio = $1;`,
@@ -278,7 +279,7 @@ export default class CitasService {
 
   private async statsResumen_live(qs: any) {
     const p: SearchParams = qs;
-    console.log('statsResumen_live called with params:', p);
+    // console.log('statsResumen_live called with params:', p);
     // Reusa la misma construcción de WHERE que en search()
     
     const args: any[] = [];
@@ -366,11 +367,11 @@ export default class CitasService {
       FROM b;
     `;
     // poner en log cada query con sus args
-    console.log('statsResumen_live - SQL Queries:');
+    /*console.log('statsResumen_live - SQL Queries:');
     console.log('SQL KPIs:', sqlKpis, 'ARGS:', args);
     console.log('SQL Por Estatus:', sqlPorEstatus, 'ARGS:', args);
     console.log('SQL Por Tipo Entrega:', sqlPorTipoEntrega, 'ARGS:', args);
-    console.log('SQL Cumplimiento:', sqlCumplimiento, 'ARGS:', args);
+    console.log('SQL Cumplimiento:', sqlCumplimiento, 'ARGS:', args);*/
 
 
     const [kpis, porEstatus, porTipo, cumplimiento] = await Promise.all([

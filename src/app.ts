@@ -26,6 +26,7 @@ import estadoDispositivoRoutes from './routes/estadoDispositivo';
 import dispositivosRoutes from './routes/dispositivos';
 import asignacionesRoutes from './routes/asignaciones';
 import unidadMedicaTIRoutes from './routes/unidadMedica-ti';
+import balanceoRoutes from './routes/balanceo';
 
 import compression from 'compression';
 import { fetch, Headers } from 'undici';
@@ -72,6 +73,7 @@ app.use('/api/ti/personas', personaRoutes);
 app.use('/api/catalogos/tipos-periferico', tipoPerifericoRoutes);
 app.use('/api/catalogos/estados-dispositivo', estadoDispositivoRoutes);
 app.use('/api/dispositivos', dispositivosRoutes);
+app.use('/api/balanceo', balanceoRoutes);
 app.use('/api', asignacionesRoutes);
 
 app.listen(PORT, async () => {

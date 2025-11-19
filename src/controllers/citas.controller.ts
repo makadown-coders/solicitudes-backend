@@ -37,6 +37,16 @@ class CitasController {
     }
   }
 
+  async obtenerXClave(req: Request, res: Response) {
+    try {
+      const out = await this.citasService.obtenerXClave(req.query);
+      res.json(out);
+    } catch (err: any) {
+      console.error('GET /citas/xclave error:', err?.message, err?.stack);
+      res.status(500).json({ ok: false, error: 'xclave_failed', message: err?.message });
+    }
+  }
+
   async statsResumen(req: Request, res: Response) {
     try {
       const out = await this.citasService.statsResumen(req.query);

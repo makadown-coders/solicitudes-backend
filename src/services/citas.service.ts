@@ -23,8 +23,10 @@ type SearchParams = {
   hasta?: string;           // 'YYYY-MM-DD'
   q?: string;               // texto libre
   orderBy?: string; // 'emitidas' | 'recibidas' | 'cumplimiento_pct' | 'ordenes' | 'proveedor' | 'clave_cnis'
-  sort?: string;    // 'asc' | 'desc'
+  sort?: string;    // 'asc' | 'desc'  
   compra?: OneOrMany;
+  window_days?: number;
+  incluye_no_recibidas?: string;
 };
 
 
@@ -111,6 +113,7 @@ export default class CitasService {
         orden_de_suministro,
         institucion,
         contrato,
+        procedimiento,
         tipo_de_entrega,
         clues_destino,
         unidad,
@@ -142,6 +145,7 @@ export default class CitasService {
         NULLIF(x->>'orden_de_suministro',''),
         NULLIF(x->>'institucion',''),
         NULLIF(x->>'contrato',''),
+        NULLIF(x->>'procedimiento',''),
         NULLIF(x->>'tipo_de_entrega',''),
         NULLIF(x->>'clues_destino',''),
         NULLIF(x->>'unidad',''),
@@ -207,6 +211,65 @@ export default class CitasService {
 
     return { data: rows.rows, total: Number(count.rows[0].total), page, limit };
   }
+
+  async obtenerXClave(qs: any) {
+    const p: SearchParams = qs;
+    const clave = String(p.clave || '').trim().toUpperCase();
+
+    const windowDays = Number(p.window_days ?? 30);
+    const incluyeNoRec = String(p.incluye_no_recibidas ?? '1') === '1';
+    const desde = p.desde ? String(p.desde) : null;  // YYYY-MM-DD
+    const hasta = p.hasta ? String(p.hasta) : null;  // YYYY-MM-DD
+    const limit = Math.min(Number(p.limit ?? 200), 2000);
+
+    const params = [clave, windowDays, incluyeNoRec, desde, hasta, limit];
+
+    const sql = `
+    SELECT
+      c.id,
+      c.ejercicio,
+      c.orden_de_suministro,
+      c.procedimiento,
+      c.tipo_de_entrega,
+      c.unidad,
+      c.fte_fmto,
+      c.compra,
+      c.no_de_piezas_emitidas,
+      c.fecha_emision,
+      c.fecha_recepcion_lista,
+      c.fecha_limite_de_entrega,
+      c.fecha_de_cita,
+      c.estatus,
+      c.contrato,
+      c.grupo_terapeutico,
+      c.tipo_de_red,
+      c.tipo_de_insumo,
+      c.proveedor
+    FROM public.citas c
+    WHERE c.clave_cnis = $1
+      AND (
+           c.fecha_limite_de_entrega >= (CURRENT_DATE - ($2::int || ' days')::interval)
+        OR c.fecha_recepcion_max     >= (CURRENT_DATE - ($2::int || ' days')::interval)
+      )
+      AND (
+           (c.fecha_recepcion_max IS NOT NULL
+             AND c.fecha_recepcion_max >= (CURRENT_DATE - ($2::int || ' days')::interval))
+           OR ($3::boolean = true AND c.fecha_recepcion_max IS NULL)
+      )
+      AND ($4::date IS NULL OR c.fecha_recepcion_max >= $4::date)
+      AND ($5::date IS NULL OR c.fecha_recepcion_min <= $5::date)
+    ORDER BY COALESCE(c.fecha_recepcion_max, c.fecha_limite_de_entrega) DESC, c.id DESC
+    LIMIT $6
+  `;
+
+    const { rows } = await pool.query(sql, params);
+
+    // referencia para pintar datos generales de la clave
+    const citaRef = rows[0] ?? null;
+
+    return { ok: true, rows, ref: citaRef };
+  }
+
 
   async statsResumen(qs: any) {
     const p: SearchParams = qs;
@@ -281,7 +344,7 @@ export default class CitasService {
     const p: SearchParams = qs;
     // console.log('statsResumen_live called with params:', p);
     // Reusa la misma construcción de WHERE que en search()
-    
+
     const args: any[] = [];
     const where = this.buildWhere(p, args);
 

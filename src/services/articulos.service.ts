@@ -37,6 +37,28 @@ class ArticulosService {
 
     return { resultados, total };
   }
+
+
+  async buscarAll(): Promise<{ resultados: Articulo[]; total: number }> {
+    const db = await this.getDatabase();
+
+    const sqlQuery = `
+      SELECT clave, descripcion, presentacion
+      FROM ARTICULOS
+    `;
+
+    const sqlCount = `
+      SELECT COUNT(*) as count
+      FROM ARTICULOS
+    `;
+
+    const resultados: Articulo[] = await db.all(sqlQuery);
+    const totalResult = await db.get<{ count: number }>(sqlCount);
+    const total = totalResult?.count ?? 0;
+
+    return { resultados, total };
+  }
+
 }
 
 export default ArticulosService;

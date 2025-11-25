@@ -202,6 +202,9 @@ export default class CitasService {
     ORDER BY fecha_de_cita NULLS LAST, id
     LIMIT $${args.length + 1} OFFSET $${args.length + 2};
   `;
+  console.log('--------------------------------------------');
+  console.log('CitasService.search - SQL:', sql, 'ARGS:', args);
+  console.log('--------------------------------------------');
     const countSql = `SELECT COUNT(*)::bigint AS total FROM public.citas ${where};`;
 
     const [rows, count] = await Promise.all([
@@ -505,7 +508,7 @@ export default class CitasService {
     if (p.clave) push('clave_cnis = ?', p.clave);
 
     if (p.recibido === 'true') wh.push('recibido = true');
-    if (p.recibido === 'false') wh.push('recibido = false');
+    if (p.recibido === 'false') wh.push('((recibido = false and estatus <> \'No recibir\') OR estatus = \'Incompleto\')');
 
     if (p.fechaExacta) push('(?::date) = ANY(COALESCE(fecha_recepcion_lista, \'{}\'))', p.fechaExacta);
     if (p.compra) {

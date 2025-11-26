@@ -106,6 +106,7 @@ export default class CitasService {
 );
  */
   async batch(rows: Cita[]) {
+
     if (!rows?.length) return { inserted: 0 };
     const sql = `
       INSERT INTO public.citas (
@@ -180,6 +181,10 @@ export default class CitasService {
 
   async search(qs: any) {
     console.log('CitasService.search called with params:', qs);
+
+    const { rows: timeout } = await pool.query('SHOW statement_timeout;');
+    console.log('statement_timeout backend:', timeout[0].statement_timeout);
+    
     const p: SearchParams = qs;
     const limit = Math.min(Math.max(Number(p.limit ?? 50), 1), 10000);
     const page = Math.max(Number(p.page ?? 1), 1);
@@ -202,9 +207,9 @@ export default class CitasService {
     ORDER BY fecha_de_cita NULLS LAST, id
     LIMIT $${args.length + 1} OFFSET $${args.length + 2};
   `;
-  console.log('--------------------------------------------');
-  console.log('CitasService.search - SQL:', sql, 'ARGS:', args);
-  console.log('--------------------------------------------');
+    console.log('--------------------------------------------');
+    console.log('CitasService.search - SQL:', sql, 'ARGS:', args);
+    console.log('--------------------------------------------');
     const countSql = `SELECT COUNT(*)::bigint AS total FROM public.citas ${where};`;
 
     const [rows, count] = await Promise.all([

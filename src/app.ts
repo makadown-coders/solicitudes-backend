@@ -1,3 +1,4 @@
+// src/app.ts
 import './setup/env';
 import express from 'express';
 import cors from 'cors';
@@ -18,11 +19,14 @@ import rdlsRoutes from './routes/rdls';
 import authRoutes from './routes/auth';
 import configRoutes from './routes/solicitudes-config';
 import existenciasRoutes from './routes/existencias';
+import personaRoutes from './routes/personas';
 import tipoDispositivoRoutes from './routes/tipoDispositivo';
+import tipoPerifericoRoutes from './routes/tipoPeriferico';
 import estadoDispositivoRoutes from './routes/estadoDispositivo';
 import dispositivosRoutes from './routes/dispositivos';
 import asignacionesRoutes from './routes/asignaciones';
 import unidadMedicaTIRoutes from './routes/unidadMedica-ti';
+import balanceoRoutes from './routes/balanceo';
 
 import compression from 'compression';
 import { fetch, Headers } from 'undici';
@@ -65,8 +69,11 @@ app.use('/api/auth', authRoutes);
 app.use('/api/solicitudes-config', configRoutes);
 app.use('/api/existencias-temp', existenciasRoutes);
 app.use('/api/catalogos/tipos-dispositivo', tipoDispositivoRoutes);
+app.use('/api/ti/personas', personaRoutes);
+app.use('/api/catalogos/tipos-periferico', tipoPerifericoRoutes);
 app.use('/api/catalogos/estados-dispositivo', estadoDispositivoRoutes);
 app.use('/api/dispositivos', dispositivosRoutes);
+app.use('/api/balanceo', balanceoRoutes);
 app.use('/api', asignacionesRoutes);
 
 app.listen(PORT, async () => {

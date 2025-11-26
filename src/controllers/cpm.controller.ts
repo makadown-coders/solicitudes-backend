@@ -88,6 +88,22 @@ class CpmController {
       res.status(400).json({ error: e?.message || 'Bad request' });
     }
   };
+
+  /** GET /api/cpms/rutas-salud-claves?kits=KIT_180,KIT_96,... */
+  rutasSaludClaves: RequestHandler = async (req, res) => {
+    try {
+      const kitsParam = (req.query.kits as string | undefined) ?? '';
+      const kits = kitsParam
+        ? kitsParam.split(',').map(k => k.trim()).filter(Boolean)
+        : undefined;
+
+      const claves = await this.service.getRutasSaludClaves(kits);
+      res.json({ count: claves.length, claves });
+    } catch (e: any) {
+      console.error('Error en rutasSaludClaves:', e);
+      res.status(400).json({ error: e?.message || 'Bad request' });
+    }
+  };
 }
 
 export default CpmController;

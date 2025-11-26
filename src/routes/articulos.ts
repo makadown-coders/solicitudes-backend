@@ -6,5 +6,6 @@ const router = express.Router();
 const articulosController = new ArticulosController();
 
 router.get('/', articulosController.buscarArticulos.bind(articulosController));
+router.get('/all', articulosController.buscarArticulosAll.bind(articulosController));
 
 export default router;

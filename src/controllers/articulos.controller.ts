@@ -25,6 +25,17 @@ class ArticulosController {
       res.status(500).json({ error: 'Error del servidor' });
     }
   }
+
+  async buscarArticulosAll(req: Request, res: Response): Promise<void> {    
+
+    try {
+      const { resultados, total } = await this.articulosService.buscarAll();
+      res.json({ resultados, total });
+    } catch (error: any) {
+      console.error('Error al buscar artículos:', error);
+      res.status(500).json({ error: 'Error del servidor' });
+    }
+  }
 }
 
 export default ArticulosController;

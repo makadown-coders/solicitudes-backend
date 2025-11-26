@@ -4,7 +4,7 @@ import { signAccessToken } from '../auth/jwt';
 import { pool } from '../db/pool';
 
 export default class LocalAuthService {
-  
+
   /**
    * Loguea un usuario con email y password.
    * @param {string} email - Email del usuario.
@@ -18,19 +18,10 @@ export default class LocalAuthService {
     if (!user) throw new Error('Invalid credentials');
     const ok = await argon2.verify(user.password_hash, password);
     if (!ok) throw new Error('Invalid credentials');
-    const rolesRes = await pool.query(
-      `SELECT r.code, ur.scope_type, ur.scope_id
-       FROM public.app_user_roles ur
-       JOIN public.app_roles r ON r.id = ur.role_id
-       WHERE ur.user_id=$1`,
-      [user.id]
-    );
-    // const roles = rolesRes.rows.map((r: any) => ({ code: r.code, scope: r.scope_type, id: r.scope_id }));
-    const roles = rolesRes.rows.map((r: any) => ({
-      code: r.code,
-      scope: r.scope_type,
-      id: r.scope_id === '*' ? null : r.scope_id, // ocultamos el sentinela
-    }));
+
+    const { roles } = await this.getUserWithRoles(user.id);
+
+    console.log('Roles antes de firmar token:', roles);
     const access_token = await signAccessToken({ sub: user.id, email: user.email, name: user.name, roles });
 
     // refresh opaco guardado con hash
@@ -44,6 +35,7 @@ export default class LocalAuthService {
       [jti, user.id, hashed, null, null, String(days)]
     );
     const refresh_token = `${jti}.${raw}`;
+    console.log('Roles incluidos en token:', roles);
     return { access_token, refresh_token, user: { id: user.id, email: user.email, name: user.name, roles } };
   }
 
@@ -93,11 +85,20 @@ export default class LocalAuthService {
 
       await pool.query('COMMIT');
 
-      // 4) Emite nuevo access
-      const u = await pool.query('SELECT id, email, name FROM public.app_users WHERE id=$1', [rec.user_id]);
-      const user = u.rows[0];
-      const access_token = await signAccessToken({ sub: user.id, email: user.email, name: user.name });
-      return { access_token, refresh_token: `${newJti}.${newRaw}` };
+      // 4) Emite nuevo access **con roles**
+      const { user, roles } = await this.getUserWithRoles(rec.user_id);
+
+      const access_token = await signAccessToken({
+        sub: user.id,
+        email: user.email,
+        name: user.name,
+        roles, // 👈 vuelve a viajar en el JWT
+      });
+
+      return {
+        access_token, refresh_token: `${newJti}.${newRaw}`,
+        user: { id: user.id, email: user.email, name: user.name, roles }
+      };
     } catch (e) {
       await pool.query('ROLLBACK');
       throw e;
@@ -112,11 +113,18 @@ export default class LocalAuthService {
    * @throws {Error} - Si el usuario no existe.
    */
   async me(user_id: string) {
-    const u = await pool.query('SELECT id, email, name, status FROM public.app_users WHERE id=$1', [user_id]);
-    const user = u.rows[0];
+    const { user, roles } = await this.getUserWithRoles(user_id);
     if (!user) throw new Error('not found');
     // TODO: puedes enriquecer con roles y scopes
-    return { profile: { id: user.id, email: user.email, name: user.name, status: user.status } };
+    return {
+      profile: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        status: user.status, // si la columna existe en app_users
+        roles,                // 👈 útil para el front
+      }
+    };
   }
 
   /**
@@ -159,5 +167,26 @@ export default class LocalAuthService {
   async logoutAll(user_id: string) {
     await pool.query('UPDATE public.app_refresh_tokens SET revoked_at=now() WHERE user_id=$1', [user_id]);
     return { ok: true };
+  }
+
+  async getUserWithRoles(userId: string) {
+    const u = await pool.query('SELECT id, email, name FROM public.app_users WHERE id=$1', [userId]);
+    const user = u.rows[0];
+    if (!user) throw new Error('user not found');
+
+    const rolesRes = await pool.query(
+      `SELECT r.code, ur.scope_type, ur.scope_id
+       FROM public.app_user_roles ur
+       JOIN public.app_roles r ON r.id = ur.role_id
+      WHERE ur.user_id=$1`,
+      [user.id]
+    );
+    const roles = rolesRes.rows.map((r: any) => ({
+      code: r.code,
+      scope: r.scope_type,
+      id: r.scope_id === '*' ? null : r.scope_id,
+    }));
+
+    return { user, roles };
   }
 }

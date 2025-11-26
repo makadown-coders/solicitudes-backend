@@ -1,3 +1,4 @@
+// src/routes/cpm.ts
 import express from 'express';
 import CpmController from '../controllers/cpm.controller';
 
@@ -22,6 +23,7 @@ router.get('/by-unidad-all', controller.byUnidadAll.bind(controller));
 // Edición
 router.patch('/', controller.upsertOne.bind(controller));
 router.post('/batch', controller.upsertBatch.bind(controller));
+router.get('/rutas-salud-claves', controller.rutasSaludClaves.bind(controller));
 /**
  * Ejemplos:
  *   /api/cpms/by-unidad?cluesimb=BCIMB001656

@@ -4,6 +4,7 @@ import axios from 'axios';
 import { pool } from '../db/pool';
 import { AxiosResponse } from 'axios';
 import { PowerAutomateResponse } from '../models/powerAutomateResponse.model';
+import { CitaSlimInventario } from '../models/CitaSlimInventario';
 
 type OneOrMany = string | string[] | number[] | undefined | null;
 
@@ -184,7 +185,7 @@ export default class CitasService {
 
     const { rows: timeout } = await pool.query('SHOW statement_timeout;');
     console.log('statement_timeout backend:', timeout[0].statement_timeout);
-    
+
     const p: SearchParams = qs;
     const limit = Math.min(Math.max(Number(p.limit ?? 50), 1), 10000);
     const page = Math.max(Number(p.page ?? 1), 1);
@@ -785,5 +786,28 @@ export default class CitasService {
       console.log('🔁 Procesando fila:', fila);
     }
     return null;
+  }
+
+  /**
+   * Auxiliar para obtener compacto de relacion de claves con existencias (lote no nulo)
+   * contiene: clave_cnis, lote, precio_unitario, orden_de_suministro, fte_fmto, proveedor
+   * @returns 
+   */
+  async getSlimParaExistencias() {
+    const sql = `
+      SELECT DISTINCT
+        c.clave_cnis,
+        TRIM(COALESCE(c.lote, '')) AS lote,
+        c.precio_unitario,
+        c.orden_de_suministro,
+        c.fte_fmto,
+        c.proveedor
+      FROM public.citas c
+      WHERE c.clave_cnis IS NOT NULL
+        AND c.lote IS NOT NULL
+        AND TRIM(c.lote) <> '';
+    `;
+    const { rows } = await pool.query<CitaSlimInventario>(sql);
+    return { ok: true, total: rows.length, rows };
   }
 }

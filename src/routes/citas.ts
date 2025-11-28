@@ -15,6 +15,7 @@ router.get('/stats/cumplimiento-claves', controller.statsCumplimientoClaves.bind
 // 🔹 Refrescar materialized views
 router.post('/stats/refresh-mv', controller.refreshMaterializedViews.bind(controller));
 router.get('/xclave', controller.obtenerXClave.bind(controller));
+router.get('/slim-existencia', controller.getSlimParaExistencias.bind(controller));
 
 // en vias de deprecación
 router.get('/full', controller.obtenerDesdePowerAutomate64.bind(controller));

@@ -65,4 +65,15 @@ export default class ExistenciasController {
             res.status(500).json({ error: 'get_by_unidad_full_failed', detail: e?.message });
         }
     };
+
+    /** NUEVO: GET /api/existencias-temp/almacenes-full */
+    getAlmacenesFull = async (req: Request, res: Response) => {
+        try {
+            // no necesita parametros 
+            const rows = await this.svc.getAlmacenesFull();
+            res.json({ rows });
+        } catch (e: any) {
+            res.status(500).json({ error: 'almacenes_full_failed', detail: e?.message });
+        }
+    };
 }

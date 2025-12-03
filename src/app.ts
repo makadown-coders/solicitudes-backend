@@ -27,6 +27,10 @@ import dispositivosRoutes from './routes/dispositivos';
 import asignacionesRoutes from './routes/asignaciones';
 import unidadMedicaTIRoutes from './routes/unidadMedica-ti';
 import balanceoRoutes from './routes/balanceo';
+import kitsRoutes from './routes/kits';
+import kitsClavesRoutes from './routes/kits-claves';
+import kitsUnidadesRoutes from './routes/kits-unidades';
+import unidadesKitsRoutes from './routes/unidades-kits';
 
 import compression from 'compression';
 import { fetch, Headers } from 'undici';
@@ -74,6 +78,11 @@ app.use('/api/catalogos/tipos-periferico', tipoPerifericoRoutes);
 app.use('/api/catalogos/estados-dispositivo', estadoDispositivoRoutes);
 app.use('/api/dispositivos', dispositivosRoutes);
 app.use('/api/balanceo', balanceoRoutes);
+app.use('/api/kits', kitsRoutes);
+app.use('/api/kits/:kitId/claves', kitsClavesRoutes);
+app.use('/api/kits/:kitId/unidades', kitsUnidadesRoutes);
+app.use('/api/unidades-kits', unidadesKitsRoutes);
+
 app.use('/api', asignacionesRoutes);
 
 app.listen(PORT, async () => {

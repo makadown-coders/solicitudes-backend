@@ -1,23 +1,37 @@
 import { pool } from '../db/pool';
-import { UnidadAsignadaRow } from '../models/UnidadAsignadaRow';
+import { UnidadMedicaDetalle } from '../models/unidadMedica.model';
+
 
 export default class UnidadMedicaKitsService {
 
   /** Unidades asignadas a un kit (para tu UI principal) */
-  async getUnidadesByKit(kitId: number): Promise<UnidadAsignadaRow[]> {
+  async getUnidadesByKit(kitId: number): Promise<UnidadMedicaDetalle[]> {
+
     const sql = `
       SELECT
-        um.id          AS unidad_medica_id,
+        um.id,
+        um.cluessa,
         um.cluesimb,
-        um.nombre      AS nombre
+        um.nombre_municipio,
+        um.nombre_localidad,
+        um.nombre_tipologia,
+        um.es_segundo_nivel,
+        um.nombre_de_unidad,
+        um.tipo_unidad,
+        um.alias_sas,
+        um.direccion,
+        um.latitud,
+        um.longitud,
+        um.estrato_unidad,
+        um.nivel_atencion
       FROM public.unidad_medica_kit umk
-      JOIN public.unidad_medica um
+      JOIN public.v_unidad_medica_detalle um
         ON um.id = umk.unidad_medica_id
       WHERE umk.kit_id = $1
       ORDER BY um.cluesimb;
     `;
     const { rows } = await pool.query(sql, [kitId]);
-    return rows as UnidadAsignadaRow[];
+    return rows as UnidadMedicaDetalle[];
   }
 
   /**

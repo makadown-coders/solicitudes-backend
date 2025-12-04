@@ -15,8 +15,8 @@ class UnidadMedicaKitsController {
                 return res.status(400).json({ ok: false, msg: 'kitId requerido' });
             }
 
-            const unidades = await this.service.getUnidadesByKit(kitId);
-            res.json({ ok: true, unidades });
+            const rows = await this.service.getUnidadesByKit(kitId);
+            res.json({ ok: true, rows });
         } catch (error: any) {
             console.error('❌ Error en getUnidadesByKit:', error);
             res.status(500).json({ error: 'Error al obtener las unidades del kit' });
@@ -50,8 +50,8 @@ class UnidadMedicaKitsController {
                 return res.status(400).json({ ok: false, msg: 'unidadId requerido' });
             }
 
-            const kits = await this.service.getKitsByUnidad(unidadId);
-            res.json({ ok: true, kits });
+            const rows = await this.service.getKitsByUnidad(unidadId);
+            res.json({ ok: true, rows });
         } catch (error: any) {
             console.error('❌ Error en getKitsByUnidad:', error);
         }

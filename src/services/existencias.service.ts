@@ -125,7 +125,7 @@ export default class ExistenciasService {
    * @returns Un array de objetos con los campos de la existencia (fuente, clave_cnis, alias_sas, cluessa, clave_cnis, lote, fecha_caducidad, existencia)
    */
   async getByUnidadFull(cluesimb: string): Promise<TemporalExistenciaRow[]> {
-    console.info('Cargando Existencias de la unidad ', cluesimb );
+    console.info('Cargando Existencias de la unidad ', cluesimb);
     const key = (cluesimb || '').trim().toUpperCase();
     if (!key) return [];
 
@@ -145,6 +145,34 @@ export default class ExistenciasService {
     `;
 
     const { rows } = await pool.query(sql, [key]);
+    return rows as TemporalExistenciaRow[];
+  }
+
+  /**
+   * Devuelve TODAS las existencias de los ALMACENES (AZM, AZT, AZE, etc.)
+   * a partir de tmp_existencias + v_unidad_medica_detalle.
+   *
+   * Solo incluye registros con existencia > 0
+   */
+  async getAlmacenesFull(): Promise<TemporalExistenciaRow[]> {
+    const sql = `
+      SELECT
+        t.fuente,
+        t.alias_sas,
+        t.cluessa,
+        t.cluesimb,
+        t.clave_cnis,
+        t.lote,
+        t.fecha_caducidad,
+        t.existencia
+      FROM public.tmp_existencias t
+      INNER JOIN public.v_unidad_medica_detalle vumd
+        ON vumd.cluesimb = t.cluesimb
+      WHERE vumd.tipo_unidad = 'ALMACENES'
+        AND t.existencia > 0;
+    `;
+
+    const { rows } = await pool.query(sql);
     return rows as TemporalExistenciaRow[];
   }
 

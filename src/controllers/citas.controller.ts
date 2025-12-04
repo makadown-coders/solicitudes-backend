@@ -1,6 +1,7 @@
 // src/controllers/citas.controller.ts
 import { Request, Response } from 'express';
 import CitasService from '../services/citas.service';
+import { CitaSlimInventario } from '../models/CitaSlimInventario';
 
 class CitasController {
   private citasService = new CitasService();
@@ -114,6 +115,21 @@ class CitasController {
     }
   }
 
+  /**
+   * Regresa un 
+   * @returns { data: { ok: boolean , total: number, rows: CitaSlimInventario[] } }
+   * @param req 
+   * @param res 
+   */
+  async getSlimParaExistencias(req: Request, res: Response): Promise<void> {
+    try {
+      const data = await this.citasService.getSlimParaExistencias();
+      res.json({ data });
+    } catch (error: any) {
+      console.error('❌ Error en getSlimParaExistencias:', error);
+      res.status(500).json({ error: 'Error al obtener citas slim para existencias' });
+    }
+  }
 }
 
 export default CitasController;

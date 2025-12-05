@@ -29,6 +29,7 @@ import unidadMedicaTIRoutes from './routes/unidadMedica-ti';
 import balanceoRoutes from './routes/balanceo';
 import kitsRoutes from './routes/kits';
 import kitsClavesRoutes from './routes/kits-claves';
+import kitsClavesByCodigoRoutes from './routes/kits-claves-by-codigo';
 import kitsUnidadesRoutes from './routes/kits-unidades';
 import unidadesKitsRoutes from './routes/unidades-kits';
 
@@ -80,6 +81,8 @@ app.use('/api/dispositivos', dispositivosRoutes);
 app.use('/api/balanceo', balanceoRoutes);
 app.use('/api/kits', kitsRoutes);
 app.use('/api/kits/:kitId/claves', kitsClavesRoutes);
+app.use('/api/kits/:codigo/clavesByCodigo', kitsClavesByCodigoRoutes);
+
 app.use('/api/kits/:kitId/unidades', kitsUnidadesRoutes);
 app.use('/api/unidades-kits', unidadesKitsRoutes);
 

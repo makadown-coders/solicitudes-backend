@@ -48,6 +48,21 @@ class KitsClavesController {
         }
     }
 
+    listByCodigo = async (req: Request, res: Response) => {
+        try {
+            const codigo = req.params.codigo;
+            if (!codigo) {
+                return res.status(400).json({ ok: false, msg: 'código requerido' });
+            }
+
+            const rows = await this.kitsClavesService.listByCodigo(codigo);
+            res.json({ ok: true, rows });
+        } catch (error: any) {
+            console.error('❌ Error en listByCodigo:', error);
+            res.status(500).json({ error: 'Error al listar las claves del kit' });
+        }
+    }
+
 }
 
 export default KitsClavesController;

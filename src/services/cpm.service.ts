@@ -204,12 +204,19 @@ class CPMService {
             ? kits
             : ['KIT_180', 'KIT_96', 'KIT_920', 'KIT_147'];
 
-        const sql = `
+       /* const sql = `
       SELECT DISTINCT v.clave_cnis
       FROM public.v_unidad_kit_claves_expected_vs_cpm v
       WHERE v.en_cpm = true
         AND v.kit_codigo = ANY($1::text[])
       ORDER BY v.clave_cnis
+    `;*/
+
+        const sql = `
+      SELECT DISTINCT v.clave as clave_cnis
+      FROM public.kit_clave v
+      WHERE v.kit_id in (select k.id from kit k where k.codigo = ANY($1::text[]))
+      ORDER BY v.clave
     `;
 
         const { rows } = await pool.query<{ clave_cnis: string }>(sql, [kitsFiltro]);

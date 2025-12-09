@@ -13,6 +13,18 @@ export default class KitsClavesService {
     return rows as KitClaveRow[];
   }
 
+  async listByCodigo(codigo: string): Promise<KitClaveRow[]> {
+    const sql = `
+      SELECT kc.id, kc.kit_id, kc.clave, kc.aplica
+      FROM public.kit_clave kc
+      JOIN public.kit k ON k.id = kc.kit_id
+      WHERE k.codigo = $1
+      ORDER BY kc.clave;
+    `;
+    const { rows } = await pool.query(sql, [codigo]);
+    return rows as KitClaveRow[];
+  }
+
   async addClave(kitId: number, clave: string, aplica = true): Promise<KitClaveRow> {
     const sql = `
       INSERT INTO public.kit_clave (kit_id, clave, aplica)

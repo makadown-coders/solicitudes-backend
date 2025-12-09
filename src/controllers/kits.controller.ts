@@ -62,6 +62,15 @@ class KitsController {
         }
     }
 
+    async getMatrixRows(req: Request, res: Response): Promise<void> {
+        try {
+            const rows = await this.kitsService.getMatrixRows();
+            res.json({ ok: true, rows });
+        } catch (error: any) {
+            console.error('❌ Error en getMatrixRows:', error);
+            res.status(500).json({ error: 'Error al obtener las filas de la matriz' });
+        }
+    }
 }
 
 export default KitsController

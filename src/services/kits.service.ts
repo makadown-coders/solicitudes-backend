@@ -224,4 +224,21 @@ export default class KitsService {
       client.release();
     }
   }
+
+  /**
+   * Devuelve la “matriz base”:
+   * una fila por combinación (kit_codigo, clave)
+   */
+  async getMatrixRows(): Promise<KitMatrixRow[]> {
+    const sql = `
+      SELECT
+        upper(trim(k.codigo)) AS kit_codigo,
+        upper(trim(kc.clave)) AS clave
+      FROM public.kit k
+      JOIN public.kit_clave kc ON kc.kit_id = k.id
+      ORDER BY k.codigo, kc.clave;
+    `;
+    const { rows } = await pool.query(sql);
+    return rows as KitMatrixRow[];
+  }
 }

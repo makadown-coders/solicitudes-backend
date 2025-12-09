@@ -17,6 +17,8 @@ router.put('/:id', controller.updateKit.bind(controller));
 router.delete('/:id', controller.deleteKit.bind(controller));
 // masivo (todos los kits en una matriz)
 router.post('/import-matrix', bulkController.importMatrix.bind(bulkController));
+// GET /api/kits/matrix
+router.get('/matrix', controller.getMatrixRows.bind(controller));
 // por kit
 router.post('/import-one', bulkController.importSingle.bind(bulkController));
 

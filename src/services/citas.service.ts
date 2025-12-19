@@ -197,7 +197,7 @@ export default class CitasService {
     const sql = `
     SELECT id, ejercicio, orden_de_suministro, institucion, contrato,
            tipo_de_entrega, clues_destino, unidad, proveedor,
-           clave_cnis, descripcion, compra, tipo_de_red, tipo_de_insumo,
+           clave_cnis, '' as descripcion, compra, tipo_de_red, tipo_de_insumo,
            grupo_terapeutico, precio_unitario,
            no_de_piezas_emitidas, pzas_recibidas_por_la_entidad,
            fecha_emision, fecha_limite_de_entrega, fecha_de_cita,

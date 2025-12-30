@@ -15,8 +15,9 @@ class TrazabilidadService {
         return (rows[0]?.nombre_tipo || '').toUpperCase() === 'ALMACENES';
     }
 
-    private async obtenerFactorConversion(clave: string, cluesimb: string): 
-                                        Promise<{ aplicar: boolean; factor: number }> {
+
+    private async obtenerFactorConversion(clave: string, cluesimb: string):
+        Promise<{ aplicar: boolean; factor: number }> {
         const { rows } = await pool.query(
             ` SELECT 
         f.en_dispensacion as en_dispensacion,
@@ -199,9 +200,9 @@ class TrazabilidadService {
             if (!esModalDeAlmacen && aplicarFC && factor !== 1) {
                 final = resultados.map((m) => {
                     const esEntradaOTR = m.tipo_movimiento === 'entrada' || m.tipo_movimiento === 'traspaso';
-                   /* const vieneDeAlmacen =
-                        m._origen_es_almacen === true ||
-                        (m.tipo_movimiento === 'entrada' && (m.proveedor || '').toUpperCase().includes('ALMACEN'));*/
+                    /* const vieneDeAlmacen =
+                         m._origen_es_almacen === true ||
+                         (m.tipo_movimiento === 'entrada' && (m.proveedor || '').toUpperCase().includes('ALMACEN'));*/
                     if (esEntradaOTR /*&& vieneDeAlmacen*/) {
                         return { ...m, cantidad: Number(m.cantidad) * factor };
                     }
@@ -424,6 +425,28 @@ class TrazabilidadService {
             console.error('Query:', currentQuery);
             throw error;
         }
+    }
+
+    /* Crear un metodo para obtener TODOS los factores de conversion con en_dispensacion = 1, es decir:
+    SELECT clave, en_dispensacion, cantidad_fc, cluesimb
+    FROM public.factores_conversion
+    where en_dispensacion = 1;
+    */
+    async obtenerTodosFactoresConversion(): Promise<Map<string, { cluesimb: string; factor: number }>> {
+        const { rows } = await pool.query(
+            ` SELECT 
+        f.clave,
+        f.en_dispensacion as en_dispensacion,
+        COALESCE(f.cantidad_fc, 1) AS cantidad_fc,
+        um.cluesimb
+      FROM factores_conversion f
+      JOIN unidad_medica um ON um.cluesimb  = f.cluesimb
+      WHERE f.en_dispensacion = 1`
+        );
+        return rows.reduce((map, row) => {
+            map.set(row.clave, { cluesimb: row.cluesimb, factor: Number(row.cantidad_fc) });
+            return map;
+        }, new Map<string, { cluesimb: string; factor: number }>());
     }
 }
 

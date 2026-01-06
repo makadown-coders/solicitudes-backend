@@ -32,6 +32,7 @@ import kitsClavesRoutes from './routes/kits-claves';
 import kitsClavesByCodigoRoutes from './routes/kits-claves-by-codigo';
 import kitsUnidadesRoutes from './routes/kits-unidades';
 import unidadesKitsRoutes from './routes/unidades-kits';
+import cargaMasivaCpmKitsRoutes from './routes/cargaMasivaCpmKits';
 
 import compression from 'compression';
 import { fetch, Headers } from 'undici';
@@ -82,7 +83,7 @@ app.use('/api/balanceo', balanceoRoutes);
 app.use('/api/kits', kitsRoutes);
 app.use('/api/kits/:kitId/claves', kitsClavesRoutes);
 app.use('/api/kits/:codigo/clavesByCodigo', kitsClavesByCodigoRoutes);
-
+app.use('/api/carga-masiva/cpm-kits', cargaMasivaCpmKitsRoutes);
 app.use('/api/kits/:kitId/unidades', kitsUnidadesRoutes);
 app.use('/api/unidades-kits', unidadesKitsRoutes);
 

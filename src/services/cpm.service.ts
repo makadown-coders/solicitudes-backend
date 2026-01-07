@@ -13,7 +13,6 @@ class CPMService {
      * @returns 
      */
     async obtenerCpmDePowerAutomate64(): Promise<string> {
-        console.log('🔁 Obteniendo CPMs con Power Automate');
 
         let fila: any = null;
         try {
@@ -29,7 +28,6 @@ class CPMService {
                 return;
             }
 
-            console.log(`✅ Cpm en Base64 cargado desde Power Automate.`);
             return response.data.archivo;
 
         } catch (err: any) {
@@ -224,10 +222,7 @@ class CPMService {
                     FROM public.v_unidad_kit_claves_expected_vs_cpm v
                     WHERE v.kit_codigos && $1::text[]
                     ORDER BY v.clave_cnis
-                    `; // && = “comparten al menos un kit”.
-
-            console.log('🔍 getRutasSaludClaves - kitsFiltro:', kitsFiltro);
-            console.log('🔍 getRutasSaludClaves - sql:', sql);
+                    `; // && = “comparten al menos un kit”.            
 
             const { rows } = await pool.query<{ clave_cnis: string }>(sql, [kitsFiltro]);
             return rows.map(r => r.clave_cnis);
@@ -238,7 +233,6 @@ class CPMService {
                 FROM public.v_unidad_kit_claves_expected_vs_cpm v                
                 ORDER BY v.clave_cnis
                 `;
-            console.log('🔍 getRutasSaludClaves - sin filtro de kits - sql:', sql);
             const { rows } = await pool.query<{ clave_cnis: string }>(sql);
             return rows.map(r => r.clave_cnis);
         }

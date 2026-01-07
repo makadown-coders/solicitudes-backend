@@ -21,9 +21,6 @@ export default class DispositivosService {
           AND ($3::text IS NULL OR (d.serial ILIKE '%'||$3||'%' OR d.modelo ILIKE '%'||$3||'%'))
         ORDER BY d.id DESC LIMIT $4 OFFSET $5`;
 
-    /*console.log(peticion,
-      [unidad_medica_id ?? null, tipo_dispositivo_id ?? null, q ?? null, limit, offset]
-    );*/
     const { rows } = await pool.query(peticion,
       [unidad_medica_id ?? null, tipo_dispositivo_id ?? null, q ?? null, limit, offset]
     );
@@ -112,9 +109,7 @@ export default class DispositivosService {
       pageSize,
       offset
     ];
-    //console.log('/**********************************************************************************/');
-    //console.log(sql, params);
-    //console.log('/**********************************************************************************/');
+
     const { rows } = await pool.query(sql, params);
     const total = rows.length ? Number(rows[0].total) : 0;
     const items: DispositivoRowEx[] = rows.map(({ total, ...r }) => r as DispositivoRowEx);
@@ -133,7 +128,6 @@ export default class DispositivosService {
       );
 
       const dispositivoId = rows[0].id;
-      console.log('Dispositivo creado con ID:', dispositivoId);
       // Insertar nuevo asignacion_dispositivo vacío para indicar que está sin asignar
       await pool.query(
         `INSERT INTO asignacion_dispositivo

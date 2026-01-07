@@ -19,7 +19,6 @@ class CitasController {
     try {
       const rows = req.body?.rows ?? [];
       const out = await this.citasService.batch(rows);
-      console.log('Enviando batch de citas exitosamente con', out.inserted, 'registros');
       res.json(out);
     } catch (e: any) {
       console.error('Error al insertar batch de citas');

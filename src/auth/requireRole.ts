@@ -7,9 +7,7 @@ import type { RequestHandler } from 'express';
  */
 export const requireRole = (...codes: string[]): RequestHandler => {
   return (req, res, next) => {
-    // console.log('usuario checado:', (req as any).user);
     const roles: any[] = (req as any).user?.roles ?? [];
-    // console.log('Roles del usuario:', roles);
     const has = roles.some(r => typeof r === 'string'
       ? codes.includes(r)
       : r && typeof r.code === 'string' && codes.includes(r.code));

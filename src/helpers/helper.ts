@@ -21,17 +21,13 @@ export function excelDateToDatestring(serial: string | null): string | null {
     try {
         if (!serial) return null;
         if ((serial + '').includes('-') || (serial + '').includes('/')) return serial;
-        // console.log('invocando excelDateToJSDate', serial);
         const jsDate = excelDateToJSDate(+serial);
-        // console.log('jsDate', jsDate);
 
         const day = String(jsDate.getDate()).padStart(2, '0');
         const month = String(jsDate.getMonth() + 1).padStart(2, '0'); // Los meses en JavaScript son 0-indexados
         const year = jsDate.getFullYear();
 
         const dateString = `${year}-${month}-${day}`;
-        // console.log('dateString', dateString);
-        // console.log('es fecha?', (dateString as any) instanceof Date);
         return !dateString.includes('NaN-NaN-NaN') ? dateString : null;
     } catch (error) {
         console.error('Error al convertir la fecha (excelDateToDatestring):', error);

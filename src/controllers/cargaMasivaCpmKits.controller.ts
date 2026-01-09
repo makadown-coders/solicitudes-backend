@@ -1,7 +1,6 @@
 import { Request, Response } from 'express';
 import { FinalizeReq } from '../models/cargaMasivaCpmKits/FinalizeReq';
 import { BatchReq } from '../models/cargaMasivaCpmKits/BatchReq';
-import { InitReq } from '../models/cargaMasivaCpmKits/initReq';
 import CargaMasivaCpmKitsService from '../services/cargaMasivaCpmKits.service';
 
 export default class CargaMasivaCpmKitsController {

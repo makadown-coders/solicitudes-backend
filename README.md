@@ -157,6 +157,8 @@ npm start              # arranca dist/
 
 ## ⚙️ Variables de entorno
 
+> ⚠️ **Seguridad:** Nunca subas secretos reales al repo. Usa placeholders y gestiona credenciales sólo en tu entorno/gestor de secretos.
+
 ```ini
 # Servidor
 PORT=3000
@@ -194,8 +196,8 @@ AZURE_SP_ENCUESTA_URL=...   # envío de encuesta piloto
 
 # Supabase (Auth)
 SUPABASE_URL=https://xxxx.supabase.co
-SUPABASE_ANON_KEY=eyJhbGciOi...   # publishable
-SUPABASE_SERVICE_ROLE_KEY=...     # opcional (admin ops)
+SUPABASE_ANON_KEY=public-anon-key          # publishable
+SUPABASE_SERVICE_ROLE_KEY=service-role-key # opcional (admin ops)
 ```
 
 ---
@@ -248,10 +250,8 @@ Se conserva compatibilidad con Supabase mediante `AUTH_PROVIDER`:
 - `AUTH_PROVIDER=supabase` (comportamiento actual)
 - `AUTH_PROVIDER=local` (nuevo SSO)
 
-Para más detalles consultar README_SSO.MD
+Para más detalles consultar README_SSO.md
 ---
-
-## 👤 Autor
 
 ## 📋 Acerca de esta aplicación
 
@@ -259,11 +259,11 @@ Esta herramienta es un apoyo en piloto para capturar solicitudes de insumos méd
 Facilita pedidos ordinarios y extraordinarios, con validaciones, precargas y exportación a Excel.  
 **No reemplaza sistemas oficiales.**
 
-| Rol | Nombre |
+| Rol | Descripción |
 | --- | --- |
-| **Coordinador Institucional del Proyecto** | Lic. Héctor Manuel Avelar Morales |
-| **Referente Técnico-Operativo** *(Lineamientos de Abasto)* | Lic. Elia Del Carmen Rojas Villalas / Lic. Abril Núñez Madrid |
-| **Diseño y Desarrollo Tecnológico** | Ing. Mario Arturo Serrano Flores |
+| **Coordinación institucional del proyecto** | Contacto interno designado por la organización |
+| **Referente técnico‑operativo** *(Lineamientos de Abasto)* | Equipo técnico‑operativo responsable |
+| **Diseño y desarrollo tecnológico** | Equipo de desarrollo |
 
 <p align="center">© 2025 IMSS Bienestar – Baja California</p>
 

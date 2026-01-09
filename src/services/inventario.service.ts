@@ -10,7 +10,6 @@ class InventarioService {
      * @returns 
      */
     async obtenerInventarioDePowerAutomate64(endpoint: AzureAbastoEndpoint = AzureAbastoEndpoint.INVENTARIO): Promise<string> {
-        console.log(`🔁 Obteniendo inventario desde Azure: ${endpoint}`);        
         try {
              const url = process.env[endpoint] as string;
             if (!url) {
@@ -30,7 +29,6 @@ class InventarioService {
                 return;
             }
 
-            console.log(`✅ Inventario ${endpoint} en Base64 cargado desde Power Automate.`);
             return response.data.archivo;
 
         } catch (err: any) {

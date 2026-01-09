@@ -181,10 +181,8 @@ export default class CitasService {
   }
 
   async search(qs: any) {
-    console.log('CitasService.search called with params:', qs);
 
     const { rows: timeout } = await pool.query('SHOW statement_timeout;');
-    console.log('statement_timeout backend:', timeout[0].statement_timeout);
 
     const p: SearchParams = qs;
     const limit = Math.min(Math.max(Number(p.limit ?? 50), 1), 10000);
@@ -208,9 +206,6 @@ export default class CitasService {
     ORDER BY fecha_de_cita NULLS LAST, id
     LIMIT $${args.length + 1} OFFSET $${args.length + 2};
   `;
-    console.log('--------------------------------------------');
-    console.log('CitasService.search - SQL:', sql, 'ARGS:', args);
-    console.log('--------------------------------------------');
     const countSql = `SELECT COUNT(*)::bigint AS total FROM public.citas ${where};`;
 
     const [rows, count] = await Promise.all([
@@ -282,10 +277,8 @@ export default class CitasService {
 
   async statsResumen(qs: any) {
     const p: SearchParams = qs;
-    // console.log('statsResumen called with params:', p);
 
     if (onlyEjercicio(p)) {
-      // console.log('statsResumen: onlyEjercicio');
       // ⚡️ MV directa
       const { rows } = await pool.query(
         `SELECT * FROM public.mv_citas_resumen WHERE ejercicio = $1;`,
@@ -351,7 +344,6 @@ export default class CitasService {
 
   private async statsResumen_live(qs: any) {
     const p: SearchParams = qs;
-    // console.log('statsResumen_live called with params:', p);
     // Reusa la misma construcción de WHERE que en search()
 
     const args: any[] = [];
@@ -439,12 +431,6 @@ export default class CitasService {
       FROM b;
     `;
     // poner en log cada query con sus args
-    /*console.log('statsResumen_live - SQL Queries:');
-    console.log('SQL KPIs:', sqlKpis, 'ARGS:', args);
-    console.log('SQL Por Estatus:', sqlPorEstatus, 'ARGS:', args);
-    console.log('SQL Por Tipo Entrega:', sqlPorTipoEntrega, 'ARGS:', args);
-    console.log('SQL Cumplimiento:', sqlCumplimiento, 'ARGS:', args);*/
-
 
     const [kpis, porEstatus, porTipo, cumplimiento] = await Promise.all([
       pool.query(sqlKpis, args),
@@ -762,7 +748,6 @@ export default class CitasService {
    * @returns 
    */
   async obtenerCitasDePowerAutomate64(): Promise<string> {
-    console.log('🔁 Obteniendo info con Power Automate');
     let citasRetorno: Cita[] = [];
     let fila: any = null;
     try {
@@ -778,7 +763,6 @@ export default class CitasService {
         return;
       }
 
-      console.log(`✅ Datos en Base64 cargados desde Power Automate.`);
       return response.data.archivo;
 
     } catch (err: any) {

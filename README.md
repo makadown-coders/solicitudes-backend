@@ -11,6 +11,20 @@ Backend en **Node.js + Express (TypeScript)** que expone servicios REST para:
 
 ## 🚀 Módulos y endpoints
 
+### 🆕 Cambios en endpoints de esta rama
+**Nuevos/expandidos:**
+- CPMs: `/api/cpms` (fetch Base64), `/by-unidad-all`, `PATCH /`, `POST /batch`, `/rutas-salud-claves`.
+- Existencias: `/api/existencias-temp/by-unidad-full`, `/api/existencias-temp/almacenes-full`.
+- Trazabilidad: `/api/trazabilidad/all-factores-conversion`.
+- Citas: endpoints de ingesta y métricas (`/init`, `/batch`, `/stats/*`, `/xclave`, `/slim-existencia`).
+- Auth: `/api/auth/logout-all`.
+- TI/Inventario: `/api/catalogos/*`, `/api/dispositivos`, `/api/ti/personas`, `/api/dispositivos/:id/asignaciones`, `/api/ti/unidades`.
+- Balanceo: `/api/balanceo/*`.
+- Kits: `/api/kits/*`, `/api/kits/:kitId/claves`, `/api/kits/:codigo/clavesByCodigo`,
+  `/api/kits/:kitId/unidades`, `/api/unidades-kits/:unidadId/kits`, `/api/carga-masiva/cpm-kits/*`.
+
+**Deprecados:** por ahora, ninguno en esta rama.
+
 ### 📘 Artículos (SQLite)
 Búsqueda de artículos para autocompletado del front.
 ```
@@ -40,6 +54,8 @@ POST   /api/existencias-temp/init?reset=true         # inicializa staging
 POST   /api/existencias-temp/batch                   # { fuente, fecha_corte, rows: BatchRow[] }
 GET    /api/existencias-temp/by-unidad?cluesimb=...  # existencias agregadas por clave para esa unidad
 GET    /api/existencias-temp/has-by-unidad?cluesimb=... # boolean
+GET    /api/existencias-temp/by-unidad-full?cluesimb=... # detalle completo por unidad
+GET    /api/existencias-temp/almacenes-full?cluesimb=... # detalle por almacén para unidad
 ```
 `BatchRow`:
 ```ts
@@ -49,8 +65,13 @@ GET    /api/existencias-temp/has-by-unidad?cluesimb=... # boolean
 ### 📈 CPMs (Postgres)
 Consulta por unidad y cruce **expected vs cpm** (views: `v_unidad_cpm`, `v_unidad_kit_claves_expected_vs_cpm`).
 ```
+GET /api/cpms                                   # base64 desde Power Automate
 GET /api/cpms/by-unidad?cluesimb=... | ?cluessa=...      # sólo cpm > 0
+GET /api/cpms/by-unidad-all?cluesimb=... | ?cluessa=...  # incluye cpm = 0
 GET /api/cpms/expected-vs?cluesimb=...&kit=KIT_147&clave=010.000.5720.01&limit=&offset=
+PATCH /api/cpms                                  # upsert individual
+POST  /api/cpms/batch                            # upsert batch
+GET   /api/cpms/rutas-salud-claves               # catálogo rutas/claves
 ```
 
 ### 🔎 Trazabilidad (Postgres)
@@ -58,6 +79,7 @@ Unifica **entradas**, **traspasos**, **salidas** (+ inventario inicial) para una
 Aplica **factor de conversión** a entradas/traspasos cuando el modal es de *unidad* (no almacén).
 ```
 GET /api/trazabilidad?clave=010.000.5720.01&cluesimb=BCIMB001656
+GET /api/trazabilidad/all-factores-conversion
 ```
 
 ### 🧮 Factores de conversión (Postgres)
@@ -76,6 +98,15 @@ GET /api/rdls/salidas-exterior?desde=YYYY-MM-DD&hasta=YYYY-MM-DD&ventanaDias=30&
 Uso vigente: retornar payload comprimido desde el flujo (no se persiste en DB aquí).
 ```
 GET /api/citas/full
+POST /api/citas/init                              # ?reset=true|false
+POST /api/citas/batch                             # { rows: Row[] }
+GET  /api/citas                                   # búsqueda (query params)
+GET  /api/citas/stats/resumen
+GET  /api/citas/stats/proveedores
+GET  /api/citas/stats/cumplimiento-claves
+POST /api/citas/stats/refresh-mv
+GET  /api/citas/xclave
+GET  /api/citas/slim-existencia
 ```
 
 ### 📦 Inventario de almacenes (Power Automate → Base64)
@@ -98,6 +129,75 @@ CRUD básico:
 ```
 /api/unidades     /api/municipios     /api/localidades     /api/tipo-unidad
 ```
+Catálogos TI:
+```
+GET /api/catalogos/tipos-dispositivo
+GET /api/catalogos/tipos-periferico
+GET /api/catalogos/estados-dispositivo
+```
+
+### 🧑‍💻 TI: Personas, Dispositivos y Asignaciones (Postgres)
+```
+GET    /api/ti/personas
+GET    /api/ti/personas/:id
+POST   /api/ti/personas
+PUT    /api/ti/personas/:id
+DELETE /api/ti/personas/:id
+
+GET    /api/dispositivos
+POST   /api/dispositivos
+GET    /api/dispositivos/:id
+PUT    /api/dispositivos/:id
+POST   /api/dispositivos/:id/asignacion
+POST   /api/dispositivos/:id/monitores
+PUT    /api/dispositivos/:id/monitores/:monitorId
+DELETE /api/dispositivos/:id/monitores/:monitorId
+POST   /api/dispositivos/:id/perifericos
+PUT    /api/dispositivos/:id/perifericos/:perifericoId
+DELETE /api/dispositivos/:id/perifericos/:perifericoId
+
+GET  /api/dispositivos/:id/asignaciones
+POST /api/dispositivos/:id/asignaciones
+```
+
+### 🏥 Catálogo TI de unidades
+```
+GET /api/ti/unidades?municipio_id=&localidad_id=&tipo_unidad_id=&q=&page=&pageSize=
+```
+
+### ⚖️ Balanceo (Postgres)
+```
+POST /api/balanceo/ejecutar
+GET  /api/balanceo/ultima-ejecucion
+GET  /api/balanceo/resumen-actual
+GET  /api/balanceo/detalle-actual
+```
+
+### 🧰 Kits y configuración CPM
+```
+GET    /api/kits
+POST   /api/kits
+PUT    /api/kits/:id
+DELETE /api/kits/:id
+
+POST /api/kits/import-matrix
+GET  /api/kits/matrix
+POST /api/kits/import-one
+
+GET    /api/kits/:kitId/claves
+POST   /api/kits/:kitId/claves
+DELETE /api/kits/:kitId/claves/:id
+
+GET /api/kits/:codigo/clavesByCodigo
+
+GET /api/kits/:kitId/unidades
+PUT /api/kits/:kitId/unidades
+
+GET /api/unidades-kits/:unidadId/kits
+
+POST /api/carga-masiva/cpm-kits/init
+POST /api/carga-masiva/cpm-kits/batch
+```
 
 ### 📥 Carga masiva (Postgres)
 Inicializa/ingesta para `entrada`, `traspaso`, `salida`, `inventario_inicial`:
@@ -118,6 +218,7 @@ POST /api/auth/login       # { email, password }          -> { access_token, ref
 POST /api/auth/refresh     # { refresh_token }            -> tokens
 GET  /api/auth/me          # Bearer <access_token> (requireAuth)
 POST /api/auth/logout
+POST /api/auth/logout-all
 ```
 
 ---
@@ -265,7 +366,7 @@ Facilita pedidos ordinarios y extraordinarios, con validaciones, precargas y exp
 | **Referente Técnico-Operativo** *(Lineamientos de Abasto)* | Lic. Elia Del Carmen Rojas Villalas / Lic. Abril Núñez Madrid |
 | **Diseño y Desarrollo Tecnológico** | Ing. Mario Arturo Serrano Flores |
 
-<p align="center">© 2025 IMSS Bienestar – Baja California</p>
+<p align="center">© 2026 IMSS Bienestar – Baja California</p>
 
 
 ---

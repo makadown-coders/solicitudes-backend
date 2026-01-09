@@ -21,7 +21,6 @@ export default class LocalAuthService {
 
     const { roles } = await this.getUserWithRoles(user.id);
 
-    console.log('Roles antes de firmar token:', roles);
     const access_token = await signAccessToken({ sub: user.id, email: user.email, name: user.name, roles });
 
     // refresh opaco guardado con hash
@@ -35,7 +34,6 @@ export default class LocalAuthService {
       [jti, user.id, hashed, null, null, String(days)]
     );
     const refresh_token = `${jti}.${raw}`;
-    console.log('Roles incluidos en token:', roles);
     return { access_token, refresh_token, user: { id: user.id, email: user.email, name: user.name, roles } };
   }
 

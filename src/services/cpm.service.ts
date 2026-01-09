@@ -1,8 +1,10 @@
+// src/services/cpm.service.ts (BACKEND)
 import axios, { AxiosResponse } from 'axios';
 import { PowerAutomateResponse } from '../models/powerAutomateResponse.model';
 import { UnidadCpmParams } from '../models/unidad-cpm-params.model';
 import { ExpectedVsParams } from '../models/expected-vs-params.model';
 import { pool } from '../db/pool';
+import e from 'express';
 
 class CPMService {
     /**
@@ -11,7 +13,6 @@ class CPMService {
      * @returns 
      */
     async obtenerCpmDePowerAutomate64(): Promise<string> {
-        console.log('🔁 Obteniendo CPMs con Power Automate');
 
         let fila: any = null;
         try {
@@ -27,7 +28,6 @@ class CPMService {
                 return;
             }
 
-            console.log(`✅ Cpm en Base64 cargado desde Power Automate.`);
             return response.data.archivo;
 
         } catch (err: any) {
@@ -60,7 +60,8 @@ class CPMService {
         }
         if (p.kit) {
             params.push(p.kit);
-            where.push(`v.kit_codigo = $${params.length}`);
+            // where.push(`v.kit_codigo = $${params.length}`);
+            where.push(`$${params.length} = ANY(v.kit_codigos)`);
         }
         if (p.clave) {
             params.push(p.clave);
@@ -74,8 +75,12 @@ class CPMService {
 
         const sql = `
       SELECT
-        v.unidad_medica_id, v.cluesimb, v.cluessa, v.nombre_unidad,
-        v.nombre_tipologia, v.kit_codigo, v.clave_cnis, v.cpm, v.en_cpm
+         v.unidad_medica_id, 
+         v.cluesimb, v.cluessa, v.nombre_unidad,
+         v.nombre_tipologia, v.kit_codigo,
+         v.kit_ids, v.kit_codigos,
+         v.kit_codigos_txt, v.clave_cnis,
+         v.cpm, v.en_cpm
       FROM public.v_unidad_kit_claves_expected_vs_cpm v
       ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
       ORDER BY v.kit_codigo, v.clave_cnis
@@ -202,25 +207,36 @@ class CPMService {
         // Kits por defecto, si no mandas nada
         const kitsFiltro = (kits && kits.length > 0)
             ? kits
-            : ['KIT_180', 'KIT_96', 'KIT_920', 'KIT_147'];
+            : null;
 
-       /* const sql = `
-      SELECT DISTINCT v.clave_cnis
-      FROM public.v_unidad_kit_claves_expected_vs_cpm v
-      WHERE v.en_cpm = true
-        AND v.kit_codigo = ANY($1::text[])
-      ORDER BY v.clave_cnis
-    `;*/
+        /* const sql = `
+       SELECT DISTINCT v.clave_cnis
+       FROM public.v_unidad_kit_claves_expected_vs_cpm v
+       WHERE v.en_cpm = true
+         AND v.kit_codigo = ANY($1::text[])
+       ORDER BY v.clave_cnis
+     `;*/
+        if (kitsFiltro) {
+            const sql = `
+                    SELECT DISTINCT v.clave_cnis
+                    FROM public.v_unidad_kit_claves_expected_vs_cpm v
+                    WHERE v.kit_codigos && $1::text[]
+                    ORDER BY v.clave_cnis
+                    `; // && = “comparten al menos un kit”.            
 
-        const sql = `
-      SELECT DISTINCT v.clave as clave_cnis
-      FROM public.kit_clave v
-      WHERE v.kit_id in (select k.id from kit k where k.codigo = ANY($1::text[]))
-      ORDER BY v.clave
-    `;
+            const { rows } = await pool.query<{ clave_cnis: string }>(sql, [kitsFiltro]);
+            return rows.map(r => r.clave_cnis);
+        } else {
+            // Si no hay filtro de kits, devolver todas las claves en rutas de salud
+            const sql = `
+                SELECT DISTINCT v.clave_cnis
+                FROM public.v_unidad_kit_claves_expected_vs_cpm v                
+                ORDER BY v.clave_cnis
+                `;
+            const { rows } = await pool.query<{ clave_cnis: string }>(sql);
+            return rows.map(r => r.clave_cnis);
+        }
 
-        const { rows } = await pool.query<{ clave_cnis: string }>(sql, [kitsFiltro]);
-        return rows.map(r => r.clave_cnis);
     }
 }
 

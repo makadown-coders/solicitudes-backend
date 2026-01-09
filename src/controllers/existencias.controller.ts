@@ -18,7 +18,6 @@ export default class ExistenciasController {
         try {
             const rows = req.body?.rows ?? [];
             const out = await this.svc.batch(rows);
-            console.log('Enviando batch de existencias exitosamente con', out.inserted, 'registros');
             res.json(out);
         } catch (e: any) {
             console.error('Error al insertar batch de existencias');

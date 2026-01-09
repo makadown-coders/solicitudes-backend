@@ -31,7 +31,6 @@ class OldAuthService {
    * Si prefieres respetar RLS del usuario, podrías usar PostgREST con el accessToken de req.
    */
   async me(authUserId: string) {
-    console.log('authUserId', authUserId);
     if (!supabaseAdmin) {
       console.error('SUPABASE_SERVICE_ROLE_KEY not configured on server');
       throw new Error('SUPABASE_SERVICE_ROLE_KEY not configured on server');

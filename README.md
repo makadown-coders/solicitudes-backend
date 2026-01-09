@@ -366,7 +366,7 @@ Facilita pedidos ordinarios y extraordinarios, con validaciones, precargas y exp
 | **Referente Técnico-Operativo** *(Lineamientos de Abasto)* | Lic. Elia Del Carmen Rojas Villalas / Lic. Abril Núñez Madrid |
 | **Diseño y Desarrollo Tecnológico** | Ing. Mario Arturo Serrano Flores |
 
-<p align="center">© 2025 IMSS Bienestar – Baja California</p>
+<p align="center">© 2026 IMSS Bienestar – Baja California</p>
 
 
 ---

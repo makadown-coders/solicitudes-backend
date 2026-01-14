@@ -35,3 +35,23 @@ export interface UnidadMedicaDetalle {
   estrato_unidad: string | null;
   nivel_atencion: string | null;
 }
+
+export interface UnidadExistente {
+  /**
+   * Este campo es escencial. Es para ligar con el enum de unidades con la clave de hospital que 
+   * se usaria para llenar en Tab Existencias (CPMs) > Existencias X Clave
+   */
+  key: string; // enum de unidades HGE, HGM, etc
+  cluesssa: string;
+  cluesimb: string;
+  nombre: string;
+  municipio: string;
+  localidad: string;
+  jurisdiccion: string;
+  direccion: string;
+  latitud: string;
+  longitud: string;
+  estratoUnidad: string;
+  nivelAtencion: string;
+  tipoUnidad: string;
+}

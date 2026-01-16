@@ -180,12 +180,13 @@ class UnidadMedicaService {
   }
 
   async getPrimerNivel(): Promise<UnidadExistente[]> {
-    const sql = `
+    try {
+      const sql = `
       select
 	cluesimb as key,
 	cluessa, 
 	cluesimb, 
-	nombre_municipio as nombre, 
+	nombre_de_unidad as nombre, 
 	nombre_localidad as localidad, 	 
 		    CASE 
 		        WHEN nombre_municipio IN ('TIJUANA', 'TECATE', 'PLAYAS DE ROSARITO') THEN 'TIJUANA'
@@ -203,8 +204,11 @@ from v_unidad_medica_detalle
 where tipo_unidad = 'CENTRO DE SALUD' 
 order by jurisdiccion, cluesimb 
     `;
-    const { rows } = await pool.query<UnidadExistente>(sql);
-    return rows;
+      const { rows } = await pool.query<UnidadExistente>(sql);
+      return rows;
+    } catch (error) {
+      throw new Error(`Error al obtener unidades de primer nivel: ${error}`);
+    }
   }
 }
 

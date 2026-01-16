@@ -125,7 +125,6 @@ export default class ExistenciasService {
    * @returns Un array de objetos con los campos de la existencia (fuente, clave_cnis, alias_sas, cluessa, clave_cnis, lote, fecha_caducidad, existencia)
    */
   async getByUnidadFull(cluesimb: string): Promise<TemporalExistenciaRow[]> {
-    console.info('Cargando Existencias de la unidad ', cluesimb);
     const key = (cluesimb || '').trim().toUpperCase();
     if (!key) return [];
 

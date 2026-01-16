@@ -80,7 +80,8 @@ class CPMService {
          v.nombre_tipologia, v.kit_codigo,
          v.kit_ids, v.kit_codigos,
          v.kit_codigos_txt, v.clave_cnis,
-         v.cpm, v.en_cpm
+         coalesce(v.cpm,0) as cpm,
+         v.en_cpm
       FROM public.v_unidad_kit_claves_expected_vs_cpm v
       ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
       ORDER BY v.kit_codigo, v.clave_cnis

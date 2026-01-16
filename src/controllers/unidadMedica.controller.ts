@@ -55,6 +55,15 @@ class UnidadMedicaController {
       res.status(500).json({ message: 'Error al eliminar unidad', error });
     }
   }
+
+  async getPrimerNivel(req: Request, res: Response) {
+    try {
+      const unidadesPrimerNivel = await this.service.getPrimerNivel();
+      res.json(unidadesPrimerNivel);
+    } catch (error) {
+      res.status(500).json({ message: 'Error al obtener unidades de primer nivel', error });
+    }
+  }
 }
 
 export default UnidadMedicaController;

@@ -1,5 +1,5 @@
 // src/services/unidadMedica.service.ts
-import { UnidadMedica, UnidadMedicaDetalle } from '../models/unidadMedica.model';
+import { UnidadExistente, UnidadMedica, UnidadMedicaDetalle } from '../models/unidadMedica.model';
 import { pool } from '../db/pool';
 
 class UnidadMedicaService {
@@ -177,6 +177,38 @@ class UnidadMedicaService {
     const items = rows.map(({ total, ...r }) => r);
 
     return { items, page, pageSize, total };
+  }
+
+  async getPrimerNivel(): Promise<UnidadExistente[]> {
+    try {
+      const sql = `
+      select
+	cluesimb as key,
+	cluessa, 
+	cluesimb, 
+	nombre_de_unidad as nombre, 
+	nombre_localidad as localidad, 	 
+		    CASE 
+		        WHEN nombre_municipio IN ('TIJUANA', 'TECATE', 'PLAYAS DE ROSARITO') THEN 'TIJUANA'
+		        WHEN nombre_municipio IN ('MEXICALI', 'SAN FELIPE') THEN 'MEXICALI'
+		        WHEN nombre_municipio IN ('ENSENADA', 'SAN QUINTIN') THEN 'ENSENADA'
+		        ELSE nombre_municipio
+		    END as jurisdiccion,
+	 direccion, 
+	 latitud, 
+	 longitud,
+	 estrato_unidad, 
+	 nivel_atencion,
+	 'CENTROS DE SALUD' as tipoUnidad 
+from v_unidad_medica_detalle 
+where tipo_unidad = 'CENTRO DE SALUD' 
+order by jurisdiccion, cluesimb 
+    `;
+      const { rows } = await pool.query<UnidadExistente>(sql);
+      return rows;
+    } catch (error) {
+      throw new Error(`Error al obtener unidades de primer nivel: ${error}`);
+    }
   }
 }
 

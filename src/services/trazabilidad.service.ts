@@ -177,20 +177,33 @@ class TrazabilidadService {
             // 🧊 INVENTARIO INICIAL (no aplica factor)
             currentQuery = `
         SELECT 
-          make_date(EXTRACT(YEAR FROM now())::int, 1, 1) AS fecha,
-          ii.clave_cnis,
-          COALESCE(ii.descripcion, 'Inventario inicial') AS descripcion,
-          ii.cantidad,
-          'INVENTARIO INICIAL'::text AS proveedor,
-          NULL::text AS folio,
-          ii.lote,
-          ii.fecha_caducidad,
-          um.cluesimb,
-          um.nombre AS nombre_unidad,
-          uma.alias_sas AS alias_unidad
+            make_date(EXTRACT(YEAR FROM now())::int, 1, 1) AS fecha,
+            ii.clave_cnis,
+            COALESCE(ii.descripcion, 'Inventario inicial') AS descripcion,
+            ii.cantidad,
+            CASE ii.tipo
+                WHEN 'SI' THEN 'SOBRANTE INICIAL'
+                WHEN 'FHI' THEN 'FALTANTE INICIAL'
+                WHEN 'FI' THEN 'FALTANTE INICIAL'
+                WHEN 'II' THEN 'INVENTARIO INICIAL'
+                ELSE 'Desconocido'
+            END AS proveedor,
+            CASE ii.tipo
+                WHEN 'SI' THEN 'entrada'
+                WHEN 'FHI' THEN 'faltante'
+                WHEN 'FI' THEN 'faltante'
+                WHEN 'II' THEN 'entrada'
+                ELSE 'Desconocido'
+            END AS tipo_movimiento,
+            NULL::text AS folio,
+            ii.lote,
+            ii.fecha_caducidad,
+            um.cluesimb,
+            um.nombre AS nombre_unidad,
+            uma.alias_sas AS alias_unidad
         FROM inventario_inicial ii
         JOIN unidad_medica_alias uma ON ii.unidad_id = uma.id
-        JOIN unidad_medica um       ON uma.unidad_medica_id = um.id
+        JOIN unidad_medica um ON uma.unidad_medica_id = um.id
         WHERE ii.clave_cnis = $1
           AND um.cluesimb  = $2
       `;
@@ -213,7 +226,7 @@ class TrazabilidadService {
             const inventarioInicial = await pool.query(currentQuery, [clave, cluesimb]);
             final.push(
                 ...inventarioInicial.rows.map((row) => ({
-                    tipo_movimiento: 'entrada',
+                    tipo_movimiento: row.tipo_movimiento,
                     fecha: row.fecha,
                     clave_cnis: row.clave_cnis,
                     descripcion: row.descripcion,

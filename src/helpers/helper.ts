@@ -72,3 +72,26 @@ export function formatFechaMultiple(input: string | null | undefined): string | 
     return fechas.length > 0 ? fechas.join('/').replace('NaN-NaN-NaN', '') : null;
   }
   
+
+export function isISODateOnly(s: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(s);
+}
+
+export function todayISO(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+export function daysAgoISO(days: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return d.toISOString().slice(0, 10);
+}
+
+
+export function normalizeText(x: string): string {
+  return (x ?? '').trim();
+}
+
+export function normalizeUpper(x: string): string {
+  return normalizeText(x).toUpperCase();
+}

@@ -6,6 +6,7 @@ const controller = new UnidadMedicaController();
 
 router.get('/', controller.getAll.bind(controller));
 router.get('/primer-nivel', controller.getPrimerNivel.bind(controller));
+router.get('/todos-niveles', controller.getAllNiveles.bind(controller));
 router.get('/:id', controller.getById.bind(controller));
 router.post('/', controller.create.bind(controller));
 router.put('/:id', controller.update.bind(controller));

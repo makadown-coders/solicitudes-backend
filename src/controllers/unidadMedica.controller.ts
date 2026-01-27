@@ -64,6 +64,15 @@ class UnidadMedicaController {
       res.status(500).json({ message: 'Error al obtener unidades de primer nivel', error });
     }
   }
+
+  async getAllNiveles(req: Request, res: Response) {
+    try {
+      const todasUnidades = await this.service.getAllNiveles();
+      res.json(todasUnidades);
+    } catch (error) {
+      res.status(500).json({ message: 'Error al obtener todas las unidades', error });
+    }
+  }
 }
 
 export default UnidadMedicaController;

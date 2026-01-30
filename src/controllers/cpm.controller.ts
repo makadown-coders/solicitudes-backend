@@ -89,6 +89,16 @@ class CpmController {
     }
   };
 
+  initCluesCpmReset: RequestHandler = async (req, res) => {
+    try {
+      const { cluesimb } = req.query as Record<string, string | undefined>;
+      const { ok, deletedRows } = await this.service.initCluesCpmReset(cluesimb);
+      res.json({ ok, deletedRows });
+    } catch (e: any) {
+      res.status(400).json({ error: e?.message || 'Bad request' });
+    }
+  };
+
   /** GET /api/cpms/rutas-salud-claves?kits=KIT_180,KIT_96,... */
   rutasSaludClaves: RequestHandler = async (req, res) => {
     try {

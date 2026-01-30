@@ -37,6 +37,27 @@ class CPMService {
         return null;
     }
 
+    /*
+     dado el cluesimb, emula:
+     DELETE from public.cpm 
+        where exists ( Select 1 
+                from unidad_medica um 
+                where um.cluesimb = $1 and um.id = cpm.unidad_medica_id ); 
+    */
+   async initCluesCpmReset(cluesimb: string): Promise<{ ok: boolean; deletedRows: number }> {
+        if (!cluesimb || !cluesimb.trim()) {
+            throw new Error('cluesimb es requerido');
+        }
+        const { rows } = await pool.query(
+            `DELETE from public.cpm 
+            where exists ( Select 1 
+                    from unidad_medica um 
+                    where um.cluesimb = $1 and um.id = cpm.unidad_medica_id );`,
+            [cluesimb]
+        );
+        return { ok: true, deletedRows: rows.length };
+    }
+
     /**
   * Emula:
   *  SELECT * FROM v_unidad_kit_claves_expected_vs_cpm WHERE cluesimb = $1;

@@ -210,6 +210,37 @@ order by jurisdiccion, cluesimb
       throw new Error(`Error al obtener unidades de primer nivel: ${error}`);
     }
   }
+
+  async getAllNiveles(): Promise<UnidadExistente[]> {
+    try {
+      const sql = `
+     select
+	cluesimb as key,
+	cluessa, 
+	cluesimb, 
+	nombre_de_unidad as nombre, 
+	nombre_localidad as localidad, 	 
+		    CASE 
+		        WHEN nombre_municipio IN ('TIJUANA', 'TECATE', 'PLAYAS DE ROSARITO') THEN 'TIJUANA'
+		        WHEN nombre_municipio IN ('MEXICALI', 'SAN FELIPE') THEN 'MEXICALI'
+		        WHEN nombre_municipio IN ('ENSENADA', 'SAN QUINTIN') THEN 'ENSENADA'
+		        ELSE nombre_municipio
+		    END as jurisdiccion,
+	 direccion, 
+	 latitud, 
+	 longitud,
+	 estrato_unidad, 
+	 nivel_atencion,
+	 tipo_unidad as tipoUnidad 
+from v_unidad_medica_detalle 
+order by jurisdiccion, cluesimb 
+    `;
+      const { rows } = await pool.query<UnidadExistente>(sql);
+      return rows;
+    } catch (error) {
+      throw new Error(`Error al obtener unidades todos los niveles: ${error}`);
+    }
+  }
 }
 
 export default UnidadMedicaService;

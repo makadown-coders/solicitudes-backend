@@ -197,12 +197,16 @@ class SolicitudesService {
     if (!id) throw new Error('id requerido');
 
     const sql = `
-      select
-        solicitud_id::text as solicitud_id,
-        clave,
-        cantidad
-      from public.solicitud_bitacora_detalle
-      where solicitud_id = $1::uuid
+       select
+        sbd.solicitud_id::text as solicitud_id,
+        sbd.clave,
+        sbd.cantidad,
+        coalesce(c.cpm, 0) as cpm
+from public.solicitud_bitacora_detalle sbd 
+	 inner join public.solicitud_bitacora sb on sb.id = sbd.solicitud_id 
+	 inner join public.unidad_medica um on um.cluesimb = sb.cluesimb 
+	 left join public.cpm c on c.unidad_medica_id = um.id and c.clave_cnis = sbd.clave 
+where sb.id = $1::uuid
       order by clave;
     `;
 

@@ -9,6 +9,7 @@ const c = new AsignacionesController();
 
 router.get('/dispositivos/:id/asignaciones', requireAuth, c.historial.bind(c));
 router.post('/dispositivos/:id/asignaciones', requireAuth, requireRole('ADMIN_TIC','OPER_TIC'), c.crear.bind(c));
+router.post('/dispositivos/:id/asignaciones/:asignacionId/revert', requireAuth, requireRole('ADMIN_TIC','OPER_TIC'), c.revert.bind(c));
 
 export default router;
 

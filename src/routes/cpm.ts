@@ -23,6 +23,7 @@ router.get('/by-unidad-all', controller.byUnidadAll.bind(controller));
 // Edición
 router.patch('/', controller.upsertOne.bind(controller));
 router.post('/batch', controller.upsertBatch.bind(controller));
+router.post('/init-clues-cpm-reset', controller.initCluesCpmReset.bind(controller));
 router.get('/rutas-salud-claves', controller.rutasSaludClaves.bind(controller));
 /**
  * Ejemplos:

@@ -95,3 +95,17 @@ export function normalizeText(x: string): string {
 export function normalizeUpper(x: string): string {
   return normalizeText(x).toUpperCase();
 }
+
+export function parseIntSafe(v: any, fallback: number) {
+  const n = Number.parseInt(String(v ?? ''), 10);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+export function parseISOorNull(v: any): string | null {
+  if (!v) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
+}

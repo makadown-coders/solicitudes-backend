@@ -44,7 +44,7 @@ class CPMService {
                 from unidad_medica um 
                 where um.cluesimb = $1 and um.id = cpm.unidad_medica_id ); 
     */
-   async initCluesCpmReset(cluesimb: string): Promise<{ ok: boolean; deletedRows: number }> {
+    async initCluesCpmReset(cluesimb: string): Promise<{ ok: boolean; deletedRows: number }> {
         if (!cluesimb || !cluesimb.trim()) {
             throw new Error('cluesimb es requerido');
         }
@@ -226,6 +226,60 @@ class CPMService {
     }
 
     async getRutasSaludClaves(kits?: string[]): Promise<string[]> {
+        // Kits por defecto, si no mandas nada
+        const kitsFiltro = (kits && kits.length > 0)
+            ? kits
+            : null;
+
+        if (kitsFiltro) {
+            /*
+            el query base es 
+
+            select distinct kc.clave as clave_cnis 
+                from public.kit_clave kc 
+                order by kc.clave 
+
+            PERO como el kit mandado al backend es el campo 'codigo' de la tabla 'kit', y la relación entre kit y clave está en la tabla 'kit_clave', el query real que necesito hacer es algo así como:
+
+select distinct kc.clave as clave_cnis 
+                from public.kit_clave kc 
+                join public.kit k on k.id = kc.kit_id
+                where k.codigo in ($1)
+                order by kc.clave
+
+             pero necesito que se filtre por kits.
+             */
+            const sql = `
+                select distinct kc.clave as clave_cnis 
+                from public.kit_clave kc 
+                join public.kit k on k.id = kc.kit_id
+                where k.codigo = ANY($1)
+                order by kc.clave
+            `;
+            console.log('SQL para getRutasSaludClaves con filtro de kits:', sql, 'kitsFiltro:', kitsFiltro);
+
+            const { rows } = await pool.query<{ clave_cnis: string }>(sql, [kitsFiltro]);
+            return rows.map(r => r.clave_cnis);
+        } else {
+            // Si no hay filtro de kits, devolver todas las claves en rutas de salud
+            const sql = `
+                select distinct kc.clave as clave_cnis 
+                from public.kit_clave kc 
+                order by kc.clave 
+                `;
+            const { rows } = await pool.query<{ clave_cnis: string }>(sql);
+            return rows.map(r => r.clave_cnis);
+        }
+
+    }
+
+    /**
+     * LEGACY... Este metodo está "en la banca".
+     * Se dejará por si acaso se llegue a restringir los kits por cpm por unidad.
+     * @param kits 
+     * @returns 
+     */
+    async getRutasSaludClavesVista(kits?: string[]): Promise<string[]> {
         // Kits por defecto, si no mandas nada
         const kitsFiltro = (kits && kits.length > 0)
             ? kits

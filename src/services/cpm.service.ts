@@ -312,7 +312,6 @@ select distinct kc.clave as clave_cnis
             const { rows } = await pool.query<{ clave_cnis: string }>(sql);
             return rows.map(r => r.clave_cnis);
         }
-
     }
 }
 

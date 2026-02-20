@@ -1,7 +1,4 @@
 // src/services/articulos.service.ts
-import { open, Database } from 'sqlite';
-import sqlite3 from 'sqlite3';
-import dotenv from 'dotenv';
 import { pool } from '../db/pool';
 import {
   Articulo,
@@ -10,57 +7,68 @@ import {
   ArticuloCrudUpdateInput
 } from '../models/articulo.model';
 
-// Promesa de base de datos tipada
-const dbPromise: Promise<Database> = open({
-  filename: process.env.DB_PATH ?? './db/articulos.sqlite',
-  driver: sqlite3.Database
-});
-
 class ArticulosService {
-  private async getDatabase(): Promise<Database> {
-    return await dbPromise;
-  }
-
   async buscar(query: string): Promise<{ resultados: Articulo[]; total: number }> {
-    const db = await this.getDatabase();
-
+    const q = String(query ?? '').trim();
     const sqlQuery = `
       SELECT clave, descripcion, presentacion
-      FROM ARTICULOS
-      WHERE clave LIKE ? OR descripcion LIKE ?
+      FROM public.articulos
+      WHERE
+        COALESCE(clave, '') ILIKE '%' || $1 || '%'
+        OR COALESCE(descripcion, '') ILIKE '%' || $1 || '%'
+      ORDER BY clave ASC NULLS LAST
       LIMIT 12
     `;
 
     const sqlCount = `
-      SELECT COUNT(*) as count
-      FROM ARTICULOS
-      WHERE clave LIKE ? OR descripcion LIKE ?
+      SELECT COUNT(*)::int as count
+      FROM public.articulos
+      WHERE
+        COALESCE(clave, '') ILIKE '%' || $1 || '%'
+        OR COALESCE(descripcion, '') ILIKE '%' || $1 || '%'
     `;
 
-    const resultados: Articulo[] = await db.all(sqlQuery, [`%${query}%`, `%${query}%`]);
-    const totalResult = await db.get<{ count: number }>(sqlCount, [`%${query}%`, `%${query}%`]);
-    const total = totalResult?.count ?? 0;
+    const [resultadosResult, totalResult] = await Promise.all([
+      pool.query(sqlQuery, [q]),
+      pool.query<{ count: number }>(sqlCount, [q]),
+    ]);
+
+    const resultados: Articulo[] = resultadosResult.rows.map((r) => ({
+      clave: String(r.clave ?? ''),
+      descripcion: String(r.descripcion ?? ''),
+      presentacion: String(r.presentacion ?? ''),
+    }));
+
+    const total = Number(totalResult.rows[0]?.count ?? 0);
 
     return { resultados, total };
   }
 
 
   async buscarAll(): Promise<{ resultados: Articulo[]; total: number }> {
-    const db = await this.getDatabase();
-
     const sqlQuery = `
       SELECT clave, descripcion, presentacion
-      FROM ARTICULOS
+      FROM public.articulos
+      ORDER BY clave ASC NULLS LAST
     `;
 
     const sqlCount = `
-      SELECT COUNT(*) as count
-      FROM ARTICULOS
+      SELECT COUNT(*)::int as count
+      FROM public.articulos
     `;
 
-    const resultados: Articulo[] = await db.all(sqlQuery);
-    const totalResult = await db.get<{ count: number }>(sqlCount);
-    const total = totalResult?.count ?? 0;
+    const [resultadosResult, totalResult] = await Promise.all([
+      pool.query(sqlQuery),
+      pool.query<{ count: number }>(sqlCount),
+    ]);
+
+    const resultados: Articulo[] = resultadosResult.rows.map((r) => ({
+      clave: String(r.clave ?? ''),
+      descripcion: String(r.descripcion ?? ''),
+      presentacion: String(r.presentacion ?? ''),
+    }));
+
+    const total = Number(totalResult.rows[0]?.count ?? 0);
 
     return { resultados, total };
   }

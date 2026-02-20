@@ -1,7 +1,7 @@
 # Solicitudes / Abasto — Backend (Node + Express + TS) 🧾
 
 Backend en **Node.js + Express (TypeScript)** que expone servicios REST para:
-- **Solicitudes de artículos** (autocompletado vía **SQLite**).
+- **Solicitudes de artículos** (autocompletado vía **PostgreSQL**).
 - **Abasto** (citas, existencias, CPMs, trazabilidad, RDLS, factores, feature flags, etc.) sobre **PostgreSQL** y **Power Automate** (Excel en Base64).
 - **Auth** en construccion (analizando si usar **Supabase** (login, refresh, me)).
 
@@ -25,7 +25,7 @@ Backend en **Node.js + Express (TypeScript)** que expone servicios REST para:
 
 **Deprecados:** por ahora, ninguno en esta rama.
 
-### 📘 Artículos (SQLite)
+### 📘 Artículos (PostgreSQL)
 Búsqueda de artículos para autocompletado del front.
 ```
 GET /api/articulos?q=paracetamol            # q ≥ 3 chars
@@ -226,7 +226,7 @@ POST /api/auth/logout-all
 ## 🛠️ Stack Tecnológico
 
 - **Runtime:** Node.js 18+ (recomendado 20+), Express, TypeScript  
-- **DB:** PostgreSQL (abasto), SQLite (artículos/autocomplete)  
+- **DB:** PostgreSQL  
 - **Integraciones:** Power Automate (Excel→Base64), SharePoint  
 - **Auth:** Supabase (JWT, JWKS discovery)  
 - **Otros:** `compression` (payloads grandes), CORS habilitado
@@ -252,7 +252,7 @@ npm run build          # compila a dist/
 npm start              # arranca dist/
 ```
 
-> Asegúrate de tener PostgreSQL accesible y el archivo SQLite en la ruta configurada.
+> Asegúrate de tener PostgreSQL accesible.
 
 ---
 
@@ -262,9 +262,6 @@ npm start              # arranca dist/
 # Servidor
 PORT=3000
 NODE_ENV=development
-
-# SQLite (autocompletado artículos)
-DB_PATH=./db/articulos.sqlite
 
 # PostgreSQL (abasto)
 POSTGRES_HOST=localhost
@@ -327,7 +324,7 @@ SUPABASE_SERVICE_ROLE_KEY=...     # opcional (admin ops)
 - **Koyeb ** . Considera:
   - Free tiers pueden dormir contenedores → evita jobs de larga duración.
   - Para datos grandes (citas/inventario), **prefiere** flujos **Power Automate → Base64**.
-- Define variables en el panel del proveedor. Monta `DB_PATH` si usas SQLite local o empaqueta el archivo en el build.
+- Define variables en el panel del proveedor.
 
 ---
 

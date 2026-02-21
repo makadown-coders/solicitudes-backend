@@ -103,11 +103,11 @@ class CPMService {
          v.kit_codigos_txt, v.clave_cnis,
          coalesce(v.cpm,0) as cpm,
          v.en_cpm
-      FROM public.v_unidad_kit_claves_expected_vs_cpm v
+      FROM public.v_unidad_kit_claves_expected_vs_cpm_v2 v
       ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
       ORDER BY v.kit_codigo, v.clave_cnis
       LIMIT $${params.length - 1} OFFSET $${params.length}
-    `; /* omito usar v_unidad_kit_claves_expected_vs_cpm_v2 por ahora */
+    `; /* omito usar v_unidad_kit_claves_expected_vs_cpm por ahora */
 
         const { rows } = await pool.query(sql, params);
         return rows;

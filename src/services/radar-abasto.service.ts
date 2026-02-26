@@ -1,3 +1,4 @@
+// src/services/radar-abasto.service.ts
 import { PoolClient } from 'pg';
 import { pool } from '../db/pool';
 import { isISODateOnly, parseIntSafe } from '../helpers/helper';
@@ -114,10 +115,9 @@ export default class RadarAbastoService {
           AND UPPER(TRIM(c.clave_cnis)) = $2
       ),
       citas_p AS (
-        SELECT COALESCE(SUM(c.no_de_piezas_emitidas), 0)::numeric AS citas_pendientes
+        SELECT COALESCE(count(c.orden_de_suministro), 0)::numeric AS citas_pendientes
         FROM public.citas c
-        WHERE UPPER(TRIM(c.clues_destino)) = $1
-          AND UPPER(TRIM(c.clave_cnis)) = $2
+        WHERE UPPER(TRIM(c.clave_cnis)) = $2
           AND c.fecha_limite_de_entrega >= (CURRENT_DATE - INTERVAL '15 days')
           AND c.fecha_recepcion_max IS NULL
       ),

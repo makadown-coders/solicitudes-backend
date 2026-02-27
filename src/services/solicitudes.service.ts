@@ -171,7 +171,7 @@ class SolicitudesService {
     // created_day BETWEEN desde AND hasta
     // (si prefieres "hasta exclusivo", ajustamos)
     const sql = `
-      select
+      select DISTINCT ON (cluesimb, tipo_pedido, tipos_insumo)
         id::text as id,
         created_day::text as created_day,
         created_at::text as created_at,
@@ -184,7 +184,11 @@ class SolicitudesService {
       from public.solicitud_bitacora
       where created_day between $1::date and $2::date
         and ($3 = '' or cluesimb = $3)
-      order by created_day desc, created_at desc
+      ORDER BY
+            cluesimb,                  
+            tipo_pedido,
+            tipos_insumo,
+            created_at DESC
       limit 9000;
     `;
 

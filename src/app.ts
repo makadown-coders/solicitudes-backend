@@ -35,6 +35,7 @@ import kitsUnidadesRoutes from './routes/kits-unidades';
 import unidadesKitsRoutes from './routes/unidades-kits';
 import cargaMasivaCpmKitsRoutes from './routes/cargaMasivaCpmKits';
 import homologosRoutes from './routes/homologos';
+import radarAbastoRoutes from './routes/radar-abasto';
 
 import compression from 'compression';
 import { fetch, Headers } from 'undici';
@@ -90,6 +91,7 @@ app.use('/api/carga-masiva/cpm-kits', cargaMasivaCpmKitsRoutes);
 app.use('/api/kits/:kitId/unidades', kitsUnidadesRoutes);
 app.use('/api/unidades-kits', unidadesKitsRoutes);
 app.use('/api/homologos', homologosRoutes);
+app.use('/api/radar-abasto', radarAbastoRoutes);
 
 app.use('/api', asignacionesRoutes);
 

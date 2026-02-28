@@ -5,6 +5,11 @@ import { isISODateOnly, parseIntSafe } from '../helpers/helper';
 import { RadarCrearEventoInput } from '../models/radar-abasto/RadarCrearEventoInput';
 import { RadarEventoClaveRow } from '../models/radar-abasto/RadarEventoClaveRow';
 import { RadarEventoHeaderRow } from '../models/radar-abasto/RadarEventoHeaderRow';
+import { RadarGlobalClaveRiesgoRow } from '../models/radar-abasto/RadarGlobalClaveRiesgoRow';
+import { RadarGlobalClavesRiesgoInput } from '../models/radar-abasto/RadarGlobalClavesRiesgoInput';
+import { RadarGlobalSnapshotInput } from '../models/radar-abasto/RadarGlobalSnapshotInput';
+import { RadarGlobalSolicitudRow } from '../models/radar-abasto/RadarGlobalSolicitudRow';
+import { RadarGlobalTimelineInput } from '../models/radar-abasto/RadarGlobalTimelineInput';
 import { RadarListarEventosInput } from '../models/radar-abasto/RadarListarEventosInput';
 import { RadarRiesgoNivel } from '../models/radar-abasto/RadarRiesgoNivel';
 
@@ -606,6 +611,432 @@ export default class RadarAbastoService {
     } finally {
       cx.release();
     }
+  }
+
+  async listarGlobalSnapshot(input: RadarGlobalSnapshotInput) {
+    const page = Math.max(1, parseIntSafe(input.page, 1));
+    const pageSize = Math.min(300, Math.max(1, parseIntSafe(input.pageSize, 50)));
+    const ofs = (page - 1) * pageSize;
+
+    const clues = normUpper(input.clues);
+    const tipoPedido = normUpper(input.tipo_pedido);
+    const tiposInsumo = normUpper(input.tipos_insumo);
+
+    const sql = `
+      WITH latest AS (
+        SELECT DISTINCT ON (
+          UPPER(TRIM(s.cluesimb)),
+          UPPER(TRIM(s.tipo_pedido)),
+          UPPER(TRIM(COALESCE(array_to_string(s.tipos_insumo, ' - '), '')))
+        )
+          s.id::text AS id,
+          s.created_day::text AS created_day,
+          s.created_at::text AS created_at,
+          s.cluesimb,
+          s.tipo_pedido,
+          COALESCE(array_to_string(s.tipos_insumo, ' - '), '') AS tipos_insumo,
+          s.periodo_texto,
+          COALESCE(s.total_renglones, 0)::int AS total_renglones,
+          COALESCE(s.total_piezas, 0)::numeric AS total_piezas
+        FROM public.solicitud_bitacora s
+        WHERE ($1 = '' OR UPPER(TRIM(s.cluesimb)) = $1)
+          AND ($2 = '' OR UPPER(TRIM(s.tipo_pedido)) = $2)
+          AND (
+            $3 = ''
+            OR EXISTS (
+              SELECT 1
+              FROM unnest(COALESCE(s.tipos_insumo, ARRAY[]::text[])) ti
+              WHERE UPPER(TRIM(ti)) = $3
+            )
+          )
+        ORDER BY
+          UPPER(TRIM(s.cluesimb)),
+          UPPER(TRIM(s.tipo_pedido)),
+          UPPER(TRIM(COALESCE(array_to_string(s.tipos_insumo, ' - '), ''))),
+          s.created_at DESC,
+          s.id DESC
+      )
+      SELECT *
+      FROM latest
+      ORDER BY created_at DESC, id DESC
+      LIMIT $4 OFFSET $5;
+    `;
+
+    const countSql = `
+      SELECT COUNT(*)::int AS total
+      FROM (
+        SELECT 1
+        FROM public.solicitud_bitacora s
+        WHERE ($1 = '' OR UPPER(TRIM(s.cluesimb)) = $1)
+          AND ($2 = '' OR UPPER(TRIM(s.tipo_pedido)) = $2)
+          AND (
+            $3 = ''
+            OR EXISTS (
+              SELECT 1
+              FROM unnest(COALESCE(s.tipos_insumo, ARRAY[]::text[])) ti
+              WHERE UPPER(TRIM(ti)) = $3
+            )
+          )
+        GROUP BY
+          UPPER(TRIM(s.cluesimb)),
+          UPPER(TRIM(s.tipo_pedido)),
+          UPPER(TRIM(COALESCE(array_to_string(s.tipos_insumo, ' - '), '')))
+      ) x;
+    `;
+
+    const summarySql = `
+      WITH latest AS (
+        SELECT DISTINCT ON (
+          UPPER(TRIM(s.cluesimb)),
+          UPPER(TRIM(s.tipo_pedido)),
+          UPPER(TRIM(COALESCE(array_to_string(s.tipos_insumo, ' - '), '')))
+        )
+          COALESCE(s.total_renglones, 0)::int AS total_renglones,
+          COALESCE(s.total_piezas, 0)::numeric AS total_piezas
+        FROM public.solicitud_bitacora s
+        WHERE ($1 = '' OR UPPER(TRIM(s.cluesimb)) = $1)
+          AND ($2 = '' OR UPPER(TRIM(s.tipo_pedido)) = $2)
+          AND (
+            $3 = ''
+            OR EXISTS (
+              SELECT 1
+              FROM unnest(COALESCE(s.tipos_insumo, ARRAY[]::text[])) ti
+              WHERE UPPER(TRIM(ti)) = $3
+            )
+          )
+        ORDER BY
+          UPPER(TRIM(s.cluesimb)),
+          UPPER(TRIM(s.tipo_pedido)),
+          UPPER(TRIM(COALESCE(array_to_string(s.tipos_insumo, ' - '), ''))),
+          s.created_at DESC,
+          s.id DESC
+      )
+      SELECT
+        COUNT(*)::int AS total_combinaciones,
+        COALESCE(SUM(total_renglones), 0)::int AS total_renglones,
+        COALESCE(SUM(total_piezas), 0)::numeric AS total_piezas
+      FROM latest;
+    `;
+
+    const args = [clues, tipoPedido, tiposInsumo];
+    const [rowsRes, countRes, summaryRes] = await Promise.all([
+      pool.query(sql, [...args, pageSize, ofs]),
+      pool.query(countSql, args),
+      pool.query(summarySql, args),
+    ]);
+
+    const summary = summaryRes.rows?.[0] ?? {};
+
+    return {
+      mode: 'snapshot',
+      page,
+      pageSize,
+      total: Number(countRes.rows?.[0]?.total ?? 0),
+      summary: {
+        total_combinaciones: Number(summary.total_combinaciones ?? 0),
+        total_renglones: Number(summary.total_renglones ?? 0),
+        total_piezas: Number(summary.total_piezas ?? 0),
+      },
+      data: (rowsRes.rows ?? []).map((r: any) => ({
+        ...r,
+        total_piezas: Number(r.total_piezas ?? 0),
+      })) as RadarGlobalSolicitudRow[],
+    };
+  }
+
+  async listarGlobalTimeline(input: RadarGlobalTimelineInput) {
+    const page = Math.max(1, parseIntSafe(input.page, 1));
+    const pageSize = Math.min(500, Math.max(1, parseIntSafe(input.pageSize, 100)));
+    const ofs = (page - 1) * pageSize;
+
+    const clues = normUpper(input.clues);
+    const tipoPedido = normUpper(input.tipo_pedido);
+    const tiposInsumo = normUpper(input.tipos_insumo);
+    const months = Math.min(24, Math.max(1, parseIntSafe(input.months, 3)));
+
+    const sql = `
+      SELECT
+        s.id::text AS id,
+        s.created_day::text AS created_day,
+        s.created_at::text AS created_at,
+        s.cluesimb,
+        s.tipo_pedido,
+        COALESCE(array_to_string(s.tipos_insumo, ' - '), '') AS tipos_insumo,
+        s.periodo_texto,
+        COALESCE(s.total_renglones, 0)::int AS total_renglones,
+        COALESCE(s.total_piezas, 0)::numeric AS total_piezas
+      FROM public.solicitud_bitacora s
+      WHERE s.created_day >= (CURRENT_DATE - make_interval(months => $1::int))
+        AND ($2 = '' OR UPPER(TRIM(s.cluesimb)) = $2)
+        AND ($3 = '' OR UPPER(TRIM(s.tipo_pedido)) = $3)
+        AND (
+          $4 = ''
+          OR EXISTS (
+            SELECT 1
+            FROM unnest(COALESCE(s.tipos_insumo, ARRAY[]::text[])) ti
+            WHERE UPPER(TRIM(ti)) = $4
+          )
+        )
+      ORDER BY s.created_at DESC, s.id DESC
+      LIMIT $5 OFFSET $6;
+    `;
+
+    const countSql = `
+      SELECT COUNT(*)::int AS total
+      FROM public.solicitud_bitacora s
+      WHERE s.created_day >= (CURRENT_DATE - make_interval(months => $1::int))
+        AND ($2 = '' OR UPPER(TRIM(s.cluesimb)) = $2)
+        AND ($3 = '' OR UPPER(TRIM(s.tipo_pedido)) = $3)
+        AND (
+          $4 = ''
+          OR EXISTS (
+            SELECT 1
+            FROM unnest(COALESCE(s.tipos_insumo, ARRAY[]::text[])) ti
+            WHERE UPPER(TRIM(ti)) = $4
+          )
+        );
+    `;
+
+    const summarySql = `
+      SELECT
+        COUNT(*)::int AS total_registros,
+        COALESCE(SUM(COALESCE(s.total_renglones, 0)), 0)::int AS total_renglones,
+        COALESCE(SUM(COALESCE(s.total_piezas, 0)), 0)::numeric AS total_piezas
+      FROM public.solicitud_bitacora s
+      WHERE s.created_day >= (CURRENT_DATE - make_interval(months => $1::int))
+        AND ($2 = '' OR UPPER(TRIM(s.cluesimb)) = $2)
+        AND ($3 = '' OR UPPER(TRIM(s.tipo_pedido)) = $3)
+        AND (
+          $4 = ''
+          OR EXISTS (
+            SELECT 1
+            FROM unnest(COALESCE(s.tipos_insumo, ARRAY[]::text[])) ti
+            WHERE UPPER(TRIM(ti)) = $4
+          )
+        );
+    `;
+
+    const args = [months, clues, tipoPedido, tiposInsumo];
+    const [rowsRes, countRes, summaryRes] = await Promise.all([
+      pool.query(sql, [...args, pageSize, ofs]),
+      pool.query(countSql, args),
+      pool.query(summarySql, args),
+    ]);
+
+    const summary = summaryRes.rows?.[0] ?? {};
+
+    return {
+      mode: 'timeline',
+      months,
+      page,
+      pageSize,
+      total: Number(countRes.rows?.[0]?.total ?? 0),
+      summary: {
+        total_registros: Number(summary.total_registros ?? 0),
+        total_renglones: Number(summary.total_renglones ?? 0),
+        total_piezas: Number(summary.total_piezas ?? 0),
+      },
+      data: (rowsRes.rows ?? []).map((r: any) => ({
+        ...r,
+        total_piezas: Number(r.total_piezas ?? 0),
+      })) as RadarGlobalSolicitudRow[],
+    };
+  }
+
+  async listarGlobalClavesRiesgo(input: RadarGlobalClavesRiesgoInput) {
+    const page = Math.max(1, parseIntSafe(input.page, 1));
+    const pageSize = Math.min(500, Math.max(1, parseIntSafe(input.pageSize, 100)));
+    const ofs = (page - 1) * pageSize;
+
+    const clues = normUpper(input.clues);
+    const tipoPedido = normUpper(input.tipo_pedido);
+    const tiposInsumo = normUpper(input.tipos_insumo);
+    const months = Math.min(24, Math.max(1, parseIntSafe(input.months, 3)));
+    const minSolicitado = Math.max(0, parseIntSafe(input.minSolicitado, 1));
+
+    const baseCte = `
+      WITH req AS (
+        SELECT
+          UPPER(TRIM(s.cluesimb)) AS cluesimb,
+          UPPER(TRIM(d.clave)) AS clave,
+          COALESCE(SUM(d.cantidad), 0)::numeric AS solicitado_periodo,
+          COUNT(*)::int AS renglones_solicitados,
+          MAX(s.created_day)::date AS ultima_solicitud
+        FROM public.solicitud_bitacora s
+        INNER JOIN public.solicitud_bitacora_detalle d ON d.solicitud_id = s.id
+        WHERE s.created_day >= (CURRENT_DATE - make_interval(months => $1::int))
+          AND ($2 = '' OR UPPER(TRIM(s.cluesimb)) = $2)
+          AND ($3 = '' OR UPPER(TRIM(s.tipo_pedido)) = $3)
+          AND (
+            $4 = ''
+            OR EXISTS (
+              SELECT 1
+              FROM unnest(COALESCE(s.tipos_insumo, ARRAY[]::text[])) ti
+              WHERE UPPER(TRIM(ti)) = $4
+            )
+          )
+        GROUP BY UPPER(TRIM(s.cluesimb)), UPPER(TRIM(d.clave))
+      ),
+      ex AS (
+        SELECT
+          UPPER(TRIM(t.cluesimb)) AS cluesimb,
+          UPPER(TRIM(t.clave_cnis)) AS clave,
+          COALESCE(SUM(t.existencia), 0)::numeric AS existencia_actual
+        FROM public.tmp_existencias t
+        GROUP BY UPPER(TRIM(t.cluesimb)), UPPER(TRIM(t.clave_cnis))
+      ),
+      cpm_ AS (
+        SELECT
+          UPPER(TRIM(um.cluesimb)) AS cluesimb,
+          UPPER(TRIM(c.clave_cnis)) AS clave,
+          COALESCE(MAX(c.cpm), 0)::numeric AS consumo_promedio
+        FROM public.unidad_medica um
+        INNER JOIN public.cpm c ON c.unidad_medica_id = um.id
+        GROUP BY UPPER(TRIM(um.cluesimb)), UPPER(TRIM(c.clave_cnis))
+      ),
+      mov AS (
+        SELECT
+          UPPER(TRIM(m.clues_destino)) AS cluesimb,
+          UPPER(TRIM(m.clave_cnis)) AS clave,
+          COALESCE(SUM(CASE WHEN m.tipo_movimiento = 'ENTRADA' THEN m.cantidad ELSE 0 END), 0)::numeric AS entradas_30d,
+          COALESCE(SUM(CASE WHEN m.tipo_movimiento = 'SALIDA' THEN m.cantidad ELSE 0 END), 0)::numeric AS salidas_30d
+        FROM public.v_movimientos_a_unidades_desde_abasto m
+        WHERE m.fecha_movimiento >= (CURRENT_DATE - INTERVAL '30 days')
+        GROUP BY UPPER(TRIM(m.clues_destino)), UPPER(TRIM(m.clave_cnis))
+      ),
+      calc AS (
+        SELECT
+          r.cluesimb,
+          r.clave,
+          r.solicitado_periodo,
+          r.renglones_solicitados,
+          r.ultima_solicitud::text AS ultima_solicitud,
+          COALESCE(ex.existencia_actual, 0)::numeric AS existencia_actual,
+          COALESCE(cpm_.consumo_promedio, 0)::numeric AS consumo_promedio,
+          CASE
+            WHEN COALESCE(cpm_.consumo_promedio, 0) > 0
+              THEN ROUND((COALESCE(ex.existencia_actual, 0) / cpm_.consumo_promedio)::numeric, 2)
+            ELSE NULL
+          END AS dias_cobertura,
+          COALESCE(mov.entradas_30d, 0)::numeric AS entradas_30d,
+          COALESCE(mov.salidas_30d, 0)::numeric AS salidas_30d
+        FROM req r
+        LEFT JOIN ex   ON ex.cluesimb = r.cluesimb AND ex.clave = r.clave
+        LEFT JOIN cpm_ ON cpm_.cluesimb = r.cluesimb AND cpm_.clave = r.clave
+        LEFT JOIN mov  ON mov.cluesimb = r.cluesimb AND mov.clave = r.clave
+        WHERE r.solicitado_periodo >= $5::numeric
+      ),
+      scored AS (
+        SELECT
+          c.*,
+          (
+            (CASE WHEN c.solicitado_periodo > 0 AND c.existencia_actual <= 0 THEN 100 ELSE 0 END) +
+            (CASE WHEN c.consumo_promedio > 0 AND COALESCE(c.dias_cobertura, 99999) < 7 THEN 45 ELSE 0 END) +
+            (CASE WHEN c.solicitado_periodo > c.existencia_actual THEN 25 ELSE 0 END) +
+            (CASE WHEN c.salidas_30d > c.entradas_30d THEN 10 ELSE 0 END)
+          )::int AS puntaje_desabasto,
+          (
+            (CASE WHEN c.consumo_promedio > 0 AND COALESCE(c.dias_cobertura, 0) >= 120 THEN 85 ELSE 0 END) +
+            (CASE WHEN c.consumo_promedio > 0 AND COALESCE(c.dias_cobertura, 0) >= 60 THEN 35 ELSE 0 END) +
+            (CASE WHEN c.consumo_promedio <= 0 AND c.existencia_actual >= 100 THEN 30 ELSE 0 END) +
+            (CASE WHEN c.entradas_30d > c.salidas_30d AND c.existencia_actual > 0 THEN 10 ELSE 0 END)
+          )::int AS puntaje_sobreabasto
+        FROM calc c
+      )
+    `;
+
+    const selectFields = `
+      s.cluesimb,
+      s.clave,
+      s.solicitado_periodo::numeric::text AS solicitado_periodo,
+      s.renglones_solicitados::int AS renglones_solicitados,
+      s.existencia_actual::numeric::text AS existencia_actual,
+      s.consumo_promedio::numeric::text AS consumo_promedio,
+      s.dias_cobertura::numeric::text AS dias_cobertura,
+      s.entradas_30d::numeric::text AS entradas_30d,
+      s.salidas_30d::numeric::text AS salidas_30d,
+      s.ultima_solicitud,
+      s.puntaje_desabasto::int AS puntaje_desabasto,
+      CASE
+        WHEN s.puntaje_desabasto >= 100 THEN 'CRITICO'
+        WHEN s.puntaje_desabasto >= 60 THEN 'ALTO'
+        WHEN s.puntaje_desabasto >= 30 THEN 'MEDIO'
+        ELSE 'BAJO'
+      END AS nivel_desabasto,
+      s.puntaje_sobreabasto::int AS puntaje_sobreabasto,
+      CASE
+        WHEN s.puntaje_sobreabasto >= 80 THEN 'ALTO'
+        WHEN s.puntaje_sobreabasto >= 35 THEN 'MEDIO'
+        ELSE 'BAJO'
+      END AS nivel_sobreabasto
+    `;
+
+    const pageSql = `
+      ${baseCte}
+      SELECT ${selectFields}
+      FROM scored s
+      ORDER BY s.puntaje_desabasto DESC, s.solicitado_periodo DESC, s.cluesimb, s.clave
+      LIMIT $6 OFFSET $7;
+    `;
+
+    const countSql = `
+      ${baseCte}
+      SELECT COUNT(*)::int AS total FROM scored;
+    `;
+
+    const topDesabastoSql = `
+      ${baseCte}
+      SELECT ${selectFields}
+      FROM scored s
+      WHERE s.puntaje_desabasto >= 30
+      ORDER BY s.puntaje_desabasto DESC, s.solicitado_periodo DESC, s.cluesimb, s.clave
+      LIMIT 20;
+    `;
+
+    const topSobreabastoSql = `
+      ${baseCte}
+      SELECT ${selectFields}
+      FROM scored s
+      WHERE s.puntaje_sobreabasto >= 35
+      ORDER BY s.puntaje_sobreabasto DESC, s.existencia_actual DESC, s.cluesimb, s.clave
+      LIMIT 20;
+    `;
+
+    const args = [months, clues, tipoPedido, tiposInsumo, minSolicitado];
+    const [pageRes, countRes, topDRes, topSRes] = await Promise.all([
+      pool.query(pageSql, [...args, pageSize, ofs]),
+      pool.query(countSql, args),
+      pool.query(topDesabastoSql, args),
+      pool.query(topSobreabastoSql, args),
+    ]);
+
+    const mapRow = (r: any): RadarGlobalClaveRiesgoRow => ({
+      cluesimb: String(r.cluesimb ?? ''),
+      clave: String(r.clave ?? ''),
+      solicitado_periodo: Number(r.solicitado_periodo ?? 0) || 0,
+      renglones_solicitados: Number(r.renglones_solicitados ?? 0) || 0,
+      existencia_actual: Number(r.existencia_actual ?? 0) || 0,
+      consumo_promedio: Number(r.consumo_promedio ?? 0) || 0,
+      dias_cobertura: r.dias_cobertura == null ? null : Number(r.dias_cobertura),
+      entradas_30d: Number(r.entradas_30d ?? 0) || 0,
+      salidas_30d: Number(r.salidas_30d ?? 0) || 0,
+      ultima_solicitud: r.ultima_solicitud ? String(r.ultima_solicitud) : null,
+      puntaje_desabasto: Number(r.puntaje_desabasto ?? 0) || 0,
+      nivel_desabasto: (r.nivel_desabasto ?? 'BAJO') as any,
+      puntaje_sobreabasto: Number(r.puntaje_sobreabasto ?? 0) || 0,
+      nivel_sobreabasto: (r.nivel_sobreabasto ?? 'BAJO') as any,
+    });
+
+    return {
+      mode: 'claves-riesgo',
+      window: { months },
+      page,
+      pageSize,
+      total: Number(countRes.rows?.[0]?.total ?? 0),
+      data: (pageRes.rows ?? []).map(mapRow),
+      top_desabasto: (topDRes.rows ?? []).map(mapRow),
+      top_sobreabasto: (topSRes.rows ?? []).map(mapRow),
+    };
   }
 }
 

@@ -898,7 +898,7 @@ export default class RadarAbastoService {
         SELECT
           UPPER(TRIM(m.clues_destino)) AS cluesimb,
           UPPER(TRIM(m.clave_cnis)) AS clave,
-          COALESCE(SUM(CASE WHEN m.tipo_movimiento = 'ENTRADA' THEN m.cantidad ELSE 0 END), 0)::numeric AS entradas_30d,
+          COALESCE(SUM(CASE WHEN (m.tipo_movimiento = 'ENTRADA' OR m.tipo_movimiento = 'TRASPASO') THEN m.cantidad ELSE 0 END), 0)::numeric AS entradas_30d,
           COALESCE(SUM(CASE WHEN m.tipo_movimiento = 'SALIDA' THEN m.cantidad ELSE 0 END), 0)::numeric AS salidas_30d
         FROM public.v_movimientos_a_unidades_desde_abasto m
         WHERE m.fecha_movimiento >= (CURRENT_DATE - INTERVAL '30 days')
@@ -1000,9 +1000,11 @@ export default class RadarAbastoService {
       WHERE s.puntaje_sobreabasto >= 35
       ORDER BY s.puntaje_sobreabasto DESC, s.existencia_actual DESC, s.cluesimb, s.clave
       LIMIT 20;
-    `;
+    `;   
 
     const args = [months, clues, tipoPedido, tiposInsumo, minSolicitado];
+     
+
     const [pageRes, countRes, topDRes, topSRes] = await Promise.all([
       pool.query(pageSql, [...args, pageSize, ofs]),
       pool.query(countSql, args),

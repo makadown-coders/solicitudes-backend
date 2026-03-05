@@ -45,7 +45,8 @@ Claves actuales (valores JSON, típicamente boolean):
 - `APLICAR_ENCUESTAS`
 - `APLICAR_EQUIVALENCIAS`
 - `CLUES_EXISTENCIAS_ALLOWLIST`
-- `IMPORT_LIMIT_TO_KIT` (lista JSON)
+- `IMPORT_LIMIT_TO_KIT`
+- `EDIT_CPMS` (lista JSON)
 
 ### 📦 Existencias (temporales) por unidad (Postgres)
 Staging en `tmp_existencias` con **resolución de unidad** por `cluesimb` / `cluessa` / `alias_sas`.

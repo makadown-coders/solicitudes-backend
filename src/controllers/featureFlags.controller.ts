@@ -38,7 +38,9 @@ export class FeatureFlagsController {
         return res.status(400).json({ ok: false, error: 'scope inválido' });
       }
       // tipo por clave (booleans para los actuales)
-      if (['SOLO_CPMS', 'BUSCAR_EXISTENCIA_EN_CLUES', 'APLICAR_ENCUESTAS', 'APLICAR_EQUIVALENCIAS'].includes(flag_key) && typeof value !== 'boolean') {
+      if (['SOLO_CPMS', 'BUSCAR_EXISTENCIA_EN_CLUES',
+          'APLICAR_ENCUESTAS', 'APLICAR_EQUIVALENCIAS',
+          'EDIT_CPMS'].includes(flag_key) && typeof value !== 'boolean') {
         return res.status(400).json({ ok: false, error: `${flag_key} debe ser boolean` });
       }
       const updatedBy = (req.user?.name ?? 'api') as string;

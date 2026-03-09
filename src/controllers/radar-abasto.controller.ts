@@ -33,6 +33,57 @@ export default class RadarAbastoController {
     }
   };
 
+  /** GET /api/radar-abasto/global/snapshot */
+  listarGlobalSnapshot = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const out = await this.service.listarGlobalSnapshot({
+        clues: req.query.clues?.toString(),
+        tipo_pedido: req.query.tipo_pedido?.toString(),
+        tipos_insumo: req.query.tipos_insumo?.toString(),
+        page: parseIntSafe(req.query.page, 1),
+        pageSize: parseIntSafe(req.query.pageSize, 50),
+      });
+      res.json(out);
+    } catch (e: any) {
+      res.status(400).json({ error: 'listar_global_snapshot_failed', detail: e?.message });
+    }
+  };
+
+  /** GET /api/radar-abasto/global/timeline */
+  listarGlobalTimeline = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const out = await this.service.listarGlobalTimeline({
+        clues: req.query.clues?.toString(),
+        tipo_pedido: req.query.tipo_pedido?.toString(),
+        tipos_insumo: req.query.tipos_insumo?.toString(),
+        months: parseIntSafe(req.query.months, 3),
+        page: parseIntSafe(req.query.page, 1),
+        pageSize: parseIntSafe(req.query.pageSize, 100),
+      });
+      res.json(out);
+    } catch (e: any) {
+      res.status(400).json({ error: 'listar_global_timeline_failed', detail: e?.message });
+    }
+  };
+
+  /** GET /api/radar-abasto/global/claves-riesgo */
+  listarGlobalClavesRiesgo = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const out = await this.service.listarGlobalClavesRiesgo({
+        clues: req.query.clues?.toString(),
+        tipo_pedido: req.query.tipo_pedido?.toString(),
+        tipos_insumo: req.query.tipos_insumo?.toString(),
+        months: parseIntSafe(req.query.months, 3),
+        minSolicitado: parseIntSafe(req.query.minSolicitado, 1),
+        page: parseIntSafe(req.query.page, 1),
+        pageSize: parseIntSafe(req.query.pageSize, 100),
+      });
+      res.json(out);
+    } catch (e: any) {
+      res.status(400).json({ error: 'listar_global_claves_riesgo_failed', detail: e?.message });
+    }
+  };
+
   /** GET /api/radar-abasto/eventos/:id */
   getEventoDetalle = async (req: Request, res: Response): Promise<void> => {
     try {

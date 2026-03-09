@@ -3,7 +3,7 @@
 Backend en **Node.js + Express (TypeScript)** que expone servicios REST para:
 - **Solicitudes de artículos** (autocompletado vía **PostgreSQL**).
 - **Abasto** (citas, existencias, CPMs, trazabilidad, RDLS, factores, feature flags, etc.) sobre **PostgreSQL** y **Power Automate** (Excel en Base64).
-- **Auth** en construccion (analizando si usar **Supabase** (login, refresh, me)).
+- **Auth local** (SSO artesanal con JWT RS256 + refresh rotatorio en PostgreSQL).
 
 > ⚠️ Nota operativa: Para datos masivos (citas/inventario) se consulta **Power Automate** y se retorna **Base64**; persistir todo en Postgres en free tiers puede dormir el contenedor y degradar UX.
 
@@ -22,6 +22,7 @@ Backend en **Node.js + Express (TypeScript)** que expone servicios REST para:
 - Balanceo: `/api/balanceo/*`.
 - Kits: `/api/kits/*`, `/api/kits/:kitId/claves`, `/api/kits/:codigo/clavesByCodigo`,
   `/api/kits/:kitId/unidades`, `/api/unidades-kits/:unidadId/kits`, `/api/carga-masiva/cpm-kits/*`.
+- Radar de abasto global: `/api/radar-abasto/global/snapshot`, `/global/timeline`, `/global/claves-riesgo`.
 
 **Deprecados:** por ahora, ninguno en esta rama.
 
@@ -93,6 +94,19 @@ GET /api/factores/factor?clave=...&clues=BCIMB001656
 Salidas hacia exterior con paginación por cursor.
 ```
 GET /api/rdls/salidas-exterior?desde=YYYY-MM-DD&hasta=YYYY-MM-DD&ventanaDias=30&limit=200&cursor=...
+```
+
+### 🚨 Radar de Abasto (Postgres)
+Eventos de riesgo por unidad/clave y vistas globales del estado de abasto.
+```
+POST /api/radar-abasto/eventos
+GET  /api/radar-abasto/eventos
+GET  /api/radar-abasto/global/snapshot
+GET  /api/radar-abasto/global/timeline
+GET  /api/radar-abasto/global/claves-riesgo
+GET  /api/radar-abasto/eventos/:id
+PATCH /api/radar-abasto/eventos/:id
+POST  /api/radar-abasto/eventos/:id/recalcular
 ```
 
 ### 🧾 Citas (Power Automate → Base64)
@@ -213,10 +227,10 @@ POST /api/carga/inventario-inicial/init
 POST /api/carga/inventario-inicial/batch
 ```
 
-### 🔐 Auth (Supabase)
+### 🔐 Auth (SSO local)
 ```
 POST /api/auth/login       # { email, password }          -> { access_token, refresh_token, ... }
-POST /api/auth/refresh     # { refresh_token }            -> tokens
+POST /api/auth/refresh     # { refresh_token }            -> { access_token, refresh_token, user }
 GET  /api/auth/me          # Bearer <access_token> (requireAuth)
 POST /api/auth/logout
 POST /api/auth/logout-all
@@ -229,7 +243,7 @@ POST /api/auth/logout-all
 - **Runtime:** Node.js 18+ (recomendado 20+), Express, TypeScript  
 - **DB:** PostgreSQL  
 - **Integraciones:** Power Automate (Excel→Base64), SharePoint  
-- **Auth:** Supabase (JWT, JWKS discovery)  
+- **Auth:** SSO local (JWT RS256 + refresh rotatorio en Postgres)  
 - **Otros:** `compression` (payloads grandes), CORS habilitado
 
 ---
@@ -273,6 +287,7 @@ POSTGRES_PASSWORD=clave
 
 # Power Automate (Citas)
 AZURE_URL=https://prod-xx.logic.azure.com/...           # flujo de citas (Base64)
+AZURE_CPM_URL=https://prod-xx.logic.azure.com/...       # flujo de CPMs (Base64)
 AZURE_PAYLOAD_SECRET=...                                # secreta para payload
 
 # Power Automate (Inventario por almacén / consolidado)
@@ -291,7 +306,21 @@ AZURE_HGTZE_URL=...
 AZURE_SP_ABASTO_URL=...     # envío de archivo solicitud
 AZURE_SP_ENCUESTA_URL=...   # envío de encuesta piloto
 
-# Supabase (Auth)
+# Auth local (SSO JWT)
+JWT_ISSUER=https://imssb-bc.local
+JWT_AUDIENCE=imssb-bc
+ACCESS_TTL_SECONDS=900
+REFRESH_TTL_DAYS=14
+JWKS_PUBLIC_PATH=keys/current_public.jwk.json
+JWKS_PRIVATE_PATH=keys/current_private.jwk.json
+ACTIVE_KID_FILE=keys/ACTIVE_KID
+JWT_ISSUER_ALLOWLIST=https://imssb-bc.local
+
+# Otros
+SOLICITUDES_HASH_SALT=...
+ADMIN_KEY=...
+
+# Supabase (legacy / opcional)
 SUPABASE_URL=https://xxxx.supabase.co
 SUPABASE_ANON_KEY=eyJhbGciOi...   # publishable
 SUPABASE_SERVICE_ROLE_KEY=...     # opcional (admin ops)
@@ -308,6 +337,7 @@ SUPABASE_SERVICE_ROLE_KEY=...     # opcional (admin ops)
 - Staging: `tmp_existencias` (para `/api/existencias-temp`).
 - Flags: `feature_flags` (con `flag_key`, `scope`, `scope_id`, `value_json`, `updated_at`).
 - Factores: tablas para factor de conversión por clave/clues.
+- Radar: `radar_eventos`, `radar_evento_claves` (para `/api/radar-abasto/*`).
 
 > Si una vista/tabla no existe, los endpoints relacionados fallarán con 400/500.
 
@@ -339,15 +369,12 @@ SUPABASE_SERVICE_ROLE_KEY=...     # opcional (admin ops)
 
 Esta version agrega un **SSO local** (JWT RS256 + refresh rotatorio en Postgres) sin romper el contrato actual de rutas:
 - `POST /api/auth/login` → `{ access_token, refresh_token, user }`
-- `POST /api/auth/refresh` → `{ access_token }`
+- `POST /api/auth/refresh` → `{ access_token, refresh_token, user }`
 - `GET  /api/auth/me` (Bearer) → perfil básico
 - `POST /api/auth/logout`
+- `POST /api/auth/logout-all`
 
-Se conserva compatibilidad con Supabase mediante `AUTH_PROVIDER`:
-- `AUTH_PROVIDER=supabase` (comportamiento actual)
-- `AUTH_PROVIDER=local` (nuevo SSO)
-
-Para más detalles consultar README_SSO.MD
+Para más detalles consultar README_SSO.md
 ---
 
 ## 👤 Autor

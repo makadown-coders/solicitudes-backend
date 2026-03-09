@@ -15,7 +15,7 @@ scripts/hash-password.ts
 src/setup/env.ts                 # carga dotenv una sola vez
 src/db/pool.ts                   # Pool de Postgres único
 src/auth/jwt.ts                  # firma JWT RS256
-src/auth/jwks.controller.ts      # expone /.well-known/jwks.json
+src/auth/jwks.controller.ts      # helper para exponer /.well-known/jwks.json (opcional)
 src/auth/requireAuth.ts          # verifica JWT local (allowlist de iss)
 src/services/IAuthProvider.ts    # interfaz (para crecer a multi-proveedor)
 src/services/localAuth.service.ts
@@ -218,8 +218,9 @@ ON CONFLICT (code) DO NOTHING;
 
 ---
 
-## 6) Montar JWKS
+## 6) Montar JWKS (opcional)
 
+Solo si necesitas discovery público para terceros (por ejemplo validadores externos).
 En **`src/app.ts`**:
 
 ```ts
@@ -286,7 +287,7 @@ POST /api/auth/refresh
 → 200 { access_token, refresh_token }
 ```
 
-**JWKS**
+**JWKS (opcional)**
 
 ```
 GET /.well-known/jwks.json

@@ -37,6 +37,23 @@ class ArticulosController {
     }
   }
 
+  async buscarArticulosByCluesIMBCPM(req: Request, res: Response): Promise<void> {
+    const cluesimb = String(req.query.cluesimb ?? '').trim();
+
+    if (!cluesimb) {
+      res.status(400).json({ error: 'cluesimb es requerido' });
+      return;
+    }
+
+    try {
+      const { resultados, total } = await this.articulosService.buscarByCluesIMBCPM(cluesimb);
+      res.json({ resultados, total });
+    } catch (error: any) {
+      console.error('Error al buscar artÃ­culos por cluesimb:', error);
+      res.status(500).json({ error: 'Error del servidor' });
+    }
+  }
+
   async listarCrud(req: Request, res: Response): Promise<void> {
     try {
       const page = Math.max(Number(req.query.page ?? 1), 1);

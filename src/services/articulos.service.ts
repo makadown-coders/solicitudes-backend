@@ -73,6 +73,40 @@ class ArticulosService {
     return { resultados, total };
   }
 
+  async buscarByCluesIMBCPM(cluesimb: string): Promise<{ resultados: Articulo[]; total: number }> {
+    const clueSimbValue = String(cluesimb ?? '').trim();
+
+    const sqlQuery = `
+      SELECT art.clave, art.descripcion, art.presentacion
+      FROM public.articulos art
+      INNER JOIN v_unidad_cpm cr ON art.clave = cr.clave_cnis
+      WHERE cr.cluesimb = $1
+      ORDER BY art.clave ASC NULLS LAST
+    `;
+
+    const sqlCount = `
+      SELECT COUNT(*)::int as count
+      FROM public.articulos art
+      INNER JOIN v_unidad_cpm cr ON art.clave = cr.clave_cnis
+      WHERE cr.cluesimb = $1
+    `;
+
+    const [resultadosResult, totalResult] = await Promise.all([
+      pool.query(sqlQuery, [clueSimbValue]),
+      pool.query<{ count: number }>(sqlCount, [clueSimbValue]),
+    ]);
+
+    const resultados: Articulo[] = resultadosResult.rows.map((r) => ({
+      clave: String(r.clave ?? ''),
+      descripcion: String(r.descripcion ?? ''),
+      presentacion: String(r.presentacion ?? ''),
+    }));
+
+    const total = Number(totalResult.rows[0]?.count ?? 0);
+
+    return { resultados, total };
+  }
+
   private buildPgWhere(q?: string) {
     const params: any[] = [];
     let where = 'WHERE 1=1';

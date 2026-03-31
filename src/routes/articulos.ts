@@ -7,6 +7,7 @@ const articulosController = new ArticulosController();
 
 router.get('/', articulosController.buscarArticulos.bind(articulosController));
 router.get('/all', articulosController.buscarArticulosAll.bind(articulosController));
+router.get('/by-cluesimb-cpm', articulosController.buscarArticulosByCluesIMBCPM.bind(articulosController));
 
 // Nuevas rutas CRUD en Postgres (sin tocar endpoints existentes)
 router.get('/crud', articulosController.listarCrud.bind(articulosController));

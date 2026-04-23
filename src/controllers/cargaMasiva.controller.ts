@@ -9,7 +9,7 @@ class CargaMasivaController {
         this.service = new CargaMasivaService();
     }
 
-    async initEntradas(req: Request, res: Response) {
+    async initEntradas(req: Request, res: Response): Promise<void> {
         try {
             await this.service.limpiarTabla('entrada');
             res.json({ message: 'Tabla entradas limpia y lista' });
@@ -18,7 +18,7 @@ class CargaMasivaController {
         }
     }
 
-    async batchEntradas(req: Request, res: Response) {
+    async batchEntradas(req: Request, res: Response): Promise<void> {
         try {
             console.info('Entrando a batchEntradas');
             const datos = req.body;
@@ -30,7 +30,7 @@ class CargaMasivaController {
         }
     }
 
-    async initSalidas(req: Request, res: Response) {
+    async initSalidas(req: Request, res: Response): Promise<void> {
         try {
             await this.service.limpiarTabla('salida');
             res.json({ message: 'Tabla salidas limpia y lista' });
@@ -39,7 +39,7 @@ class CargaMasivaController {
         }
     }
 
-    async batchSalidas(req: Request, res: Response) {
+    async batchSalidas(req: Request, res: Response): Promise<void> {
         try {
             console.info('Entrando a batchSalidas');
             const datos = req.body;
@@ -51,7 +51,7 @@ class CargaMasivaController {
         }
     }
 
-    async initTraspasos(req: Request, res: Response) {
+    async initTraspasos(req: Request, res: Response): Promise<void> {
         try {
             await this.service.limpiarTabla('traspaso');
             res.json({ message: 'Tabla traspaso limpia y lista' });
@@ -60,7 +60,7 @@ class CargaMasivaController {
         }
     }
 
-    async batchTraspasos(req: Request, res: Response) {
+    async batchTraspasos(req: Request, res: Response): Promise<void> {
         try {
             console.info('Entrando a batchTraspasos');
             const datos = req.body;
@@ -73,7 +73,7 @@ class CargaMasivaController {
     }
 
     // 🔹 NUEVOS
-    async initInventarioInicial(req: Request, res: Response) {
+    async initInventarioInicial(req: Request, res: Response): Promise<void> {
         try {
             // Si quieres borrar TODO (todos los años):
             await this.service.limpiarTabla('inventario_inicial');
@@ -84,10 +84,13 @@ class CargaMasivaController {
         }
     }
 
-    async batchInventarioInicial(req: Request, res: Response) {
+    async batchInventarioInicial(req: Request, res: Response): Promise<void> {
         try {
             const { anio, resetAnio = true } = req.query;
-            if (!anio) return res.status(400).json({ error: 'Falta parámetro ?anio=YYYY' });
+            if (!anio) {
+                res.status(400).json({ error: 'Falta parámetro ?anio=YYYY' });
+                return;
+            }
 
             const datos = req.body; // array de objetos normalizados desde tu front
             await this.service.insertarInventarioInicial(datos, Number(anio), String(resetAnio) !== 'false');

@@ -1,5 +1,3 @@
-// src/controllers/asignaciones.controller.ts
-
 import { Request, Response } from 'express';
 import AsignacionesService from '../services/asignaciones.service';
 import { parseIntSafe, parseISOorNull } from '../helpers/helper';
@@ -7,10 +5,13 @@ import { parseIntSafe, parseISOorNull } from '../helpers/helper';
 export default class AsignacionesController {
   private svc = new AsignacionesService();
 
-  historial = async (req: Request, res: Response) => {
+  historial = async (req: Request, res: Response): Promise<void> => {
     try {
       const dispositivo_id = Number(req.params.id);
-      if (!Number.isFinite(dispositivo_id)) return res.status(400).json({ message: 'id inválido' });
+      if (!Number.isFinite(dispositivo_id)) {
+        res.status(400).json({ message: 'id inválido' });
+        return;
+      }
 
       const page = Math.max(parseIntSafe(req.query.page, 1), 1);
       const pageSize = Math.min(Math.max(parseIntSafe(req.query.pageSize, 10), 1), 100);
@@ -25,22 +26,23 @@ export default class AsignacionesController {
     }
   };
 
-  crear = async (req: Request, res: Response) => {
+  crear = async (req: Request, res: Response): Promise<void> => {
     try {
       const dispositivo_id = Number(req.params.id);
       const creado_por = (req as any)?.user?.email || (req as any)?.user?.nombre || null;
       res.status(201).json(await this.svc.crear(dispositivo_id, req.body, creado_por));
+    } catch (e: any) {
+      res.status(400).json({ error: e?.message || 'Error al crear asignación' });
     }
-    catch (e: any) { res.status(400).json({ error: e?.message || 'Error al crear asignación' }); }
   };
 
-  // POST /api/dispositivos/:id/asignaciones/:asignacionId/revert
-  revert = async (req: Request, res: Response) => {
+  revert = async (req: Request, res: Response): Promise<void> => {
     try {
       const dispositivo_id = Number(req.params.id);
       const asignacion_id = Number(req.params.asignacionId);
       if (!Number.isFinite(dispositivo_id) || !Number.isFinite(asignacion_id)) {
-        return res.status(400).json({ message: 'Parámetros inválidos' });
+        res.status(400).json({ message: 'Parámetros inválidos' });
+        return;
       }
 
       const creado_por = (req as any)?.user?.email || (req as any)?.user?.nombre || null;
@@ -49,7 +51,10 @@ export default class AsignacionesController {
       res.status(201).json(out);
     } catch (e: any) {
       const msg = String(e?.message || '');
-      if (msg.includes('NOT_FOUND')) return res.status(404).json({ message: 'Asignación no encontrada' });
+      if (msg.includes('NOT_FOUND')) {
+        res.status(404).json({ message: 'Asignación no encontrada' });
+        return;
+      }
       console.error(e);
       res.status(500).json({ message: 'Error al revertir' });
     }

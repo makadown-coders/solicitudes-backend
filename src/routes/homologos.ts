@@ -1,16 +1,16 @@
-import { Router } from 'express';
+import express from 'express';
 import HomologosController from '../controllers/homologos.controller';
 
-const router = Router();
-const ctrl = new HomologosController();
+const router = express.Router();
+const controller = new HomologosController();
 
-router.get('/', ctrl.getByClave.bind(ctrl));
-router.post('/batch', ctrl.batch.bind(ctrl));
-router.post('/batch-forward', ctrl.batchForward.bind(ctrl));
-router.get('/crud', ctrl.listarCrud.bind(ctrl));
-router.get('/crud/:id', ctrl.obtenerCrudById.bind(ctrl));
-router.post('/crud', ctrl.crearCrud.bind(ctrl));
-router.put('/crud/:id', ctrl.actualizarCrud.bind(ctrl));
-router.delete('/crud/:id', ctrl.eliminarCrud.bind(ctrl));
+router.get('/', controller.getByClave.bind(controller));
+router.post('/batch', controller.batch.bind(controller));
+router.post('/batch-forward', controller.batchForward.bind(controller));
+router.get('/crud', controller.listarCrud.bind(controller));
+router.get('/crud/:id', controller.obtenerCrudById.bind(controller));
+router.post('/crud', controller.crearCrud.bind(controller));
+router.put('/crud/:id', controller.actualizarCrud.bind(controller));
+router.delete('/crud/:id', controller.eliminarCrud.bind(controller));
 
 export default router;

@@ -1,11 +1,10 @@
-// src/controllers/dispositivos.controller.ts
 import { Request, Response } from 'express';
 import DispositivosService from '../services/dispositivos.service';
 
 export default class DispositivosController {
   private svc = new DispositivosService();
 
-  list = async (req: Request, res: Response) => {
+  list = async (req: Request, res: Response): Promise<void> => {
     try {
       const pageSize = Math.min(Number(req.query.pageSize ?? 20), 100);
       const page = Math.max(Number(req.query.page ?? 1), 1);
@@ -25,20 +24,28 @@ export default class DispositivosController {
     }
   };
 
-  create = async (req: Request, res: Response) => {
-    try { res.status(201).json(await this.svc.create(req.body)); }
-    catch (e: any) { res.status(400).json({ error: e?.message || 'Error al crear dispositivo' }); }
+  create = async (req: Request, res: Response): Promise<void> => {
+    try {
+      res.status(201).json(await this.svc.create(req.body));
+    } catch (e: any) {
+      res.status(400).json({ error: e?.message || 'Error al crear dispositivo' });
+    }
   };
 
-  byId = async (req: Request, res: Response) => {
+  byId = async (req: Request, res: Response): Promise<void> => {
     try {
       const out = await this.svc.byId(Number(req.params.id));
-      if (!out) return res.sendStatus(404);
+      if (!out) {
+        res.sendStatus(404);
+        return;
+      }
       res.json(out);
-    } catch { res.status(500).json({ message: 'Error al obtener dispositivo' }); }
+    } catch {
+      res.status(500).json({ message: 'Error al obtener dispositivo' });
+    }
   };
 
-  updateBasic = async (req: Request, res: Response) => {
+  updateBasic = async (req: Request, res: Response): Promise<void> => {
     try {
       const id = Number(req.params.id);
       const { ip, conexion, observaciones, serial, marca, modelo, nics } = req.body || {};
@@ -57,11 +64,13 @@ export default class DispositivosController {
       const msg = String(e?.message || '');
       if (msg.includes('dispositivo_nic_mac_norm_uniq') || msg.includes('dispositivo_nic_uq_per_device')) {
         res.status(400).json({ ok: false, error: 'La MAC ya está registrada.' });
+        return;
       }
+      res.status(500).json({ ok: false, error: msg || 'Error al actualizar dispositivo' });
     }
   };
 
-  cambiarAsignacion = async (req: Request, res: Response) => {
+  cambiarAsignacion = async (req: Request, res: Response): Promise<void> => {
     try {
       const id = Number(req.params.id);
       const {
@@ -73,10 +82,12 @@ export default class DispositivosController {
       } = req.body || {};
 
       if (!unidad_medica_id) {
-        return res.status(400).json({ ok: false, error: 'unidad_medica_id requerido' });
+        res.status(400).json({ ok: false, error: 'unidad_medica_id requerido' });
+        return;
       }
       if (!persona_id && !lugar_especifico) {
-        return res.status(400).json({ ok: false, error: 'persona_id o lugar_especifico requerido' });
+        res.status(400).json({ ok: false, error: 'persona_id o lugar_especifico requerido' });
+        return;
       }
       const out = await this.svc.changeAssignment({
         dispositivo_id: id,
@@ -87,43 +98,56 @@ export default class DispositivosController {
         fecha_asignacion: fecha_asignacion ?? null
       });
       res.json({ ok: true, asignacion_id: out.id });
-    } catch (e: any) { res.status(500).json({ ok: false, error: e.message }); }
+    } catch (e: any) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
   };
 
-  agregarMonitor = async (req: Request, res: Response) => {
+  agregarMonitor = async (req: Request, res: Response): Promise<void> => {
     try {
       const dispositivo_id = Number(req.params.id);
       const { serial, marca, modelo, es_principal } = req.body || {};
       const out = await this.svc.addMonitor({ dispositivo_id, serial: serial ?? null, marca: marca ?? null, modelo: modelo ?? null, es_principal: !!es_principal });
       res.json({ ok: true, id: out.id });
-    } catch (e: any) { res.status(500).json({ ok: false, error: e.message }); }
+    } catch (e: any) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
   };
 
-  actualizarMonitor = async (req: Request, res: Response) => {
+  actualizarMonitor = async (req: Request, res: Response): Promise<void> => {
     try {
       const dispositivo_id = Number(req.params.id);
       const monitor_id = Number(req.params.monitorId);
       const { serial, marca, modelo, es_principal } = req.body || {};
       const out = await this.svc.updateMonitor({ id: monitor_id, dispositivo_id, serial: serial ?? null, marca: marca ?? null, modelo: modelo ?? null, es_principal: !!es_principal });
       res.json({ ok: true, id: out.id });
-    } catch (e: any) { res.status(500).json({ ok: false, error: e.message }); }
+    } catch (e: any) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
   };
 
-  agregarPeriferico = async (req: Request, res: Response) => {
+  agregarPeriferico = async (req: Request, res: Response): Promise<void> => {
     try {
       const dispositivo_id = Number(req.params.id);
       const { tipo_id, serial, marca, modelo } = req.body || {};
-      if (!tipo_id) return res.status(400).json({ ok: false, error: 'tipo requerido' });
+      if (!tipo_id) {
+        res.status(400).json({ ok: false, error: 'tipo requerido' });
+        return;
+      }
       const out = await this.svc.addPeriferico({
         dispositivo_id,
         tipo_id: Number(tipo_id),
-        serial: serial ?? null, marca: marca ?? null, modelo: modelo ?? null
+        serial: serial ?? null,
+        marca: marca ?? null,
+        modelo: modelo ?? null
       });
       res.json({ ok: true, id: out.id });
-    } catch (e: any) { res.status(500).json({ ok: false, error: e.message }); }
+    } catch (e: any) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
   };
 
-  actualizarPeriferico = async (req: Request, res: Response) => {
+  actualizarPeriferico = async (req: Request, res: Response): Promise<void> => {
     try {
       const dispositivo_id = Number(req.params.id);
       const periferico_id = Number(req.params.perifericoId);
@@ -132,28 +156,35 @@ export default class DispositivosController {
         id: periferico_id,
         dispositivo_id,
         tipo_id: (tipo_id === undefined ? undefined : Number(tipo_id)),
-        serial: serial ?? null, marca: marca ?? null, modelo: modelo ?? null
+        serial: serial ?? null,
+        marca: marca ?? null,
+        modelo: modelo ?? null
       });
       res.json({ ok: true, id: out.id });
-    } catch (e: any) { res.status(500).json({ ok: false, error: e.message }); }
+    } catch (e: any) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
   };
 
-  eliminarMonitor = async (req, res) => {
+  eliminarMonitor = async (req: Request, res: Response): Promise<void> => {
     try {
       const dispositivo_id = Number(req.params.id);
       const monitor_id = Number(req.params.monitorId);
       await this.svc.deleteMonitor(dispositivo_id, monitor_id);
       res.json({ ok: true });
-    } catch (e: any) { res.status(500).json({ ok: false, error: e.message || 'No se pudo eliminar el monitor' }); }
+    } catch (e: any) {
+      res.status(500).json({ ok: false, error: e.message || 'No se pudo eliminar el monitor' });
+    }
   };
 
-  eliminarPeriferico = async (req, res) => {
+  eliminarPeriferico = async (req: Request, res: Response): Promise<void> => {
     try {
       const dispositivo_id = Number(req.params.id);
       const periferico_id = Number(req.params.perifericoId);
       await this.svc.deletePeriferico(dispositivo_id, periferico_id);
       res.json({ ok: true });
-    } catch (e: any) { res.status(500).json({ ok: false, error: e.message || 'No se pudo eliminar el periférico' }); }
+    } catch (e: any) {
+      res.status(500).json({ ok: false, error: e.message || 'No se pudo eliminar el periférico' });
+    }
   };
-
 }

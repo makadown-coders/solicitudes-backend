@@ -5,7 +5,7 @@ import { CitaSlimInventario } from '../models/CitaSlimInventario';
 
 class CitasController {
   private citasService = new CitasService();
-  init = async (req: Request, res: Response) => {
+  init = async (req: Request, res: Response): Promise<void> => {
     try {
       const reset = String(req.query.reset ?? 'true') === 'true';
       const out = await this.citasService.init(reset);
@@ -15,7 +15,7 @@ class CitasController {
     }
   };
 
-  batch = async (req: Request, res: Response) => {
+  batch = async (req: Request, res: Response): Promise<void> => {
     try {
       const rows = req.body?.rows ?? [];
       const out = await this.citasService.batch(rows);
@@ -27,7 +27,7 @@ class CitasController {
     }
   };
 
-  async search(req: Request, res: Response) {
+  async search(req: Request, res: Response): Promise<void> {
     try {
       const out = await this.citasService.search(req.query);
       res.json(out);
@@ -37,7 +37,7 @@ class CitasController {
     }
   }
 
-  async obtenerXClave(req: Request, res: Response) {
+  async obtenerXClave(req: Request, res: Response): Promise<void> {
     try {
       const out = await this.citasService.obtenerXClave(req.query);
       res.json(out);
@@ -47,7 +47,7 @@ class CitasController {
     }
   }
 
-  async statsResumen(req: Request, res: Response) {
+  async statsResumen(req: Request, res: Response): Promise<void> {
     try {
       const out = await this.citasService.statsResumen(req.query);
       res.json(out);
@@ -58,7 +58,7 @@ class CitasController {
   }
 
   // 🔹 NUEVO: /stats/proveedores
-  async statsProveedores(req: Request, res: Response) {
+  async statsProveedores(req: Request, res: Response): Promise<void> {
     try {
       const out = await this.citasService.statsProveedores(req.query);
       res.json(out);
@@ -69,7 +69,7 @@ class CitasController {
   }
 
   // 🔹 NUEVO: /stats/cumplimiento-claves
-  async statsCumplimientoClaves(req: Request, res: Response) {
+  async statsCumplimientoClaves(req: Request, res: Response): Promise<void> {
     try {
       const out = await this.citasService.statsCumplimientoClaves(req.query);
       res.json(out);
@@ -79,13 +79,14 @@ class CitasController {
     }
   }
 
-  async refreshMaterializedViews(req: Request, res: Response) {
+  async refreshMaterializedViews(req: Request, res: Response): Promise<void> {
     try {
       // (Opcional) llavero simple via header
       const key = req.headers['x-admin-key'];
       const expected = process.env.ADMIN_KEY?.trim();
       if (expected && key !== expected) {
-        return res.status(401).json({ error: 'unauthorized' });
+        res.status(401).json({ error: 'unauthorized' });
+        return;
       }
 
       const out = await this.citasService.refreshMaterializedViews();

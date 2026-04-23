@@ -1,60 +1,64 @@
-// src/controllers/unidad-medica-kits.controller.ts
 import { Request, Response } from 'express';
 import UnidadMedicaKitsService from "../services/unidad-medica-kits.service";
 
 class UnidadMedicaKitsController {
     private service: UnidadMedicaKitsService;
+
     constructor() {
         this.service = new UnidadMedicaKitsService();
     }
 
-    // GET /api/kits/:kitId/unidades
-    async getUnidadesByKit(req: Request, res: Response) {
+    async getUnidadesByKit(req: Request, res: Response): Promise<void> {
         try {
             const kitId = parseInt(req.params.kitId, 10);
             if (!kitId) {
-                return res.status(400).json({ ok: false, msg: 'kitId requerido' });
+                res.status(400).json({ ok: false, msg: 'kitId requerido' });
+                return;
             }
 
             const rows = await this.service.getUnidadesByKit(kitId);
             res.json({ ok: true, rows });
         } catch (error: any) {
-            console.error('❌ Error en getUnidadesByKit:', error);
+            console.error('Error en getUnidadesByKit:', error);
             res.status(500).json({ error: 'Error al obtener las unidades del kit' });
         }
     }
 
-    // PUT /api/kits/:kitId/unidades
-    async setUnidadesByKitUsingClues(req: Request, res: Response) {
+    async setUnidadesByKitUsingClues(req: Request, res: Response): Promise<void> {
         try {
             const kitId = parseInt(req.params.kitId, 10);
             const { cluesimb } = req.body as { cluesimb: string[] };
 
-            if (!kitId) return res.status(400).json({ ok: false, msg: 'kitId requerido' });
+            if (!kitId) {
+                res.status(400).json({ ok: false, msg: 'kitId requerido' });
+                return;
+            }
             if (!Array.isArray(cluesimb)) {
-                return res.status(400).json({ ok: false, msg: 'cluesimb debe ser un arreglo' });
+                res.status(400).json({ ok: false, msg: 'cluesimb debe ser un arreglo' });
+                return;
             }
 
             await this.service.setUnidadesByKitUsingClues(kitId, cluesimb);
             res.json({ ok: true });
         } catch (error: any) {
-            console.error('❌ Error en setUnidadesByKitUsingClues:', error);
+            console.error('Error en setUnidadesByKitUsingClues:', error);
             res.status(500).json({ error: 'Error al actualizar las unidades del kit' });
         }
     }
 
-    // GET /api/unidades-kits/:unidadId/kits
-    async getKitsByUnidad(req: Request, res: Response) {
+    async getKitsByUnidad(req: Request, res: Response): Promise<void> {
         try {
             const unidadId = parseInt(req.params.unidadId, 10);
             if (!unidadId) {
-                return res.status(400).json({ ok: false, msg: 'unidadId requerido' });
+                res.status(400).json({ ok: false, msg: 'unidadId requerido' });
+                return;
             }
 
             const rows = await this.service.getKitsByUnidad(unidadId);
             res.json({ ok: true, rows });
         } catch (error: any) {
-            console.error('❌ Error en getKitsByUnidad:', error);
+            console.error('Error en getKitsByUnidad:', error);
+            res.status(500).json({ error: 'Error al obtener los kits de la unidad' });
         }
     }
 }

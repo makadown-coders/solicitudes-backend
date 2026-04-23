@@ -1,11 +1,10 @@
-// src/controllers/personas.controller.ts
 import { Request, Response } from 'express';
 import PersonasService from "../services/personas.service";
 
 export default class PersonasController {
   private svc = new PersonasService();
 
-  list = async (req: Request, res: Response) => {
+  list = async (req: Request, res: Response): Promise<void> => {
     try {
       const pageSize = Math.min(Number(req.query.pageSize ?? 20), 100);
       const page = Math.max(Number(req.query.page ?? 1), 1);
@@ -20,21 +19,27 @@ export default class PersonasController {
     }
   };
 
-  byId = async (req: Request, res: Response) => {
+  byId = async (req: Request, res: Response): Promise<void> => {
     try {
       const id = Number(req.params.id);
       const out = await this.svc.byId(id);
-      if (!out) return res.sendStatus(404);
+      if (!out) {
+        res.sendStatus(404);
+        return;
+      }
       res.json(out);
     } catch (e) {
       res.status(500).json({ ok: false, error: 'Error al obtener persona' });
     }
   };
 
-  create = async (req: Request, res: Response) => {
+  create = async (req: Request, res: Response): Promise<void> => {
     try {
       const { nombre_completo, unidad_medica_id, correos } = req.body || {};
-      if (!nombre_completo?.trim()) return res.status(400).json({ ok: false, error: 'nombre_completo requerido' });
+      if (!nombre_completo?.trim()) {
+        res.status(400).json({ ok: false, error: 'nombre_completo requerido' });
+        return;
+      }
 
       const out = await this.svc.create({
         nombre_completo: String(nombre_completo).trim(),
@@ -47,7 +52,7 @@ export default class PersonasController {
     }
   };
 
-  update = async (req: Request, res: Response) => {
+  update = async (req: Request, res: Response): Promise<void> => {
     try {
       const id = Number(req.params.id);
       const { nombre_completo, unidad_medica_id, correos } = req.body || {};
@@ -62,7 +67,7 @@ export default class PersonasController {
     }
   };
 
-  softDelete = async (req: Request, res: Response) => {
+  softDelete = async (req: Request, res: Response): Promise<void> => {
     try {
       const id = Number(req.params.id);
       const out = await this.svc.softDelete(id);

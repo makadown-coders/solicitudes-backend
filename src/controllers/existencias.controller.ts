@@ -4,7 +4,7 @@ import ExistenciasService from '../services/existencias.service';
 export default class ExistenciasController {
     private svc = new ExistenciasService();
 
-    init = async (req: Request, res: Response) => {
+    init = async (req: Request, res: Response): Promise<void> => {
         try {
             const reset = String(req.query.reset ?? 'true') === 'true';
             const out = await this.svc.init(reset);
@@ -14,7 +14,7 @@ export default class ExistenciasController {
         }
     };
 
-    batch = async (req: Request, res: Response) => {
+    batch = async (req: Request, res: Response): Promise<void> => {
         try {
             const rows = req.body?.rows ?? [];
             const out = await this.svc.batch(rows);
@@ -27,10 +27,13 @@ export default class ExistenciasController {
     };
 
     /** NUEVO: GET /api/existencias-temp/by-unidad?cluesimb=... */
-    byUnidad = async (req: Request, res: Response) => {
+    byUnidad = async (req: Request, res: Response): Promise<void> => {
         try {
             const cluesimb = String(req.query.cluesimb || '').trim().toUpperCase();
-            if (!cluesimb) return res.status(400).json({ error: 'missing_cluesimb' });
+            if (!cluesimb) {
+                res.status(400).json({ error: 'missing_cluesimb' });
+                return;
+            }
 
             const rows = await this.svc.getByUnidad(cluesimb);
             res.json({ rows });
@@ -40,10 +43,13 @@ export default class ExistenciasController {
     };
 
     /** Opcional: saber si hay staging para la unidad */
-    hasByUnidad = async (req: Request, res: Response) => {
+    hasByUnidad = async (req: Request, res: Response): Promise<void> => {
         try {
             const cluesimb = String(req.query.cluesimb || '').trim().toUpperCase();
-            if (!cluesimb) return res.status(400).json({ error: 'missing_cluesimb' });
+            if (!cluesimb) {
+                res.status(400).json({ error: 'missing_cluesimb' });
+                return;
+            }
 
             const ok = await this.svc.hasForUnidad(cluesimb);
             res.json({ has: ok });
@@ -53,10 +59,13 @@ export default class ExistenciasController {
     };
 
     /** NUEVO: GET /api/existencias-temp/by-unidad-full?cluesimb=... */
-    getByUnidadFull = async (req: Request, res: Response) => {
+    getByUnidadFull = async (req: Request, res: Response): Promise<void> => {
         try {
             const cluesimb = String(req.query.cluesimb || '').trim().toUpperCase();
-            if (!cluesimb) return res.status(400).json({ error: 'missing_cluesimb' });
+            if (!cluesimb) {
+                res.status(400).json({ error: 'missing_cluesimb' });
+                return;
+            }
 
             const rows = await this.svc.getByUnidadFull(cluesimb);
             res.json({ rows });
@@ -66,7 +75,7 @@ export default class ExistenciasController {
     };
 
     /** NUEVO: GET /api/existencias-temp/almacenes-full */
-    getAlmacenesFull = async (req: Request, res: Response) => {
+    getAlmacenesFull = async (req: Request, res: Response): Promise<void> => {
         try {
             // no necesita parametros 
             const rows = await this.svc.getAlmacenesFull();

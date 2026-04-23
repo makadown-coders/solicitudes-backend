@@ -1,16 +1,16 @@
-// src/controllers/trazabilidad.controller.ts
 import { Request, Response } from 'express';
 import TrazabilidadService from '../services/trazabilidad.service';
 
 class TrazabilidadController {
   private service = new TrazabilidadService();
 
-  async getMovimientosPorClaveYClues(req: Request, res: Response) {
+  async getMovimientosPorClaveYClues(req: Request, res: Response): Promise<void> {
     const clave = req.query.clave as string;
     const cluesimb = req.query.cluesimb as string;
 
     if (!clave || !cluesimb) {
-      return res.status(400).json({ error: 'Faltan parámetros requeridos: clave y cluesimb' });
+      res.status(400).json({ error: 'Faltan parámetros requeridos: clave y cluesimb' });
+      return;
     }
 
     try {
@@ -22,10 +22,9 @@ class TrazabilidadController {
     }
   }
 
-  async getAllFactoresDeConversion(req: Request, res: Response) {
+  async getAllFactoresDeConversion(req: Request, res: Response): Promise<void> {
     try {
       const factoresMap = await this.service.obtenerTodosFactoresConversion();
-      // Convertir Map a objeto para JSON
       const factoresObj = Object.fromEntries(factoresMap);
 
       const factores = {
@@ -40,7 +39,6 @@ class TrazabilidadController {
       res.status(500).json({ success: false, message: 'Error al obtener los factores de conversión' });
     }
   }
-
 }
 
 export default TrazabilidadController;

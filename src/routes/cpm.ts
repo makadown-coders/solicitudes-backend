@@ -20,6 +20,7 @@ router.get('/expected-vs', controller.expectedVs.bind(controller));
 router.get('/by-unidad', controller.byUnidadGt0.bind(controller));
 // Consulta (todo y >0)
 router.get('/by-unidad-all', controller.byUnidadAll.bind(controller));
+router.get('/by-unidad-real-all', controller.byUnidadRealAll.bind(controller));
 // Edición
 router.patch('/', controller.upsertOne.bind(controller));
 router.post('/batch', controller.upsertBatch.bind(controller));

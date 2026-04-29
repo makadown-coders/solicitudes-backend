@@ -61,6 +61,16 @@ class CpmController {
     }
   };
 
+  byUnidadRealAll: RequestHandler = async (req, res) => {
+    try {
+      const { cluesimb, cluessa } = req.query as Record<string, string | undefined>;
+      const rows = await this.service.getUnidadCpmRealAll({ cluesimb, cluessa });
+      res.json({ count: rows.length, rows });
+    } catch (e: any) {
+      res.status(400).json({ error: e?.message || 'Bad request' });
+    }
+  };
+
   /** PATCH /api/cpms  body: { um: string, clave: string, cpm: number, fuente?: string } */
   upsertOne: RequestHandler = async (req, res): Promise<void> => {
     try {
@@ -92,7 +102,7 @@ class CpmController {
   initCluesCpmReset: RequestHandler = async (req, res) => {
     try {
       const { cluesimb } = req.query as Record<string, string | undefined>;
-      const { ok, deletedRows } = await this.service.initCluesCpmReset(cluesimb);
+      const { ok, deletedRows } = await this.service.initCluesCpmReset(cluesimb!);
       res.json({ ok, deletedRows });
     } catch (e: any) {
       res.status(400).json({ error: e?.message || 'Bad request' });

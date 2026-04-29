@@ -12,7 +12,7 @@ class CPMService {
      * y ahora se obtendrán de supabase.
      * @returns 
      */
-    async obtenerCpmDePowerAutomate64(): Promise<string> {
+    async obtenerCpmDePowerAutomate64(): Promise<string|undefined|null> {
 
         let fila: any = null;
         try {
@@ -164,6 +164,41 @@ class CPMService {
             sql = `
       SELECT c.clave_cnis, c.cpm, c.fuente
       FROM public.v_cpm_bc c
+      WHERE upper(c.cluessa) = upper($1)
+      ORDER BY c.clave_cnis
+    `;
+            values = [cluessa];
+        } else {
+            throw new Error('Se requiere cluesimb o cluessa');
+        }
+
+        const { rows } = await pool.query(sql, values);
+        return rows;
+    }
+
+
+    /**
+     * Obtiene CPMs validados por ciudad de mexico
+     * @param params 
+     * @returns 
+     */
+    async getUnidadCpmRealAll(params: UnidadCpmParams): Promise<any[]> {
+        const { cluesimb, cluessa } = params || {};
+        let sql = '';
+        let values: any[] = [];
+
+        if (cluesimb) {
+            sql = `
+      SELECT c.clave_cnis, c.cpm, c.fuente
+      FROM public.v_cpm_real c
+      WHERE upper(c.cluesimb) = upper($1)
+      ORDER BY c.clave_cnis
+    `;
+            values = [cluesimb];
+        } else if (cluessa) {
+            sql = `
+      SELECT c.clave_cnis, c.cpm, c.fuente
+      FROM public.v_cpm_real c
       WHERE upper(c.cluessa) = upper($1)
       ORDER BY c.clave_cnis
     `;

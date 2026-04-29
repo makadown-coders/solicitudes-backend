@@ -31,6 +31,7 @@
     "@types/express": "^5.0.1",
     "@types/node": "^22.15.2",
     "@types/pg": "^8.11.14",
+    "@types/pg-copy-streams": "^1.2.5",
     "@types/xlsx": "^0.0.35",
     "nodemon": "^3.1.9",
     "ts-node": "^10.9.2",

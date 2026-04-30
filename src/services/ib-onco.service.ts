@@ -11,6 +11,7 @@ type AbastoParams = PaginationParams & {
   clave_cnis?: string;
   estado_abasto?: string;
   search?: string;
+  window_days?: number;
 };
 
 type CitasPendientesParams = PaginationParams & {
@@ -99,12 +100,27 @@ export default class IbOncoService {
   async obtenerAbastoCpm(params: AbastoParams): Promise<PaginatedResult<any>> {
     const { cluesimb, clave_cnis, estado_abasto } = params;
     const search = String(params.search ?? '').trim() || null;
+    const windowDays = Math.min(Math.max(Number(params.window_days ?? 120), 1), 365);
     const { limit, offset, page } = this.normalizePagination(params);
 
     const result = await pool.query(
       `
       SELECT *
       FROM (
+        WITH citas AS (
+          SELECT
+            c.clues_destino AS cluesimb,
+            c.clave_cnis,
+            COUNT(*)::int AS citas_pendientes,
+            COALESCE(SUM(c.no_de_piezas_emitidas), 0)::numeric AS piezas_pendientes
+          FROM public.citas c
+          INNER JOIN public.onco_claves oc
+            ON oc.cluesimb::text = c.clues_destino::text
+           AND oc.clave_cnis::text = c.clave_cnis::text
+          WHERE c.fecha_recepcion_max IS NULL
+            AND c.fecha_emision >= (CURRENT_DATE - ($1::int || ' days')::interval)
+          GROUP BY c.clues_destino, c.clave_cnis
+        )
         SELECT
           v.cluesimb,
           v.nombre_de_unidad,
@@ -115,29 +131,36 @@ export default class IbOncoService {
           v.cpm_x_3,
           v.cpms_eq,
           v.estado_abasto,
+          COALESCE(citas.citas_pendientes, 0)::int AS citas_pendientes,
+          COALESCE(citas.piezas_pendientes, 0)::numeric AS piezas_pendientes,
+          (COALESCE(citas.citas_pendientes, 0) > 0) AS tiene_citas_pendientes,
           COUNT(*) OVER() AS total_count
         FROM public.v_onco_abasto_cpm v
         LEFT JOIN public.articulos a
           ON a.clave::text = v.clave_cnis::text
+        LEFT JOIN citas
+          ON citas.cluesimb::text = v.cluesimb::text
+         AND citas.clave_cnis::text = v.clave_cnis::text
         WHERE
-          ($1::text IS NULL OR v.cluesimb = $1)
-          AND ($2::text IS NULL OR v.clave_cnis = $2)
-          AND ($3::text IS NULL OR v.estado_abasto = $3)
+          ($2::text IS NULL OR v.cluesimb = $2)
+          AND ($3::text IS NULL OR v.clave_cnis = $3)
+          AND ($4::text IS NULL OR v.estado_abasto = $4)
           AND (
-            $4::text IS NULL
-            OR v.cluesimb ILIKE '%' || $4 || '%'
-            OR v.nombre_de_unidad ILIKE '%' || $4 || '%'
-            OR v.clave_cnis ILIKE '%' || $4 || '%'
-            OR COALESCE(a.descripcion, '') ILIKE '%' || $4 || '%'
+            $5::text IS NULL
+            OR v.cluesimb ILIKE '%' || $5 || '%'
+            OR v.nombre_de_unidad ILIKE '%' || $5 || '%'
+            OR v.clave_cnis ILIKE '%' || $5 || '%'
+            OR COALESCE(a.descripcion, '') ILIKE '%' || $5 || '%'
           )
       ) base
       ORDER BY
         CASE WHEN estado_abasto = 'posible sobre abasto' THEN 0 ELSE 1 END,
         cluesimb,
         clave_cnis
-      LIMIT $5 OFFSET $6;
+      LIMIT $6 OFFSET $7;
       `,
       [
+        windowDays,
         cluesimb ?? null,
         clave_cnis ?? null,
         estado_abasto ?? null,
@@ -158,13 +181,16 @@ export default class IbOncoService {
       cpm_x_3: Number(row.cpm_x_3 ?? 0),
       cpms_eq: Number(row.cpms_eq ?? 0),
       estado_abasto: row.estado_abasto,
+      citas_pendientes: Number(row.citas_pendientes ?? 0),
+      piezas_pendientes: Number(row.piezas_pendientes ?? 0),
+      tiene_citas_pendientes: Boolean(row.tiene_citas_pendientes),
     }));
 
     return this.paginated(rows, total, page, limit, offset);
   }
 
   async obtenerCitasPendientes(params: CitasPendientesParams): Promise<PaginatedResult<any>> {
-    const windowDays = Math.min(Math.max(Number(params.window_days ?? 15), 1), 365);
+    const windowDays = Math.min(Math.max(Number(params.window_days ?? 120), 1), 365);
     const { limit, offset, page } = this.normalizePagination(params);
 
     const result = await pool.query(
@@ -175,6 +201,8 @@ export default class IbOncoService {
           c.id,
           c.ejercicio,
           c.orden_de_suministro,
+          c.institucion,
+          c.contrato,
           c.clues_destino AS cluesimb,
           c.unidad AS nombre_de_unidad,
           c.clave_cnis,
@@ -182,6 +210,11 @@ export default class IbOncoService {
           c.proveedor,
           c.compra,
           c.tipo_de_entrega,
+          c.fte_fmto,
+          c.tipo_de_red,
+          c.tipo_de_insumo,
+          c.grupo_terapeutico,
+          c.precio_unitario,
           c.no_de_piezas_emitidas,
           c.pzas_recibidas_por_la_entidad,
           c.fecha_emision,
@@ -195,7 +228,7 @@ export default class IbOncoService {
           ON oc.cluesimb::text = c.clues_destino::text
          AND oc.clave_cnis::text = c.clave_cnis::text
         WHERE
-          c.fecha_limite_de_entrega >= (CURRENT_DATE - ($1::int || ' days')::interval)
+          c.fecha_emision >= (CURRENT_DATE - ($1::int || ' days')::interval)
           AND c.fecha_recepcion_max IS NULL
           AND ($2::text IS NULL OR c.clues_destino = $2)
           AND ($3::text IS NULL OR c.clave_cnis = $3)
@@ -217,6 +250,8 @@ export default class IbOncoService {
       id: row.id,
       ejercicio: row.ejercicio,
       orden_de_suministro: row.orden_de_suministro,
+      institucion: row.institucion,
+      contrato: row.contrato,
       cluesimb: row.cluesimb,
       nombre_de_unidad: row.nombre_de_unidad,
       clave_cnis: row.clave_cnis,
@@ -224,6 +259,11 @@ export default class IbOncoService {
       proveedor: row.proveedor,
       compra: row.compra,
       tipo_de_entrega: row.tipo_de_entrega,
+      fte_fmto: row.fte_fmto,
+      tipo_de_red: row.tipo_de_red,
+      tipo_de_insumo: row.tipo_de_insumo,
+      grupo_terapeutico: row.grupo_terapeutico,
+      precio_unitario: Number(row.precio_unitario ?? 0),
       no_de_piezas_emitidas: Number(row.no_de_piezas_emitidas ?? 0),
       pzas_recibidas_por_la_entidad: Number(row.pzas_recibidas_por_la_entidad ?? 0),
       fecha_emision: row.fecha_emision,
@@ -236,7 +276,7 @@ export default class IbOncoService {
     return this.paginated(rows, total, page, limit, offset);
   }
 
-  async obtenerResumen(windowDays = 15) {
+  async obtenerResumen(windowDays = 120) {
     const dias = Math.min(Math.max(Number(windowDays), 1), 365);
 
     const result = await pool.query(
@@ -263,7 +303,7 @@ export default class IbOncoService {
         INNER JOIN public.onco_claves oc
           ON oc.cluesimb::text = c.clues_destino::text
          AND oc.clave_cnis::text = c.clave_cnis::text
-        WHERE c.fecha_limite_de_entrega >= (CURRENT_DATE - ($1::int || ' days')::interval)
+        WHERE c.fecha_emision >= (CURRENT_DATE - ($1::int || ' days')::interval)
           AND c.fecha_recepcion_max IS NULL
         GROUP BY c.clues_destino, c.clave_cnis
       )

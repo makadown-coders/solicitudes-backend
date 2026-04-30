@@ -28,6 +28,7 @@ import dispositivosRoutes from './routes/dispositivos';
 import asignacionesRoutes from './routes/asignaciones';
 import unidadMedicaTIRoutes from './routes/unidadMedica-ti';
 import balanceoRoutes from './routes/balanceo';
+import balanceoV2Routes from './routes/balanceo-v2';
 import kitsRoutes from './routes/kits';
 import kitsClavesRoutes from './routes/kits-claves';
 import kitsClavesByCodigoRoutes from './routes/kits-claves-by-codigo';
@@ -37,6 +38,7 @@ import cargaMasivaCpmKitsRoutes from './routes/cargaMasivaCpmKits';
 import homologosRoutes from './routes/homologos';
 import radarAbastoRoutes from './routes/radar-abasto';
 import cpmDiferenciasRoutes from './routes/cpm-diferencias';
+import ibOncoRoutes from './routes/ib-onco';
 
 import compression from 'compression';
 import { fetch, Headers } from 'undici';
@@ -85,6 +87,7 @@ app.use('/api/catalogos/tipos-periferico', tipoPerifericoRoutes);
 app.use('/api/catalogos/estados-dispositivo', estadoDispositivoRoutes);
 app.use('/api/dispositivos', dispositivosRoutes);
 app.use('/api/balanceo', balanceoRoutes);
+app.use('/api/balanceo-v2', balanceoV2Routes);
 app.use('/api/kits', kitsRoutes);
 app.use('/api/kits/:kitId/claves', kitsClavesRoutes);
 app.use('/api/kits/:codigo/clavesByCodigo', kitsClavesByCodigoRoutes);
@@ -94,6 +97,7 @@ app.use('/api/unidades-kits', unidadesKitsRoutes);
 app.use('/api/homologos', homologosRoutes);
 app.use('/api/radar-abasto', radarAbastoRoutes);
 app.use('/api/cpms-dif', cpmDiferenciasRoutes);
+app.use('/api/ib-onco', ibOncoRoutes);
 
 
 app.use('/api', asignacionesRoutes);

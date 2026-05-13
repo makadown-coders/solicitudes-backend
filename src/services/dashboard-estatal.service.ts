@@ -24,6 +24,25 @@ export type DashboardEstatalResumenClave = {
   lectura: string;
 };
 
+export type DashboardEstatalOrdenPendiente = {
+  clave_cnis: string;
+  descripcion: string | null;
+  orden_compra: string | null;
+  folio: string | null;
+  proveedor: string | null;
+  fecha_emision: string | null;
+  fecha_entrega: string | null;
+  dias_pendiente: number | null;
+  piezas_pendientes: number;
+  precio_unitario: number | null;
+  importe_pendiente: number | null;
+  jurisdiccion: string | null;
+  almacen: string | null;
+  unidad: string | null;
+  estatus: string | null;
+  contrato: string | null;
+};
+
 type ResumenRow = {
   clave_cnis: string;
   descripcion: string | null;
@@ -37,6 +56,25 @@ type ResumenRow = {
   sobreabasto_estimado: unknown;
   riesgo_faltante: DashboardEstatalRiesgoFaltante;
   riesgo_sobreabasto: DashboardEstatalRiesgoSobreabasto;
+};
+
+type OrdenPendienteRow = {
+  clave_cnis: string;
+  descripcion: string | null;
+  orden_compra: string | null;
+  folio: string | null;
+  proveedor: string | null;
+  fecha_emision: string | null;
+  fecha_entrega: string | null;
+  dias_pendiente: unknown;
+  piezas_pendientes: unknown;
+  precio_unitario: unknown;
+  importe_pendiente: unknown;
+  jurisdiccion: string | null;
+  almacen: string | null;
+  unidad: string | null;
+  estatus: string | null;
+  contrato: string | null;
 };
 
 export default class DashboardEstatalService {
@@ -217,6 +255,27 @@ export default class DashboardEstatalService {
     };
   }
 
+  private mapOrdenPendiente(row: OrdenPendienteRow): DashboardEstatalOrdenPendiente {
+    return {
+      clave_cnis: row.clave_cnis,
+      descripcion: row.descripcion ?? null,
+      orden_compra: row.orden_compra ?? null,
+      folio: row.folio ?? null,
+      proveedor: row.proveedor ?? null,
+      fecha_emision: row.fecha_emision ?? null,
+      fecha_entrega: row.fecha_entrega ?? null,
+      dias_pendiente: row.dias_pendiente === null ? null : Number(row.dias_pendiente),
+      piezas_pendientes: Number(row.piezas_pendientes ?? 0),
+      precio_unitario: row.precio_unitario === null ? null : Number(row.precio_unitario),
+      importe_pendiente: row.importe_pendiente === null ? null : Number(row.importe_pendiente),
+      jurisdiccion: row.jurisdiccion ?? null,
+      almacen: row.almacen ?? null,
+      unidad: row.unidad ?? null,
+      estatus: row.estatus ?? null,
+      contrato: row.contrato ?? null,
+    };
+  }
+
   async buscarClaves(search?: string, limitInput?: number): Promise<DashboardEstatalClave[]> {
     const term = String(search ?? '').trim() || null;
     const limit = this.normalizeLimit(limitInput, 20, 100);
@@ -345,5 +404,72 @@ export default class DashboardEstatalService {
       top_sobreabasto: topSobreabasto.map((item) => this.mapResumen(item)),
       top_faltantes: topFaltantes.map((item) => this.mapResumen(item)),
     };
+  }
+
+  async obtenerOrdenesPendientes(
+    claveCnis: string,
+    windowDaysInput?: number,
+    limitInput?: number
+  ): Promise<DashboardEstatalOrdenPendiente[]> {
+    const clave = String(claveCnis ?? '').trim().toUpperCase();
+    if (!clave) return [];
+
+    const windowDays = this.normalizeWindowDays(windowDaysInput);
+    const limit = this.normalizeLimit(limitInput, 200, 1000);
+
+    const result = await pool.query(
+      `
+      SELECT
+        UPPER(TRIM(c.clave_cnis)) AS clave_cnis,
+        c.descripcion,
+        c.orden_de_suministro AS orden_compra,
+        c.folio_abasto AS folio,
+        c.proveedor,
+        c.fecha_emision::text AS fecha_emision,
+        c.fecha_limite_de_entrega::text AS fecha_entrega,
+        CASE
+          WHEN c.fecha_emision IS NOT NULL THEN GREATEST((CURRENT_DATE - c.fecha_emision)::int, 0)
+          ELSE NULL
+        END AS dias_pendiente,
+        GREATEST(
+          COALESCE(c.no_de_piezas_emitidas, 0)
+            - COALESCE(c.pzas_recibidas_por_la_entidad, 0),
+          0
+        )::numeric AS piezas_pendientes,
+        c.precio_unitario,
+        (
+          GREATEST(
+            COALESCE(c.no_de_piezas_emitidas, 0)
+              - COALESCE(c.pzas_recibidas_por_la_entidad, 0),
+            0
+          ) * COALESCE(c.precio_unitario, 0)
+        )::numeric AS importe_pendiente,
+        NULLIF(TRIM(c.almacen_hospital_que_recibio), '') AS jurisdiccion,
+        NULLIF(TRIM(c.almacen_hospital_que_recibio), '') AS almacen,
+        c.unidad,
+        c.estatus,
+        c.contrato
+      FROM public.citas c
+      WHERE UPPER(TRIM(c.clave_cnis)) = $1
+        AND c.fecha_emision >= (CURRENT_DATE - ($2::int || ' days')::interval)
+        AND (
+          c.fecha_recepcion_max IS NULL
+          OR COALESCE(c.pzas_recibidas_por_la_entidad, 0) < COALESCE(c.no_de_piezas_emitidas, 0)
+        )
+        AND GREATEST(
+          COALESCE(c.no_de_piezas_emitidas, 0)
+            - COALESCE(c.pzas_recibidas_por_la_entidad, 0),
+          0
+        ) > 0
+      ORDER BY
+        c.fecha_emision ASC NULLS LAST,
+        piezas_pendientes DESC,
+        c.orden_de_suministro ASC NULLS LAST
+      LIMIT $3;
+      `,
+      [clave, windowDays, limit]
+    );
+
+    return result.rows.map((row) => this.mapOrdenPendiente(row));
   }
 }

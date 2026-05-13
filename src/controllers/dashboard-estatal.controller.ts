@@ -56,6 +56,25 @@ class DashboardEstatalController {
       res.status(500).json({ ok: false, error: 'dashboard_estatal_top_failed', detail: error?.message });
     }
   }
+
+  async ordenesPendientes(req: Request, res: Response): Promise<void> {
+    try {
+      const claveCnis = req.query.clave_cnis ? String(req.query.clave_cnis) : '';
+      if (!claveCnis.trim()) {
+        res.status(400).json({ ok: false, error: 'clave_cnis_required' });
+        return;
+      }
+
+      const windowDays = req.query.window_days ? Number(req.query.window_days) : undefined;
+      const limit = req.query.limit ? Number(req.query.limit) : undefined;
+      const data = await this.service.obtenerOrdenesPendientes(claveCnis, windowDays, limit);
+
+      res.json({ ok: true, count: data.length, data });
+    } catch (error: any) {
+      console.error('Error al obtener ordenes pendientes dashboard estatal:', error);
+      res.status(500).json({ ok: false, error: 'dashboard_estatal_ordenes_pendientes_failed', detail: error?.message });
+    }
+  }
 }
 
 export default DashboardEstatalController;

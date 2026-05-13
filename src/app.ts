@@ -39,6 +39,7 @@ import homologosRoutes from './routes/homologos';
 import radarAbastoRoutes from './routes/radar-abasto';
 import cpmDiferenciasRoutes from './routes/cpm-diferencias';
 import ibOncoRoutes from './routes/ib-onco';
+import dashboardEstatalRoutes from './routes/dashboard-estatal';
 
 import compression from 'compression';
 import { fetch, Headers } from 'undici';
@@ -98,6 +99,7 @@ app.use('/api/homologos', homologosRoutes);
 app.use('/api/radar-abasto', radarAbastoRoutes);
 app.use('/api/cpms-dif', cpmDiferenciasRoutes);
 app.use('/api/ib-onco', ibOncoRoutes);
+app.use('/api/dashboard-estatal', dashboardEstatalRoutes);
 
 
 app.use('/api', asignacionesRoutes);

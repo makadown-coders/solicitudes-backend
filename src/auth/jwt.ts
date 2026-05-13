@@ -1,7 +1,8 @@
-import { SignJWT, importJWK, jwtVerify, JWK } from 'jose';
 import { readFileSync } from 'fs';
 
-const loadJwk = (path: string) => JSON.parse(readFileSync(path, 'utf-8')) as JWK;
+type LocalJwk = Record<string, unknown>;
+
+const loadJwk = (path: string) => JSON.parse(readFileSync(path, 'utf-8')) as LocalJwk;
 const privJwk = loadJwk(process.env.JWKS_PRIVATE_PATH!);
 const pubJwk = loadJwk(process.env.JWKS_PUBLIC_PATH!);
 const kid = readFileSync(process.env.ACTIVE_KID_FILE!, 'utf-8');
@@ -22,6 +23,7 @@ const kid = readFileSync(process.env.ACTIVE_KID_FILE!, 'utf-8');
  * @returns {Promise<string>} The access token
  */
 export async function signAccessToken(payload: Record<string, any>) {
+  const { SignJWT, importJWK } = await import('jose');
   const key = await importJWK(privJwk, 'RS256');
   const now = Math.floor(Date.now() / 1000);
   const ttl = Number(process.env.ACCESS_TTL_SECONDS || 900);
@@ -46,6 +48,7 @@ export async function signAccessToken(payload: Record<string, any>) {
  * @throws { Error } - Si el token no es valido.
  */
 export async function verifyLocalAccess(token: string) {
+  const { importJWK, jwtVerify } = await import('jose');
   const key = await importJWK(pubJwk, 'RS256');
   const { payload } = await jwtVerify(token, key, {
     issuer: process.env.JWT_ISSUER!,

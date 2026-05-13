@@ -338,8 +338,8 @@ export default class DashboardEstatalService {
     );
 
     const row = result.rows[0] ?? { top_sobreabasto: [], top_faltantes: [] };
-    const topSobreabasto = Array.isArray(row.top_sobreabasto) ? row.top_sobreabasto : [];
-    const topFaltantes = Array.isArray(row.top_faltantes) ? row.top_faltantes : [];
+    const topSobreabasto: ResumenRow[] = Array.isArray(row.top_sobreabasto) ? row.top_sobreabasto : [];
+    const topFaltantes: ResumenRow[] = Array.isArray(row.top_faltantes) ? row.top_faltantes : [];
 
     return {
       top_sobreabasto: topSobreabasto.map((item) => this.mapResumen(item)),

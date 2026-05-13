@@ -1,6 +1,7 @@
 import type { RequestHandler } from 'express';
-import * as jose from 'jose';
 import { readFileSync } from 'fs';
+
+type LocalJwk = Record<string, unknown>;
 
 const LOCAL_ISS = process.env.JWT_ISSUER!;
 const LOCAL_AUD = process.env.JWT_AUDIENCE;
@@ -17,7 +18,7 @@ const ISS_ALLOWLIST = (process.env.JWT_ISSUER_ALLOWLIST || process.env.JWT_ISSUE
  * If the file contains a single JWK, it is wrapped in an array.
  * @returns An object with a single property "keys" containing an array of JWKs.
  */
-function loadLocalJwkSet(): { keys: jose.JWK[] } {
+function loadLocalJwkSet(): { keys: LocalJwk[] } {
   const raw = readFileSync(LOCAL_JWKS_PATH, 'utf-8');
   const json = JSON.parse(raw);
   return Array.isArray(json?.keys) ? json : { keys: [json] };
@@ -33,10 +34,11 @@ function loadLocalJwkSet(): { keys: jose.JWK[] } {
  * @throws {Error} - If no local JWK is found.
  */
 async function getLocalKey(kid?: string, alg?: string): Promise<unknown> {
+  const { importJWK } = await import('jose');
   const { keys } = loadLocalJwkSet();
   const jwk = (kid ? keys.find((k: any) => k.kid === kid) : keys[0]) || keys[0];
   if (!jwk) throw new Error('No local JWK found');
-  return await jose.importJWK(jwk as any, alg || (jwk as any).alg || 'RS256');
+  return await importJWK(jwk as any, alg || (jwk as any).alg || 'RS256');
 }
 
 declare global {
@@ -66,8 +68,9 @@ export const requireAuth: RequestHandler = async (req, res, next): Promise<void>
   }
 
   try {
-    const { iss } = jose.decodeJwt(token);
-    const { kid, alg } = jose.decodeProtectedHeader(token);
+    const { decodeJwt, decodeProtectedHeader, jwtVerify } = await import('jose');
+    const { iss } = decodeJwt(token);
+    const { kid, alg } = decodeProtectedHeader(token);
     // Verificamos que el iss sea uno de los permitidos
     if (!iss || !ISS_ALLOWLIST.includes(iss)) {
       res.status(401).json({ error: 'Invalid token issuer' }); return;
@@ -76,7 +79,7 @@ export const requireAuth: RequestHandler = async (req, res, next): Promise<void>
     const key = await getLocalKey(kid, alg);
     const opts: any = { issuer: LOCAL_ISS };
     if (LOCAL_AUD) opts.audience = LOCAL_AUD;
-    const { payload } = await jose.jwtVerify(token, key as any, opts);
+    const { payload } = await jwtVerify(token, key as any, opts);
 
     req.user = payload as any;
     req.accessToken = token;

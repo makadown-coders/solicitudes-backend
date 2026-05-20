@@ -104,6 +104,16 @@ class IbOncoController {
       res.status(500).json({ ok: false, error: 'ib_onco_resumen_failed', detail: error?.message });
     }
   }
+
+  async actualizarSaciaOnco(_req: Request, res: Response): Promise<void> {
+    try {
+      const data = await this.service.actualizarSaciaOnco();
+      res.status(data.ok ? 200 : 207).json(data);
+    } catch (error: any) {
+      console.error('Error al actualizar existencias SACIA ONCO:', error);
+      res.status(500).json({ ok: false, error: 'ib_onco_sacia_actualizar_failed', detail: error?.message });
+    }
+  }
 }
 
 export default IbOncoController;

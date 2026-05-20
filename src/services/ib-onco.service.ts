@@ -1,4 +1,5 @@
 import { pool } from '../db/pool';
+import { fetch } from 'undici';
 
 type PaginationParams = {
   page?: number;
@@ -29,7 +30,257 @@ type PaginatedResult<T> = {
   totalPages: number;
 };
 
+type SaciaOncoUnidad = {
+  id: number;
+  cluesimb: string;
+  unidad: string;
+};
+
+type SaciaOncoCsvRow = {
+  clave: string;
+  cpm: number;
+  existencias: number;
+};
+
+type SaciaOncoUnidadResult = SaciaOncoUnidad & {
+  ok: boolean;
+  leidos: number;
+  claves: number;
+  onco_claves_insertados: number;
+  tmp_existencias_eliminados: number;
+  tmp_existencias_insertados: number;
+  error?: string;
+};
+
+const SACIA_ONCO_FUENTE = 'sacia-onco';
+
+const SACIA_ONCO_UNIDADES: SaciaOncoUnidad[] = [
+  { id: 1, cluesimb: 'BCIMB000010', unidad: 'Hospital General de Ensenada' },
+  { id: 2, cluesimb: 'BCIMB000355', unidad: 'Hospital General de Mexicali' },
+  { id: 3, cluesimb: 'BCIMB000734', unidad: 'Hospital General de Tijuana' },
+  { id: 4, cluesimb: 'BCIMB001726', unidad: 'Uneme Oncologia Mexicali' },
+];
+
 export default class IbOncoService {
+  private parseCsvLine(line: string): string[] {
+    const values: string[] = [];
+    let current = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < line.length; i += 1) {
+      const char = line[i];
+      const next = line[i + 1];
+
+      if (char === '"' && inQuotes && next === '"') {
+        current += '"';
+        i += 1;
+      } else if (char === '"') {
+        inQuotes = !inQuotes;
+      } else if (char === ',' && !inQuotes) {
+        values.push(current);
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+
+    values.push(current);
+    return values.map((value) => value.trim());
+  }
+
+  private parseNumber(value: string | undefined): number {
+    const normalized = String(value ?? '')
+      .trim()
+      .replace(/,/g, '');
+
+    if (!normalized) return 0;
+
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  private parseSaciaOncoCsv(csv: string): SaciaOncoCsvRow[] {
+    const lines = csv
+      .replace(/^\uFEFF/, '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    if (lines.length <= 1) return [];
+
+    const rowsByClave = new Map<string, SaciaOncoCsvRow>();
+
+    for (const line of lines.slice(1)) {
+      const columns = this.parseCsvLine(line);
+      const clave = String(columns[0] ?? '').trim().toUpperCase();
+
+      if (!clave) continue;
+
+      rowsByClave.set(clave, {
+        clave,
+        cpm: this.parseNumber(columns[2]),
+        existencias: this.parseNumber(columns[3]),
+      });
+    }
+
+    return Array.from(rowsByClave.values());
+  }
+
+  private async fetchSaciaOncoCsv(cluesId: number): Promise<string> {
+    const baseUrl = process.env.SACIA_ONCO_EXISTENCIAS_URL;
+    const token = process.env.SACIA_ONCO_TOKEN;
+
+    if (!baseUrl) {
+      throw new Error('Falta configurar SACIA_ONCO_EXISTENCIAS_URL');
+    }
+
+    if (!token) {
+      throw new Error('Falta configurar SACIA_ONCO_TOKEN');
+    }
+
+    const response = await fetch(`${baseUrl}${encodeURIComponent(String(cluesId))}`, {
+      method: 'GET',
+      headers: {
+        Accept: 'text/csv, text/plain, */*',
+        Authorization: token,
+      },
+    });
+
+    const body = await response.text();
+
+    if (!response.ok) {
+      throw new Error(`SACIA ONCO respondio ${response.status}: ${body.slice(0, 250)}`);
+    }
+
+    return body;
+  }
+
+  private async sincronizarUnidadSaciaOnco(unidad: SaciaOncoUnidad): Promise<SaciaOncoUnidadResult> {
+    const csv = await this.fetchSaciaOncoCsv(unidad.id);
+    const rows = this.parseSaciaOncoCsv(csv);
+    const client = await pool.connect();
+
+    try {
+      await client.query('BEGIN');
+
+      await client.query(
+        'DELETE FROM public.onco_claves WHERE cluesimb = $1;',
+        [unidad.cluesimb]
+      );
+
+      let oncoClavesInsertados = 0;
+      let tmpExistenciasEliminados = 0;
+      let tmpExistenciasInsertados = 0;
+
+      if (rows.length) {
+        const payload = JSON.stringify(rows);
+
+        const oncoResult = await client.query(
+          `
+          WITH incoming AS (
+            SELECT
+              $1::varchar AS cluesimb,
+              UPPER(TRIM(x->>'clave'))::varchar AS clave_cnis
+            FROM jsonb_array_elements($2::jsonb) AS x
+          )
+          INSERT INTO public.onco_claves (cluesimb, clave_cnis)
+          SELECT cluesimb, clave_cnis
+          FROM incoming;
+          `,
+          [unidad.cluesimb, payload]
+        );
+
+        const deleteExistenciasResult = await client.query(
+          `
+          DELETE FROM public.tmp_existencias t
+          USING public.onco_claves oc
+          WHERE t.cluesimb = $1
+            AND oc.cluesimb = $1
+            AND t.clave_cnis = oc.clave_cnis;
+          `,
+          [unidad.cluesimb]
+        );
+
+        const existenciasResult = await client.query(
+          `
+          INSERT INTO public.tmp_existencias
+            (fuente, alias_sas, cluessa, cluesimb, clave_cnis, lote, fecha_caducidad, existencia)
+          SELECT
+            $1::text AS fuente,
+            (SELECT vumd.alias_sas FROM public.v_unidad_medica_detalle vumd WHERE vumd.cluesimb = $2 LIMIT 1) AS alias_sas,
+            (SELECT vumd.cluessa FROM public.v_unidad_medica_detalle vumd WHERE vumd.cluesimb = $2 LIMIT 1) AS cluessa,
+            $2::varchar AS cluesimb,
+            UPPER(TRIM(x->>'clave'))::varchar AS clave_cnis,
+            ''::varchar AS lote,
+            NULL::date AS fecha_caducidad,
+            COALESCE((x->>'existencias')::numeric, 0) AS existencia
+          FROM jsonb_array_elements($3::jsonb) AS x;
+          `,
+          [SACIA_ONCO_FUENTE, unidad.cluesimb, payload]
+        );
+
+        oncoClavesInsertados = oncoResult.rowCount ?? 0;
+        tmpExistenciasEliminados = deleteExistenciasResult.rowCount ?? 0;
+        tmpExistenciasInsertados = existenciasResult.rowCount ?? 0;
+      }
+
+      await client.query('COMMIT');
+
+      return {
+        ...unidad,
+        ok: true,
+        leidos: rows.length,
+        claves: rows.length,
+        onco_claves_insertados: oncoClavesInsertados,
+        tmp_existencias_eliminados: tmpExistenciasEliminados,
+        tmp_existencias_insertados: tmpExistenciasInsertados,
+      };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async actualizarSaciaOnco() {
+    const startedAt = new Date();
+    const unidades: SaciaOncoUnidadResult[] = [];
+
+    for (const unidad of SACIA_ONCO_UNIDADES) {
+      try {
+        unidades.push(await this.sincronizarUnidadSaciaOnco(unidad));
+      } catch (error: any) {
+        unidades.push({
+          ...unidad,
+          ok: false,
+          leidos: 0,
+          claves: 0,
+          onco_claves_insertados: 0,
+          tmp_existencias_eliminados: 0,
+          tmp_existencias_insertados: 0,
+          error: error?.message ?? 'Error desconocido',
+        });
+      }
+    }
+
+    const failed = unidades.filter((unidad) => !unidad.ok).length;
+
+    return {
+      ok: failed === 0,
+      fuente: SACIA_ONCO_FUENTE,
+      started_at: startedAt.toISOString(),
+      finished_at: new Date().toISOString(),
+      unidades_total: unidades.length,
+      unidades_ok: unidades.length - failed,
+      unidades_error: failed,
+      claves_insertadas: unidades.reduce((total, unidad) => total + unidad.onco_claves_insertados, 0),
+      existencias_eliminadas: unidades.reduce((total, unidad) => total + unidad.tmp_existencias_eliminados, 0),
+      existencias_insertadas: unidades.reduce((total, unidad) => total + unidad.tmp_existencias_insertados, 0),
+      unidades,
+    };
+  }
+
   private normalizePagination(params: PaginationParams) {
     const limit = Math.min(Math.max(Number(params.limit ?? 100), 1), 1000);
     const requestedPage = Number(params.page);

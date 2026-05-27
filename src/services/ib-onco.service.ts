@@ -336,7 +336,7 @@ export default class IbOncoService {
         oc.cluesimb,
         oc.clave_cnis,
         a.descripcion
-      FROM public.onco_claves oc
+      FROM public.onco_claves_base oc
       LEFT JOIN public.articulos a
         ON a.clave::text = oc.clave_cnis::text
       WHERE ($1::text IS NULL OR oc.cluesimb = $1)
@@ -365,7 +365,7 @@ export default class IbOncoService {
             COUNT(*)::int AS citas_pendientes,
             COALESCE(SUM(c.no_de_piezas_emitidas), 0)::numeric AS piezas_pendientes
           FROM public.citas c
-          INNER JOIN public.onco_claves oc
+          INNER JOIN public.onco_claves_base oc
             ON oc.cluesimb::text = c.clues_destino::text
            AND oc.clave_cnis::text = c.clave_cnis::text
           WHERE c.fecha_recepcion_max IS NULL
@@ -475,7 +475,7 @@ export default class IbOncoService {
           c.folio_abasto,
           COUNT(*) OVER() AS total_count
         FROM public.citas c
-        INNER JOIN public.onco_claves oc
+        INNER JOIN public.onco_claves_base oc
           ON oc.cluesimb::text = c.clues_destino::text
          AND oc.clave_cnis::text = c.clave_cnis::text
         WHERE
@@ -551,7 +551,7 @@ export default class IbOncoService {
           COUNT(*)::int AS citas_pendientes,
           COALESCE(SUM(c.no_de_piezas_emitidas), 0)::numeric AS piezas_pendientes
         FROM public.citas c
-        INNER JOIN public.onco_claves oc
+        INNER JOIN public.onco_claves_base oc
           ON oc.cluesimb::text = c.clues_destino::text
          AND oc.clave_cnis::text = c.clave_cnis::text
         WHERE c.fecha_emision >= (CURRENT_DATE - ($1::int || ' days')::interval)

@@ -239,6 +239,7 @@ export default class CitasService {
       c.fte_fmto,
       c.compra,
       c.no_de_piezas_emitidas,
+      c.pzas_recibidas_por_la_entidad,
       c.fecha_emision,
       c.fecha_recepcion_lista,
       c.fecha_limite_de_entrega,
@@ -747,7 +748,7 @@ export default class CitasService {
    * En vias de deprecación!
    * @returns 
    */
-  async obtenerCitasDePowerAutomate64(): Promise<string> {
+  async obtenerCitasDePowerAutomate64(): Promise<string | null> {
     let citasRetorno: Cita[] = [];
     let fila: any = null;
     try {
@@ -760,7 +761,7 @@ export default class CitasService {
 
       if (!response.data?.archivo) {
         console.error('❌ No se recibió el archivo base64 en la respuesta.');
-        return;
+        return null;
       }
 
       return response.data.archivo;

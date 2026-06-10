@@ -7,5 +7,6 @@ const controller = new TrazabilidadController();
 
 router.get('/', controller.getMovimientosPorClaveYClues.bind(controller));
 router.get('/all-factores-conversion', controller.getAllFactoresDeConversion.bind(controller));
+router.get('/all-factores-conversion-v2', controller.getAllFactoresDeConversionV2.bind(controller));
 
 export default router;

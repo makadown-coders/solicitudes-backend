@@ -39,6 +39,22 @@ class TrazabilidadController {
       res.status(500).json({ success: false, message: 'Error al obtener los factores de conversión' });
     }
   }
+
+  async getAllFactoresDeConversionV2(req: Request, res: Response): Promise<void> {
+    try {
+      const factores = await this.service.obtenerTodosFactoresConversion_v2();
+      const response = {
+        success: true,
+        data: factores,
+        timestamp: new Date().toISOString(),
+        message: 'Factores de conversión obtenidos correctamente',
+      };
+      res.json(response);
+    } catch (error) {
+      console.error('Error en getAllFactoresDeConversionV2:', error);
+      res.status(500).json({ success: false, message: 'Error al obtener los factores de conversión' });
+    }
+  }
 }
 
 export default TrazabilidadController;

@@ -213,10 +213,13 @@ class TrazabilidadService {
             if (!esModalDeAlmacen && aplicarFC && factor !== 1) {
                 final = resultados.map((m) => {
                     const esEntradaOTR = m.tipo_movimiento === 'entrada' || m.tipo_movimiento === 'traspaso';
-                    /* const vieneDeAlmacen =
+                    // TODO: la heurística de "viene de almacén" es solo para entradas o traspasos, 
+                    // pero no es 100% confiable... idealmente debería venir un flag desde el query 
+                    // donde la unidad que envia tampoco aplique factor de conversion, pero por ahora se queda asi:
+                    const vieneDeAlmacen =
                          m._origen_es_almacen === true ||
-                         (m.tipo_movimiento === 'entrada' && (m.proveedor || '').toUpperCase().includes('ALMACEN'));*/
-                    if (esEntradaOTR /*&& vieneDeAlmacen*/) {
+                         (m.tipo_movimiento === 'entrada' && (m.proveedor || '').toUpperCase().includes('ALMACEN'));
+                    if (esEntradaOTR && vieneDeAlmacen) {
                         return { ...m, cantidad: Number(m.cantidad) * factor };
                     }
                     return m;
@@ -444,6 +447,7 @@ class TrazabilidadService {
     SELECT clave, en_dispensacion, cantidad_fc, cluesimb
     FROM public.factores_conversion
     where en_dispensacion = 1;
+    NOTA: ESTE METODO SERA LEGACY, YA QUE NO QUEREMOS QUE REGRESE UN MAP!!!
     */
     async obtenerTodosFactoresConversion(): Promise<Map<string, { cluesimb: string; factor: number }>> {
         const { rows } = await pool.query(
@@ -460,6 +464,26 @@ class TrazabilidadService {
             map.set(row.clave, { cluesimb: row.cluesimb, factor: Number(row.cantidad_fc) });
             return map;
         }, new Map<string, { cluesimb: string; factor: number }>());
+    }
+
+    /* Crear un metodo para obtener TODOS los factores de conversion con en_dispensacion = 1, es decir:
+    SELECT clave, en_dispensacion, cantidad_fc, cluesimb
+    FROM public.factores_conversion
+    where en_dispensacion = 1;
+    */
+    async obtenerTodosFactoresConversion_v2(): Promise<{ clave: string, cluesimb: string, factor: number }[]> {
+        const { rows } = await pool.query(
+            ` SELECT 
+        f.clave,
+        f.en_dispensacion as en_dispensacion,
+        COALESCE(f.cantidad_fc, 1) AS cantidad_fc,
+        um.cluesimb
+      FROM factores_conversion f
+      JOIN unidad_medica um ON um.cluesimb  = f.cluesimb
+      WHERE f.en_dispensacion = 1`
+        );
+        /* Regresar rows de { clave: string, cluesimb: string, factor: number } */
+        return rows.map(row => ({ clave: row.clave, cluesimb: row.cluesimb, factor: Number(row.cantidad_fc) }));
     }
 }
 

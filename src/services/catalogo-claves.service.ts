@@ -1,4 +1,5 @@
 import { pool } from '../db/pool';
+import * as XLSX from 'xlsx';
 
 export type CatalogoClavesReporteRow = {
   partida: string | null;
@@ -41,6 +42,24 @@ export type CatalogoClavesReporte = {
 };
 
 export default class CatalogoClavesService {
+  private formatPct(value: number): string {
+    return `${Number(value ?? 0).toFixed(2)}%`;
+  }
+
+  private addCellStyle(ws: XLSX.WorkSheet, cellAddress: string, style: XLSX.CellObject['s']) {
+    const cell = ws[cellAddress];
+    if (!cell) return;
+    cell.s = style;
+  }
+
+  private addRangeStyle(ws: XLSX.WorkSheet, range: XLSX.Range, style: XLSX.CellObject['s']) {
+    for (let row = range.s.r; row <= range.e.r; row += 1) {
+      for (let col = range.s.c; col <= range.e.c; col += 1) {
+        this.addCellStyle(ws, XLSX.utils.encode_cell({ r: row, c: col }), style);
+      }
+    }
+  }
+
   async obtenerReporte(): Promise<CatalogoClavesReporte> {
     const sql = `
       WITH articulos_base AS (
@@ -202,5 +221,171 @@ export default class CatalogoClavesService {
         },
       },
     };
+  }
+
+  async generarReporteExcel(): Promise<Buffer> {
+    const reporte = await this.obtenerReporte();
+    const { metricas, datos } = reporte;
+
+    const headerRow = [
+      'Partida',
+      'Clave',
+      'Descripcion',
+      'Kit Basico Comunitario',
+      'Kit Hospital General',
+      'Kit Hospital Materno',
+      '1er Nivel',
+      'Oncologicos Esenciales',
+      'CPM Estatal',
+      'Existencia en almacenes',
+      'Meses de inventario',
+      'U013',
+      'FONSABI',
+      'Programa',
+      'Total emitido',
+      'Proyeccion de abasto',
+    ];
+
+    const rows: unknown[][] = [
+      ['CATALOGO DE CLAVES IMSS BIENESTAR'],
+      [],
+      ['', '', '', '', '', 'Total de claves', metricas.totalClaves],
+      [
+        '',
+        '',
+        '',
+        '',
+        'Claves con existencia menor a un mes',
+        metricas.existencia.menorA1Mes.cantidad,
+        this.formatPct(metricas.existencia.menorA1Mes.porcentaje),
+        '',
+        '',
+        'Claves con proyeccion menor a un mes',
+        metricas.proyeccion.menorA1Mes.cantidad,
+        this.formatPct(metricas.proyeccion.menorA1Mes.porcentaje),
+      ],
+      [
+        '',
+        '',
+        '',
+        '',
+        'Claves con existencia mayor a un mes',
+        metricas.existencia.mayorA1Mes.cantidad,
+        this.formatPct(metricas.existencia.mayorA1Mes.porcentaje),
+        '',
+        '',
+        'Claves con proyeccion mayor a un mes',
+        metricas.proyeccion.mayorA1Mes.cantidad,
+        this.formatPct(metricas.proyeccion.mayorA1Mes.porcentaje),
+      ],
+      [
+        '',
+        '',
+        '',
+        '',
+        'Claves sin CPM',
+        metricas.cpm.sinCpm.cantidad,
+        this.formatPct(metricas.cpm.sinCpm.porcentaje),
+        '',
+        '',
+        'Claves sin proyeccion',
+        metricas.proyeccion.sinProyeccion.cantidad,
+        this.formatPct(metricas.proyeccion.sinProyeccion.porcentaje),
+      ],
+      [],
+      headerRow,
+      ...datos.map((row) => [
+        row.partida,
+        row.clave,
+        row.descripcion,
+        row.kitBasicoComunitario,
+        row.kitHospitalGeneral,
+        row.kitHospitalMaterno,
+        row.primerNivel,
+        row.oncologicosEsenciales,
+        row.cpmEstatal,
+        row.existenciaAlmacenes,
+        row.mesesInventario,
+        row.pzasU013Emitidas,
+        row.pzasFonsabiOtrosEmitidas,
+        '',
+        row.totalEmitido,
+        row.proyeccionAbasto,
+      ]),
+    ];
+
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    const lastRow = rows.length;
+
+    ws['!cols'] = [
+      { wch: 16 },
+      { wch: 18 },
+      { wch: 64 },
+      { wch: 16 },
+      { wch: 16 },
+      { wch: 16 },
+      { wch: 12 },
+      { wch: 18 },
+      { wch: 14 },
+      { wch: 18 },
+      { wch: 18 },
+      { wch: 12 },
+      { wch: 12 },
+      { wch: 12 },
+      { wch: 14 },
+      { wch: 18 },
+    ];
+
+    ws['!merges'] = [
+      XLSX.utils.decode_range('A1:P1'),
+      XLSX.utils.decode_range('E3:F3'),
+      XLSX.utils.decode_range('J4:K4'),
+      XLSX.utils.decode_range('J5:K5'),
+      XLSX.utils.decode_range('J6:K6'),
+    ];
+
+    ws['!autofilter'] = { ref: `A8:P${lastRow}` };
+
+    const titleStyle: XLSX.CellObject['s'] = {
+      font: { bold: true, sz: 14 },
+      alignment: { horizontal: 'center', vertical: 'center' },
+    };
+    const headerStyle: XLSX.CellObject['s'] = {
+      font: { bold: true },
+      fill: { fgColor: { rgb: 'D9EAD3' } },
+      alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
+      border: {
+        top: { style: 'thin', color: { rgb: '777777' } },
+        bottom: { style: 'thin', color: { rgb: '777777' } },
+        left: { style: 'thin', color: { rgb: '777777' } },
+        right: { style: 'thin', color: { rgb: '777777' } },
+      },
+    };
+    const metricLabelStyle: XLSX.CellObject['s'] = {
+      font: { bold: true },
+      alignment: { horizontal: 'right' },
+    };
+
+    this.addCellStyle(ws, 'A1', titleStyle);
+    this.addRangeStyle(ws, XLSX.utils.decode_range('A8:P8'), headerStyle);
+    this.addRangeStyle(ws, XLSX.utils.decode_range('E3:E6'), metricLabelStyle);
+    this.addRangeStyle(ws, XLSX.utils.decode_range('J4:J6'), metricLabelStyle);
+
+    for (let rowIndex = 9; rowIndex <= lastRow; rowIndex += 1) {
+      for (const col of ['K', 'P']) {
+        const cell = ws[`${col}${rowIndex}`];
+        if (cell && cell.v !== null && cell.v !== undefined && cell.v !== '') {
+          cell.z = '0.00';
+        }
+      }
+    }
+
+    XLSX.utils.book_append_sheet(wb, ws, 'Catalogo de claves');
+
+    return XLSX.write(wb, {
+      bookType: 'xlsx',
+      type: 'buffer',
+    }) as Buffer;
   }
 }

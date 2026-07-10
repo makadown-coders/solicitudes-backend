@@ -42,6 +42,7 @@ import ibOncoRoutes from './routes/ib-onco';
 import ibOncoHiddenRoutes from './routes/ib-onco-hidden';
 import dashboardEstatalRoutes from './routes/dashboard-estatal';
 import catalogoClavesRoutes from './routes/catalogo-claves';
+import reporteCpmSemanalRoutes from './routes/reporteCpmSemanal';
 
 import compression from 'compression';
 import { fetch, Headers } from 'undici';
@@ -104,6 +105,7 @@ app.use('/api/ib-onco', ibOncoRoutes);
 app.use('/api/ib-onco-hidden', ibOncoHiddenRoutes);
 app.use('/api/dashboard-estatal', dashboardEstatalRoutes);
 app.use('/api/catalogo-claves', catalogoClavesRoutes);
+app.use('/api/reportes-cpm-semanal', reporteCpmSemanalRoutes);
 
 
 app.use('/api', asignacionesRoutes);

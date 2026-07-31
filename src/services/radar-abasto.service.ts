@@ -618,9 +618,27 @@ export default class RadarAbastoService {
     const pageSize = Math.min(300, Math.max(1, parseIntSafe(input.pageSize, 50)));
     const ofs = (page - 1) * pageSize;
 
+    const search = String(input.search ?? '').trim();
     const clues = normUpper(input.clues);
     const tipoPedido = normUpper(input.tipo_pedido);
     const tiposInsumo = normUpper(input.tipos_insumo);
+    const searchPredicate = `
+          AND (
+            $4 = ''
+            OR s.cluesimb ILIKE '%' || $4 || '%'
+            OR EXISTS (
+              SELECT 1 FROM public.v_unidad_medica_detalle vumd
+              WHERE vumd.cluesimb = UPPER(TRIM(s.cluesimb))
+                AND COALESCE(vumd.nombre_de_unidad, '') ILIKE '%' || $4 || '%'
+            )
+            OR EXISTS (
+              SELECT 1
+              FROM public.solicitud_bitacora_detalle d
+              LEFT JOIN public.articulos a ON UPPER(TRIM(a.clave)) = UPPER(TRIM(d.clave))
+              WHERE d.solicitud_id = s.id
+                AND (d.clave ILIKE '%' || $4 || '%' OR COALESCE(a.descripcion, '') ILIKE '%' || $4 || '%')
+            )
+          )`;
 
     const sql = `
       WITH latest AS (
@@ -649,6 +667,7 @@ export default class RadarAbastoService {
               WHERE UPPER(TRIM(ti)) = $3
             )
           )
+          ${searchPredicate}
         ORDER BY
           UPPER(TRIM(s.cluesimb)),
           UPPER(TRIM(s.tipo_pedido)),
@@ -659,7 +678,7 @@ export default class RadarAbastoService {
       SELECT *
       FROM latest
       ORDER BY created_at DESC, id DESC
-      LIMIT $4 OFFSET $5;
+      LIMIT $5 OFFSET $6;
     `;
 
     const countSql = `
@@ -677,6 +696,7 @@ export default class RadarAbastoService {
               WHERE UPPER(TRIM(ti)) = $3
             )
           )
+          ${searchPredicate}
         GROUP BY
           UPPER(TRIM(s.cluesimb)),
           UPPER(TRIM(s.tipo_pedido)),
@@ -704,6 +724,7 @@ export default class RadarAbastoService {
               WHERE UPPER(TRIM(ti)) = $3
             )
           )
+          ${searchPredicate}
         ORDER BY
           UPPER(TRIM(s.cluesimb)),
           UPPER(TRIM(s.tipo_pedido)),
@@ -718,7 +739,7 @@ export default class RadarAbastoService {
       FROM latest;
     `;
 
-    const args = [clues, tipoPedido, tiposInsumo];
+    const args = [clues, tipoPedido, tiposInsumo, search];
     const [rowsRes, countRes, summaryRes] = await Promise.all([
       pool.query(sql, [...args, pageSize, ofs]),
       pool.query(countSql, args),
@@ -740,6 +761,10 @@ export default class RadarAbastoService {
       data: (rowsRes.rows ?? []).map((r: any) => ({
         ...r,
         total_piezas: Number(r.total_piezas ?? 0),
+        solicitado_acumulado: Number(r.total_piezas ?? 0) || 0,
+        solicitado_promedio: Number(r.total_renglones ?? 0) > 0
+          ? Math.round((Number(r.total_piezas ?? 0) || 0) / Number(r.total_renglones))
+          : 0,
       })) as RadarGlobalSolicitudRow[],
     };
   }
@@ -749,10 +774,28 @@ export default class RadarAbastoService {
     const pageSize = Math.min(500, Math.max(1, parseIntSafe(input.pageSize, 100)));
     const ofs = (page - 1) * pageSize;
 
+    const search = String(input.search ?? '').trim();
     const clues = normUpper(input.clues);
     const tipoPedido = normUpper(input.tipo_pedido);
     const tiposInsumo = normUpper(input.tipos_insumo);
     const months = Math.min(24, Math.max(1, parseIntSafe(input.months, 3)));
+    const searchPredicate = `
+        AND (
+          $5 = ''
+          OR s.cluesimb ILIKE '%' || $5 || '%'
+          OR EXISTS (
+            SELECT 1 FROM public.v_unidad_medica_detalle vumd
+            WHERE vumd.cluesimb = UPPER(TRIM(s.cluesimb))
+              AND COALESCE(vumd.nombre_de_unidad, '') ILIKE '%' || $5 || '%'
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM public.solicitud_bitacora_detalle d
+            LEFT JOIN public.articulos a ON UPPER(TRIM(a.clave)) = UPPER(TRIM(d.clave))
+            WHERE d.solicitud_id = s.id
+              AND (d.clave ILIKE '%' || $5 || '%' OR COALESCE(a.descripcion, '') ILIKE '%' || $5 || '%')
+          )
+        )`;
 
     const sql = `
       SELECT
@@ -777,8 +820,9 @@ export default class RadarAbastoService {
             WHERE UPPER(TRIM(ti)) = $4
           )
         )
+      ${searchPredicate}
       ORDER BY s.created_at DESC, s.id DESC
-      LIMIT $5 OFFSET $6;
+      LIMIT $6 OFFSET $7;
     `;
 
     const countSql = `
@@ -794,7 +838,8 @@ export default class RadarAbastoService {
             FROM unnest(COALESCE(s.tipos_insumo, ARRAY[]::text[])) ti
             WHERE UPPER(TRIM(ti)) = $4
           )
-        );
+        )
+      ${searchPredicate};
     `;
 
     const summarySql = `
@@ -813,10 +858,11 @@ export default class RadarAbastoService {
             FROM unnest(COALESCE(s.tipos_insumo, ARRAY[]::text[])) ti
             WHERE UPPER(TRIM(ti)) = $4
           )
-        );
+        )
+      ${searchPredicate};
     `;
 
-    const args = [months, clues, tipoPedido, tiposInsumo];
+    const args = [months, clues, tipoPedido, tiposInsumo, search];
     const [rowsRes, countRes, summaryRes] = await Promise.all([
       pool.query(sql, [...args, pageSize, ofs]),
       pool.query(countSql, args),
@@ -839,6 +885,10 @@ export default class RadarAbastoService {
       data: (rowsRes.rows ?? []).map((r: any) => ({
         ...r,
         total_piezas: Number(r.total_piezas ?? 0),
+        solicitado_acumulado: Number(r.total_piezas ?? 0) || 0,
+        solicitado_promedio: Number(r.total_renglones ?? 0) > 0
+          ? Math.round((Number(r.total_piezas ?? 0) || 0) / Number(r.total_renglones))
+          : 0,
       })) as RadarGlobalSolicitudRow[],
     };
   }
@@ -848,6 +898,7 @@ export default class RadarAbastoService {
     const pageSize = Math.min(500, Math.max(1, parseIntSafe(input.pageSize, 100)));
     const ofs = (page - 1) * pageSize;
 
+    const search = String(input.search ?? '').trim();
     const clues = normUpper(input.clues);
     const tipoPedido = normUpper(input.tipo_pedido);
     const tiposInsumo = normUpper(input.tipos_insumo);
@@ -942,12 +993,30 @@ export default class RadarAbastoService {
             (CASE WHEN c.entradas_30d > c.salidas_30d AND c.existencia_actual > 0 THEN 10 ELSE 0 END)
           )::int AS puntaje_sobreabasto
         FROM calc c
+      ),
+      filtered AS (
+        SELECT
+          s.*,
+          vumd.nombre_de_unidad,
+          a.descripcion
+        FROM scored s
+        LEFT JOIN public.v_unidad_medica_detalle vumd ON vumd.cluesimb = s.cluesimb
+        LEFT JOIN public.articulos a ON UPPER(TRIM(a.clave)) = s.clave
+        WHERE $6 = ''
+          OR s.cluesimb ILIKE '%' || $6 || '%'
+          OR s.clave ILIKE '%' || $6 || '%'
+          OR COALESCE(vumd.nombre_de_unidad, '') ILIKE '%' || $6 || '%'
+          OR COALESCE(a.descripcion, '') ILIKE '%' || $6 || '%'
       )
     `;
 
     const selectFields = `
       s.cluesimb,
+      s.nombre_de_unidad,
       s.clave,
+      s.descripcion,
+      s.solicitado_periodo::numeric::text AS solicitado_acumulado,
+      ROUND((s.solicitado_periodo / NULLIF(s.renglones_solicitados, 0))::numeric, 0)::text AS solicitado_promedio,
       s.solicitado_periodo::numeric::text AS solicitado_periodo,
       s.renglones_solicitados::int AS renglones_solicitados,
       s.existencia_actual::numeric::text AS existencia_actual,
@@ -974,20 +1043,20 @@ export default class RadarAbastoService {
     const pageSql = `
       ${baseCte}
       SELECT ${selectFields}
-      FROM scored s
+      FROM filtered s
       ORDER BY s.puntaje_desabasto DESC, s.solicitado_periodo DESC, s.cluesimb, s.clave
-      LIMIT $6 OFFSET $7;
+      LIMIT $7 OFFSET $8;
     `;
 
     const countSql = `
       ${baseCte}
-      SELECT COUNT(*)::int AS total FROM scored;
+      SELECT COUNT(*)::int AS total FROM filtered;
     `;
 
     const topDesabastoSql = `
       ${baseCte}
       SELECT ${selectFields}
-      FROM scored s
+      FROM filtered s
       WHERE s.puntaje_desabasto >= 30
       ORDER BY s.puntaje_desabasto DESC, s.solicitado_periodo DESC, s.cluesimb, s.clave
       LIMIT 20;
@@ -996,13 +1065,13 @@ export default class RadarAbastoService {
     const topSobreabastoSql = `
       ${baseCte}
       SELECT ${selectFields}
-      FROM scored s
+      FROM filtered s
       WHERE s.puntaje_sobreabasto >= 35
       ORDER BY s.puntaje_sobreabasto DESC, s.existencia_actual DESC, s.cluesimb, s.clave
       LIMIT 20;
     `;   
 
-    const args = [months, clues, tipoPedido, tiposInsumo, minSolicitado];
+    const args = [months, clues, tipoPedido, tiposInsumo, minSolicitado, search];
      
 
     const [pageRes, countRes, topDRes, topSRes] = await Promise.all([
@@ -1014,7 +1083,11 @@ export default class RadarAbastoService {
 
     const mapRow = (r: any): RadarGlobalClaveRiesgoRow => ({
       cluesimb: String(r.cluesimb ?? ''),
+      nombre_de_unidad: r.nombre_de_unidad == null ? null : String(r.nombre_de_unidad),
       clave: String(r.clave ?? ''),
+      descripcion: r.descripcion == null ? null : String(r.descripcion),
+      solicitado_acumulado: Number(r.solicitado_acumulado ?? r.solicitado_periodo ?? 0) || 0,
+      solicitado_promedio: Number(r.solicitado_promedio ?? 0) || 0,
       solicitado_periodo: Number(r.solicitado_periodo ?? 0) || 0,
       renglones_solicitados: Number(r.renglones_solicitados ?? 0) || 0,
       existencia_actual: Number(r.existencia_actual ?? 0) || 0,

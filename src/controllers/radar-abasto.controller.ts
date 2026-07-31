@@ -37,6 +37,7 @@ export default class RadarAbastoController {
   listarGlobalSnapshot = async (req: Request, res: Response): Promise<void> => {
     try {
       const out = await this.service.listarGlobalSnapshot({
+        search: req.query.search?.toString(),
         clues: req.query.clues?.toString(),
         tipo_pedido: req.query.tipo_pedido?.toString(),
         tipos_insumo: req.query.tipos_insumo?.toString(),
@@ -53,6 +54,7 @@ export default class RadarAbastoController {
   listarGlobalTimeline = async (req: Request, res: Response): Promise<void> => {
     try {
       const out = await this.service.listarGlobalTimeline({
+        search: req.query.search?.toString(),
         clues: req.query.clues?.toString(),
         tipo_pedido: req.query.tipo_pedido?.toString(),
         tipos_insumo: req.query.tipos_insumo?.toString(),
@@ -70,6 +72,7 @@ export default class RadarAbastoController {
   listarGlobalClavesRiesgo = async (req: Request, res: Response): Promise<void> => {
     try {
       const out = await this.service.listarGlobalClavesRiesgo({
+        search: req.query.search?.toString(),
         clues: req.query.clues?.toString(),
         tipo_pedido: req.query.tipo_pedido?.toString(),
         tipos_insumo: req.query.tipos_insumo?.toString(),

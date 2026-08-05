@@ -126,16 +126,57 @@ export default class RadarAbastoService {
           AND c.fecha_limite_de_entrega >= (CURRENT_DATE - INTERVAL '15 days')
           AND c.fecha_recepcion_max IS NULL
       ),
+      movimientos AS (
+        SELECT
+          'ENTRADA'::varchar(50) AS tipo_movimiento,
+          COALESCE(um_destino.cluesimb, e.unidad_destino_texto) AS cluesimb,
+          e.clave_cnis,
+          e.cantidad,
+          e.fecha AS fecha_movimiento
+        FROM public.entrada e
+        LEFT JOIN public.unidad_medica_alias uma_destino ON uma_destino.id = e.unidad_destino_id
+        LEFT JOIN public.unidad_medica um_destino ON um_destino.id = uma_destino.unidad_medica_id
+        WHERE UPPER(TRIM(COALESCE(um_destino.cluesimb, e.unidad_destino_texto))) = $1
+          AND UPPER(TRIM(e.clave_cnis)) = $2
+          AND e.fecha >= (CURRENT_DATE - INTERVAL '30 days')
+
+        UNION ALL
+
+        SELECT
+          'TRASPASO'::varchar(50) AS tipo_movimiento,
+          COALESCE(um_destino.cluesimb, t.unidad_destino_texto) AS cluesimb,
+          t.clave_cnis,
+          t.cantidad,
+          t.fecha_recepcion AS fecha_movimiento
+        FROM public.traspaso t
+        LEFT JOIN public.unidad_medica_alias uma_destino ON uma_destino.id = t.unidad_destino_id
+        LEFT JOIN public.unidad_medica um_destino ON um_destino.id = uma_destino.unidad_medica_id
+        WHERE UPPER(TRIM(COALESCE(um_destino.cluesimb, t.unidad_destino_texto))) = $1
+          AND UPPER(TRIM(t.clave_cnis)) = $2
+          AND t.fecha_recepcion >= (CURRENT_DATE - INTERVAL '30 days')
+
+        UNION ALL
+
+        SELECT
+          'SALIDA'::varchar(50) AS tipo_movimiento,
+          COALESCE(um_origen.cluesimb, s.unidad_origen_texto) AS cluesimb,
+          s.clave_cnis,
+          s.cantidad,
+          s.fecha_entregado AS fecha_movimiento
+        FROM public.salida s
+        LEFT JOIN public.unidad_medica_alias uma_origen ON uma_origen.id = s.unidad_origen_id
+        LEFT JOIN public.unidad_medica um_origen ON um_origen.id = uma_origen.unidad_medica_id
+        WHERE UPPER(TRIM(COALESCE(um_origen.cluesimb, s.unidad_origen_texto))) = $1
+          AND UPPER(TRIM(s.clave_cnis)) = $2
+          AND s.fecha_entregado >= (CURRENT_DATE - INTERVAL '30 days')
+      ),
       mov AS (
         SELECT
-          COALESCE(SUM(CASE WHEN m.tipo_movimiento = 'ENTRADA' THEN m.cantidad ELSE 0 END), 0)::numeric AS entradas_30d,
+          COALESCE(SUM(CASE WHEN m.tipo_movimiento IN ('ENTRADA', 'TRASPASO') THEN m.cantidad ELSE 0 END), 0)::numeric AS entradas_30d,
           COALESCE(SUM(CASE WHEN m.tipo_movimiento = 'SALIDA' THEN m.cantidad ELSE 0 END), 0)::numeric AS salidas_30d,
           COALESCE(SUM(CASE WHEN m.tipo_movimiento = 'TRASPASO' THEN m.cantidad ELSE 0 END), 0)::numeric AS traspasos_30d,
           COUNT(*)::int AS movimientos_recientes
-        FROM public.v_movimientos_a_unidades_desde_abasto m
-        WHERE UPPER(TRIM(m.clues_destino)) = $1
-          AND UPPER(TRIM(m.clave_cnis)) = $2
-          AND m.fecha_movimiento >= (CURRENT_DATE - INTERVAL '30 days')
+        FROM movimientos m
       ),
       sol AS (
         SELECT COALESCE(SUM(d.cantidad), 0)::numeric AS solicitado_30d
@@ -945,15 +986,49 @@ export default class RadarAbastoService {
         INNER JOIN public.cpm c ON c.unidad_medica_id = um.id
         GROUP BY UPPER(TRIM(um.cluesimb)), UPPER(TRIM(c.clave_cnis))
       ),
+      movimientos AS (
+        SELECT
+          'ENTRADA'::varchar(50) AS tipo_movimiento,
+          COALESCE(um_destino.cluesimb, e.unidad_destino_texto) AS cluesimb,
+          e.clave_cnis,
+          e.cantidad
+        FROM public.entrada e
+        LEFT JOIN public.unidad_medica_alias uma_destino ON uma_destino.id = e.unidad_destino_id
+        LEFT JOIN public.unidad_medica um_destino ON um_destino.id = uma_destino.unidad_medica_id
+        WHERE e.fecha >= (CURRENT_DATE - INTERVAL '30 days')
+
+        UNION ALL
+
+        SELECT
+          'TRASPASO'::varchar(50) AS tipo_movimiento,
+          COALESCE(um_destino.cluesimb, t.unidad_destino_texto) AS cluesimb,
+          t.clave_cnis,
+          t.cantidad
+        FROM public.traspaso t
+        LEFT JOIN public.unidad_medica_alias uma_destino ON uma_destino.id = t.unidad_destino_id
+        LEFT JOIN public.unidad_medica um_destino ON um_destino.id = uma_destino.unidad_medica_id
+        WHERE t.fecha_recepcion >= (CURRENT_DATE - INTERVAL '30 days')
+
+        UNION ALL
+
+        SELECT
+          'SALIDA'::varchar(50) AS tipo_movimiento,
+          COALESCE(um_origen.cluesimb, s.unidad_origen_texto) AS cluesimb,
+          s.clave_cnis,
+          s.cantidad
+        FROM public.salida s
+        LEFT JOIN public.unidad_medica_alias uma_origen ON uma_origen.id = s.unidad_origen_id
+        LEFT JOIN public.unidad_medica um_origen ON um_origen.id = uma_origen.unidad_medica_id
+        WHERE s.fecha_entregado >= (CURRENT_DATE - INTERVAL '30 days')
+      ),
       mov AS (
         SELECT
-          UPPER(TRIM(m.clues_destino)) AS cluesimb,
+          UPPER(TRIM(m.cluesimb)) AS cluesimb,
           UPPER(TRIM(m.clave_cnis)) AS clave,
           COALESCE(SUM(CASE WHEN (m.tipo_movimiento = 'ENTRADA' OR m.tipo_movimiento = 'TRASPASO') THEN m.cantidad ELSE 0 END), 0)::numeric AS entradas_30d,
           COALESCE(SUM(CASE WHEN m.tipo_movimiento = 'SALIDA' THEN m.cantidad ELSE 0 END), 0)::numeric AS salidas_30d
-        FROM public.v_movimientos_a_unidades_desde_abasto m
-        WHERE m.fecha_movimiento >= (CURRENT_DATE - INTERVAL '30 days')
-        GROUP BY UPPER(TRIM(m.clues_destino)), UPPER(TRIM(m.clave_cnis))
+        FROM movimientos m
+        GROUP BY UPPER(TRIM(m.cluesimb)), UPPER(TRIM(m.clave_cnis))
       ),
       calc AS (
         SELECT

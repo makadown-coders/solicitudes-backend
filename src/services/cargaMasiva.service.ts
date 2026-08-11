@@ -96,12 +96,12 @@ class CargaMasivaService {
   private async precargarAlias(): Promise<Map<string, number>> {
     const map = new Map<string, number>();
     const { rows } = await pool.query(`
-      SELECT id, LOWER(alias_sas) AS alias_sas, LOWER(alias_dash) AS alias_dash
+      SELECT unidad_medica_id, LOWER(alias_sas) AS alias_sas, LOWER(alias_dash) AS alias_dash
       FROM unidad_medica_alias
     `);
     rows.forEach(r => {
-      if (r.alias_sas) map.set(r.alias_sas.trim(), r.id);
-      if (r.alias_dash) map.set(r.alias_dash.trim(), r.id);
+      if (r.alias_sas) map.set(r.alias_sas.trim(), r.unidad_medica_id);
+      if (r.alias_dash) map.set(r.alias_dash.trim(), r.unidad_medica_id);
     });
     return map;
   }
@@ -270,9 +270,9 @@ class CargaMasivaService {
       // 3) alias_flat para unir alias_sas y alias_dash
       const cteAlias = `
         WITH alias_flat AS (
-          SELECT id, LOWER(alias_sas) AS alias FROM unidad_medica_alias WHERE alias_sas IS NOT NULL
+          SELECT unidad_medica_id, LOWER(alias_sas) AS alias FROM unidad_medica_alias WHERE alias_sas IS NOT NULL
           UNION ALL
-          SELECT id, LOWER(alias_dash) AS alias FROM unidad_medica_alias WHERE alias_dash IS NOT NULL
+          SELECT unidad_medica_id, LOWER(alias_dash) AS alias FROM unidad_medica_alias WHERE alias_dash IS NOT NULL
         )
       `;
 
@@ -280,13 +280,13 @@ class CargaMasivaService {
       if (tipo === 'entradas') {
         await client.query(`
           ${cteAlias}
-          INSERT INTO entradas (
+          INSERT INTO entrada (
             unidad_destino_id, clave_cnis, descripcion, num_factura, folio, proveedor,
             cantidad, costo, fecha, tipo_documento, num_remision, observaciones,
             anio, lote, fecha_caducidad, cantidad_existencia, descripcion_extra
           )
           SELECT
-            ad.id AS unidad_destino_id,
+            ad.unidad_medica_id,
             t.clave_cnis,
             t.descripcion,
             t.num_factura,
@@ -309,19 +309,19 @@ class CargaMasivaService {
       } else if (tipo === 'traspasos') {
         await client.query(`
           ${cteAlias}
-          INSERT INTO traspasos (
+          INSERT INTO traspaso (
             fecha_recepcion, folio, unidad_origen_id, clave_cnis, descripcion,
             cantidad, total, unidad_destino_id, lote, fecha_caducidad, partida
           )
           SELECT
             t.fecha_recepcion,
             t.folio,
-            ao.id AS unidad_origen_id,
+            ao.unidad_medica_id,
             t.clave_cnis,
             t.descripcion,
             t.cantidad,
             t.total,
-            ad.id AS unidad_destino_id,
+            ad.unidad_medica_id,
             t.lote,
             t.fecha_caducidad,
             t.partida
@@ -332,14 +332,14 @@ class CargaMasivaService {
       } else {
         await client.query(`
           ${cteAlias}
-          INSERT INTO salidas (
+          INSERT INTO salida (
             unidad_origen_id, unidad_destino_id, folio, clave_cnis, cantidad, total,
             programa, fecha_entregado, tipo, folio_extra, movto, descripcion,
             programa_extra, lote, fecha_caducidad
           )
           SELECT
-            ao.id AS unidad_origen_id,
-            ad.id AS unidad_destino_id,
+            ao.unidad_medica_id,
+            ad.unidad_medica_id,
             t.folio,
             t.clave_cnis,
             t.cantidad,
@@ -361,6 +361,7 @@ class CargaMasivaService {
 
       await client.query('COMMIT');
     } catch (e) {
+      console.error('Error PAPU!:', e);
       await client.query('ROLLBACK');
       throw e;
     } finally {

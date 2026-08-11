@@ -134,8 +134,7 @@ export default class RadarAbastoService {
           e.cantidad,
           e.fecha AS fecha_movimiento
         FROM public.entrada e
-        LEFT JOIN public.unidad_medica_alias uma_destino ON uma_destino.id = e.unidad_destino_id
-        LEFT JOIN public.unidad_medica um_destino ON um_destino.id = uma_destino.unidad_medica_id
+        LEFT JOIN public.unidad_medica um_destino ON um_destino.id = e.unidad_destino_id
         WHERE UPPER(TRIM(COALESCE(um_destino.cluesimb, e.unidad_destino_texto))) = $1
           AND UPPER(TRIM(e.clave_cnis)) = $2
           AND e.fecha >= (CURRENT_DATE - INTERVAL '30 days')
@@ -149,8 +148,7 @@ export default class RadarAbastoService {
           t.cantidad,
           t.fecha_recepcion AS fecha_movimiento
         FROM public.traspaso t
-        LEFT JOIN public.unidad_medica_alias uma_destino ON uma_destino.id = t.unidad_destino_id
-        LEFT JOIN public.unidad_medica um_destino ON um_destino.id = uma_destino.unidad_medica_id
+        LEFT JOIN public.unidad_medica um_destino ON um_destino.id = t.unidad_destino_id
         WHERE UPPER(TRIM(COALESCE(um_destino.cluesimb, t.unidad_destino_texto))) = $1
           AND UPPER(TRIM(t.clave_cnis)) = $2
           AND t.fecha_recepcion >= (CURRENT_DATE - INTERVAL '30 days')
@@ -164,8 +162,7 @@ export default class RadarAbastoService {
           s.cantidad,
           s.fecha_entregado AS fecha_movimiento
         FROM public.salida s
-        LEFT JOIN public.unidad_medica_alias uma_origen ON uma_origen.id = s.unidad_origen_id
-        LEFT JOIN public.unidad_medica um_origen ON um_origen.id = uma_origen.unidad_medica_id
+        LEFT JOIN public.unidad_medica um_origen ON um_origen.id = s.unidad_origen_id
         WHERE UPPER(TRIM(COALESCE(um_origen.cluesimb, s.unidad_origen_texto))) = $1
           AND UPPER(TRIM(s.clave_cnis)) = $2
           AND s.fecha_entregado >= (CURRENT_DATE - INTERVAL '30 days')
@@ -993,8 +990,7 @@ export default class RadarAbastoService {
           e.clave_cnis,
           e.cantidad
         FROM public.entrada e
-        LEFT JOIN public.unidad_medica_alias uma_destino ON uma_destino.id = e.unidad_destino_id
-        LEFT JOIN public.unidad_medica um_destino ON um_destino.id = uma_destino.unidad_medica_id
+        LEFT JOIN public.unidad_medica um_destino ON um_destino.id = e.unidad_destino_id
         WHERE e.fecha >= (CURRENT_DATE - INTERVAL '30 days')
 
         UNION ALL
@@ -1005,8 +1001,7 @@ export default class RadarAbastoService {
           t.clave_cnis,
           t.cantidad
         FROM public.traspaso t
-        LEFT JOIN public.unidad_medica_alias uma_destino ON uma_destino.id = t.unidad_destino_id
-        LEFT JOIN public.unidad_medica um_destino ON um_destino.id = uma_destino.unidad_medica_id
+        LEFT JOIN public.unidad_medica um_destino ON um_destino.id = t.unidad_destino_id
         WHERE t.fecha_recepcion >= (CURRENT_DATE - INTERVAL '30 days')
 
         UNION ALL
@@ -1017,8 +1012,7 @@ export default class RadarAbastoService {
           s.clave_cnis,
           s.cantidad
         FROM public.salida s
-        LEFT JOIN public.unidad_medica_alias uma_origen ON uma_origen.id = s.unidad_origen_id
-        LEFT JOIN public.unidad_medica um_origen ON um_origen.id = uma_origen.unidad_medica_id
+        LEFT JOIN public.unidad_medica um_origen ON um_origen.id = s.unidad_origen_id
         WHERE s.fecha_entregado >= (CURRENT_DATE - INTERVAL '30 days')
       ),
       mov AS (

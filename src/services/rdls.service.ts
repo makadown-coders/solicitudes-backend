@@ -60,11 +60,9 @@ class RdlsService {
           s.lote,
           s.fecha_caducidad
         FROM salida s
-        LEFT JOIN unidad_medica_alias a_o ON a_o.id = s.unidad_origen_id
-        LEFT JOIN unidad_medica       um_o ON um_o.id = a_o.unidad_medica_id
+        LEFT JOIN unidad_medica       um_o ON um_o.id = s.unidad_origen_id
         LEFT JOIN tipo_unidad         tu_o ON tu_o.id = um_o.tipo_unidad_id
-        LEFT JOIN unidad_medica_alias a_d ON a_d.id = s.unidad_destino_id
-        LEFT JOIN unidad_medica       um_d ON um_d.id = a_d.unidad_medica_id
+        LEFT JOIN unidad_medica       um_d ON um_d.id = s.unidad_destino_id
         LEFT JOIN tipo_unidad         tu_d ON tu_d.id = um_d.tipo_unidad_id
         WHERE tu_o.nombre_tipo = 'ALMACENES'
           AND s.fecha_entregado >= $1::date

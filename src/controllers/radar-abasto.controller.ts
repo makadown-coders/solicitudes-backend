@@ -87,6 +87,23 @@ export default class RadarAbastoController {
     }
   };
 
+  /** GET /api/radar-abasto/v2/claves */
+  listarGlobalV2 = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const out = await this.service.listarGlobalV2({
+        search: req.query.search?.toString(),
+        clues: req.query.clues?.toString(),
+        segmento: req.query.segmento?.toString() as any,
+        months: parseIntSafe(req.query.months, 3),
+        page: parseIntSafe(req.query.page, 1),
+        pageSize: parseIntSafe(req.query.pageSize, 25),
+      });
+      res.json(out);
+    } catch (e: any) {
+      res.status(400).json({ error: 'listar_radar_global_v2_failed', detail: e?.message });
+    }
+  };
+
   /** GET /api/radar-abasto/eventos/:id */
   getEventoDetalle = async (req: Request, res: Response): Promise<void> => {
     try {

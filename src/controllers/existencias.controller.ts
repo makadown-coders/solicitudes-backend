@@ -4,6 +4,15 @@ import ExistenciasService from '../services/existencias.service';
 export default class ExistenciasController {
     private svc = new ExistenciasService();
 
+    getSnapshotInfo = async (_req: Request, res: Response): Promise<void> => {
+        try {
+            const snapshot = await this.svc.getSnapshotInfo();
+            res.json(snapshot);
+        } catch (e: any) {
+            res.status(500).json({ error: 'snapshot_info_failed', detail: e?.message });
+        }
+    };
+
     init = async (req: Request, res: Response): Promise<void> => {
         try {
             const reset = String(req.query.reset ?? 'true') === 'true';

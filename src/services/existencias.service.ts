@@ -6,6 +6,15 @@ import { pool } from '../db/pool';
  * Servicio de existencias (temporales)
  */
 export default class ExistenciasService {
+  async getSnapshotInfo(): Promise<{ cargado_en: Date | null }> {
+    const { rows } = await pool.query<{ cargado_en: Date | null }>(`
+      SELECT MAX(cargado_en) AS cargado_en
+      FROM public.tmp_existencias;
+    `);
+
+    return { cargado_en: rows[0]?.cargado_en ?? null };
+  }
+
   async init(reset: boolean) {
     if (reset) {
       await pool.query('TRUNCATE TABLE public.tmp_existencias;');

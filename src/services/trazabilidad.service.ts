@@ -50,12 +50,11 @@ class TrazabilidadService {
         SELECT 
           e.fecha, e.clave_cnis, e.descripcion, e.cantidad,
           e.proveedor, e.folio, e.lote, e.fecha_caducidad, e.observaciones,
-          um.cluesimb, um.nombre AS nombre_unidad, uma.alias_sas AS alias_unidad,
+          um.cluesimb, um.nombre AS nombre_unidad, um.nombre AS alias_unidad,
           -- heurística para detectar si PROVIENE de almacén
           (CASE WHEN COALESCE(e.proveedor,'') ILIKE '%ALMACEN%' THEN TRUE ELSE FALSE END) AS origen_es_almacen
         FROM entrada e
-        JOIN unidad_medica_alias uma ON e.unidad_destino_id = uma.id
-        JOIN unidad_medica um ON uma.unidad_medica_id = um.id
+        JOIN unidad_medica um ON e.unidad_destino_id = um.id
         WHERE e.clave_cnis = $1 AND um.cluesimb = $2
       `;
             const entradas = await pool.query(currentQuery, [clave, cluesimb]);
@@ -86,7 +85,7 @@ class TrazabilidadService {
           t.descripcion,
           t.cantidad,
           COALESCE(
-            um_origen.cluesimb || ' — ' || a1.alias_sas,
+            um_origen.cluesimb || ' — ' || um_origen.nombre,
             um_origen.nombre,
             t.unidad_origen_texto
           ) AS proveedor,
@@ -95,15 +94,13 @@ class TrazabilidadService {
           t.fecha_caducidad,
           um_destino.cluesimb,
           um_destino.nombre AS nombre_unidad,
-          a2.alias_sas     AS alias_unidad,
+          um_destino.nombre AS alias_unidad,
           -- flag: el ORIGEN es un ALMACÉN (fiable por join)
           (CASE WHEN tu_origen.nombre_tipo = 'ALMACENES' THEN TRUE ELSE FALSE END) AS origen_es_almacen
         FROM traspaso t
-        LEFT JOIN unidad_medica_alias a1 ON t.unidad_origen_id = a1.id
-        LEFT JOIN unidad_medica um_origen ON a1.unidad_medica_id = um_origen.id
+        LEFT JOIN unidad_medica um_origen ON t.unidad_origen_id = um_origen.id
         LEFT JOIN tipo_unidad tu_origen ON um_origen.tipo_unidad_id = tu_origen.id
-        JOIN unidad_medica_alias a2 ON t.unidad_destino_id = a2.id
-        JOIN unidad_medica um_destino ON a2.unidad_medica_id = um_destino.id
+        JOIN unidad_medica um_destino ON t.unidad_destino_id = um_destino.id
         WHERE t.clave_cnis = $1
           AND um_destino.cluesimb = $2
         ORDER BY t.fecha_recepcion DESC
@@ -136,7 +133,7 @@ class TrazabilidadService {
           s.descripcion,
           s.cantidad,
           COALESCE(
-            um_destino.cluesimb || ' — ' || a2.alias_sas,
+            um_destino.cluesimb || ' — ' || um_destino.nombre,
             um_destino.nombre,
             s.unidad_destino_texto
           ) AS proveedor,
@@ -145,12 +142,10 @@ class TrazabilidadService {
           s.fecha_caducidad,
           um_origen.cluesimb,
           um_origen.nombre AS nombre_unidad,
-          a1.alias_sas     AS alias_unidad
+          um_origen.nombre AS alias_unidad
         FROM salida s
-        LEFT JOIN unidad_medica_alias a1 ON s.unidad_origen_id = a1.id
-        LEFT JOIN unidad_medica um_origen ON a1.unidad_medica_id = um_origen.id
-        LEFT JOIN unidad_medica_alias a2 ON s.unidad_destino_id = a2.id
-        LEFT JOIN unidad_medica um_destino ON a2.unidad_medica_id = um_destino.id
+        LEFT JOIN unidad_medica um_origen ON s.unidad_origen_id = um_origen.id
+        LEFT JOIN unidad_medica um_destino ON s.unidad_destino_id = um_destino.id
         WHERE s.clave_cnis = $1
           AND COALESCE(um_origen.cluesimb, s.unidad_origen_texto) = $2
         ORDER BY s.fecha_entregado DESC
@@ -200,10 +195,9 @@ class TrazabilidadService {
             ii.fecha_caducidad,
             um.cluesimb,
             um.nombre AS nombre_unidad,
-            uma.alias_sas AS alias_unidad
+            um.nombre AS alias_unidad
         FROM inventario_inicial ii
-        JOIN unidad_medica_alias uma ON ii.unidad_id = uma.id
-        JOIN unidad_medica um ON uma.unidad_medica_id = um.id
+        JOIN unidad_medica um ON ii.unidad_id = um.id
         WHERE ii.clave_cnis = $1
           AND um.cluesimb  = $2
       `;
@@ -272,10 +266,9 @@ class TrazabilidadService {
             currentQuery = `SELECT 
           e.fecha, e.clave_cnis, e.descripcion, e.cantidad,
           e.proveedor, e.folio, e.lote, e.fecha_caducidad, e.observaciones,
-          um.cluesimb, um.nombre AS nombre_unidad, uma.alias_sas AS alias_unidad
+          um.cluesimb, um.nombre AS nombre_unidad, um.nombre AS alias_unidad
          FROM entrada e
-         JOIN unidad_medica_alias uma ON e.unidad_destino_id = uma.id
-         JOIN unidad_medica um ON uma.unidad_medica_id = um.id
+         JOIN unidad_medica um ON e.unidad_destino_id = um.id
        WHERE e.clave_cnis = '${clave}' AND um.cluesimb = '${cluesimb}'`;
 
             // 🟩 Entradas
@@ -283,10 +276,9 @@ class TrazabilidadService {
                 `SELECT 
           e.fecha, e.clave_cnis, e.descripcion, e.cantidad,
           e.proveedor, e.folio, e.lote, e.fecha_caducidad, e.observaciones,
-          um.cluesimb, um.nombre AS nombre_unidad, uma.alias_sas AS alias_unidad
+          um.cluesimb, um.nombre AS nombre_unidad, um.nombre AS alias_unidad
          FROM entrada e
-         JOIN unidad_medica_alias uma ON e.unidad_destino_id = uma.id
-         JOIN unidad_medica um ON uma.unidad_medica_id = um.id
+         JOIN unidad_medica um ON e.unidad_destino_id = um.id
          WHERE e.clave_cnis = $1 AND um.cluesimb = $2`,
                 [clave, cluesimb]
             );
@@ -301,7 +293,7 @@ class TrazabilidadService {
                         t.descripcion,
                         t.cantidad,
                         COALESCE(
-                            um_origen.cluesimb || ' — ' || a1.alias_sas,
+                            um_origen.cluesimb || ' — ' || um_origen.nombre,
                             um_origen.nombre,
                             t.unidad_origen_texto
                         ) AS proveedor,
@@ -310,12 +302,10 @@ class TrazabilidadService {
                         t.fecha_caducidad,
                         um_destino.cluesimb,
                         um_destino.nombre AS nombre_unidad,
-                        a2.alias_sas     AS alias_unidad
+                        um_destino.nombre AS alias_unidad
                         FROM traspaso t
-                        LEFT JOIN unidad_medica_alias a1 ON t.unidad_origen_id = a1.id
-                        LEFT JOIN unidad_medica um_origen ON a1.unidad_medica_id = um_origen.id
-                        JOIN unidad_medica_alias a2 ON t.unidad_destino_id = a2.id
-                        JOIN unidad_medica um_destino ON a2.unidad_medica_id = um_destino.id
+                        LEFT JOIN unidad_medica um_origen ON t.unidad_origen_id = um_origen.id
+                        JOIN unidad_medica um_destino ON t.unidad_destino_id = um_destino.id
                         WHERE t.clave_cnis = '${clave}' AND um_destino.cluesimb = '${cluesimb}'`;
 
             // 🔁 Traspasos
@@ -326,7 +316,7 @@ class TrazabilidadService {
                         t.descripcion,
                         t.cantidad,
                         COALESCE(
-                            um_origen.cluesimb || ' — ' || a1.alias_sas,
+                            um_origen.cluesimb || ' — ' || um_origen.nombre,
                             um_origen.nombre,
                             t.unidad_origen_texto
                         ) AS proveedor,
@@ -335,12 +325,10 @@ class TrazabilidadService {
                         t.fecha_caducidad,
                         um_destino.cluesimb,
                         um_destino.nombre AS nombre_unidad,
-                        a2.alias_sas     AS alias_unidad
+                        um_destino.nombre AS alias_unidad
                         FROM traspaso t
-                        LEFT JOIN unidad_medica_alias a1 ON t.unidad_origen_id = a1.id
-                        LEFT JOIN unidad_medica um_origen ON a1.unidad_medica_id = um_origen.id
-                        JOIN unidad_medica_alias a2 ON t.unidad_destino_id = a2.id
-                        JOIN unidad_medica um_destino ON a2.unidad_medica_id = um_destino.id
+                        LEFT JOIN unidad_medica um_origen ON t.unidad_origen_id = um_origen.id
+                        JOIN unidad_medica um_destino ON t.unidad_destino_id = um_destino.id
                         WHERE t.clave_cnis = $1
                         AND um_destino.cluesimb = $2
                         ORDER BY t.fecha_recepcion DESC`,
@@ -357,7 +345,7 @@ class TrazabilidadService {
             s.descripcion,
             s.cantidad,            
             COALESCE(
-                um_destino.cluesimb || ' — ' || a2.alias_sas,
+                um_destino.cluesimb || ' — ' || um_destino.nombre,
                 um_destino.nombre,
                 s.unidad_destino_texto
             ) AS proveedor,
@@ -366,12 +354,10 @@ class TrazabilidadService {
             s.fecha_caducidad,            
             um_origen.cluesimb,
             um_origen.nombre AS nombre_unidad,
-            a1.alias_sas     AS alias_unidad
+            um_origen.nombre AS alias_unidad
             FROM salida s
-            LEFT JOIN unidad_medica_alias a1 ON s.unidad_origen_id = a1.id
-            LEFT JOIN unidad_medica um_origen ON a1.unidad_medica_id = um_origen.id
-            LEFT JOIN unidad_medica_alias a2 ON s.unidad_destino_id = a2.id
-            LEFT JOIN unidad_medica um_destino ON a2.unidad_medica_id = um_destino.id
+            LEFT JOIN unidad_medica um_origen ON s.unidad_origen_id = um_origen.id
+            LEFT JOIN unidad_medica um_destino ON s.unidad_destino_id = um_destino.id
        WHERE s.clave_cnis = '${clave}' AND COALESCE(um.cluesimb, s.unidad_destino_texto) = '${cluesimb}'`;
 
             // 📤 Salidas
@@ -382,7 +368,7 @@ class TrazabilidadService {
                     s.descripcion,
                     s.cantidad,
                     COALESCE(
-                        um_destino.cluesimb || ' — ' || a2.alias_sas,
+                        um_destino.cluesimb || ' — ' || um_destino.nombre,
                         um_destino.nombre,
                         s.unidad_destino_texto
                     ) AS proveedor,
@@ -391,12 +377,10 @@ class TrazabilidadService {
                     s.fecha_caducidad,
                     um_origen.cluesimb,
                     um_origen.nombre AS nombre_unidad,
-                    a1.alias_sas     AS alias_unidad
+                    um_origen.nombre AS alias_unidad
                     FROM salida s
-                    LEFT JOIN unidad_medica_alias a1 ON s.unidad_origen_id = a1.id
-                    LEFT JOIN unidad_medica um_origen ON a1.unidad_medica_id = um_origen.id
-                    LEFT JOIN unidad_medica_alias a2 ON s.unidad_destino_id = a2.id
-                    LEFT JOIN unidad_medica um_destino ON a2.unidad_medica_id = um_destino.id
+                    LEFT JOIN unidad_medica um_origen ON s.unidad_origen_id = um_origen.id
+                    LEFT JOIN unidad_medica um_destino ON s.unidad_destino_id = um_destino.id
                     WHERE s.clave_cnis = $1
                     AND COALESCE(um_origen.cluesimb, s.unidad_origen_texto) = $2
                     ORDER BY s.fecha_entregado DESC`,
@@ -421,10 +405,9 @@ class TrazabilidadService {
       NULL::text AS observaciones,
       um.cluesimb,
       um.nombre AS nombre_unidad,
-      uma.alias_sas AS alias_unidad
+      um.nombre AS alias_unidad
     FROM inventario_inicial ii
-    JOIN unidad_medica_alias uma ON ii.unidad_id = uma.id
-    JOIN unidad_medica um       ON uma.unidad_medica_id = um.id
+    JOIN unidad_medica um ON ii.unidad_id = um.id
     WHERE ii.clave_cnis = $1
       AND um.cluesimb = $2`,
                 [clave, cluesimb]

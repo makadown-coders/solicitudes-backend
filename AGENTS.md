@@ -30,7 +30,9 @@
 - “CPM sin solicitud observada” no permite concluir falta de necesidad clínica.
 - `existencia / CPM` representa múltiplos de CPM. Los días estimados se calculan como `(existencia / CPM) * 30`.
 - Los factores de `homologos` expresan cantidad de sustituto equivalente a una unidad de la clave base; validar dirección y evitar dobles conteos.
-- No considerar una orden como cobertura local hasta confirmar que su destino puede vincularse con la unidad evaluada.
+- `citas.clues_destino` puede venir como `cluesimb` o `cluessa`; resolver ambos contra `unidad_medica` y devolver siempre el `cluesimb` canónico.
+- Una orden vinculada a la unidad es cobertura proyectada, no existencia disponible; las órdenes vencidas no deben bajar la prioridad local.
+- En Radar V2, la recurrencia usa la ventana histórica seleccionada y la vigencia operativa usa 14 días desde la última solicitud. La evidencia de salida hacia la unidad se vincula mediante `salida.unidad_destino_id = unidad_medica.id`.
 
 ## Validación
 

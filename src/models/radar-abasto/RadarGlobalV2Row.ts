@@ -1,4 +1,4 @@
-import { RadarGlobalV2Segmento } from './RadarGlobalV2Input';
+import { RadarGlobalV2EstadoOperativo, RadarGlobalV2Segmento } from './RadarGlobalV2Input';
 
 export type RadarGlobalV2Row = {
   cluesimb: string;
@@ -17,9 +17,28 @@ export type RadarGlobalV2Row = {
   frecuencia_solicitud: number;
   primera_solicitud: string | null;
   ultima_solicitud: string | null;
+  solicitado_vigente: number;
+  ciclos_vigentes: number;
+  solicitud_vigente: boolean;
+  dias_desde_ultima_solicitud: number | null;
+  fecha_fin_umbral: string | null;
+  dias_restantes_umbral: number | null;
+  salida_posterior: boolean;
+  piezas_salida_posterior: number;
+  ultima_salida_posterior: string | null;
+  estado_operativo: RadarGlobalV2EstadoOperativo;
   homologos_disponibles: number;
   existencia_homologos_equivalente: number;
   mejor_homologo: string | null;
+  ordenes_pendientes: number;
+  piezas_pendientes: number;
+  ordenes_por_vencer: number;
+  ordenes_vencidas: number;
+  recepciones_recientes: number;
+  piezas_recibidas_recientes: number;
+  proxima_entrega: string | null;
+  cobertura_proyectada: number;
+  cobertura_proyectada_cpm: number | null;
   segmento: RadarGlobalV2Segmento;
   prioridad: number;
   razones: string[];

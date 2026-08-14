@@ -94,6 +94,7 @@ export default class RadarAbastoController {
         search: req.query.search?.toString(),
         clues: req.query.clues?.toString(),
         segmento: req.query.segmento?.toString() as any,
+        estado_operativo: req.query.estado_operativo?.toString() as any,
         months: parseIntSafe(req.query.months, 3),
         page: parseIntSafe(req.query.page, 1),
         pageSize: parseIntSafe(req.query.pageSize, 25),
@@ -101,6 +102,50 @@ export default class RadarAbastoController {
       res.json(out);
     } catch (e: any) {
       res.status(400).json({ error: 'listar_radar_global_v2_failed', detail: e?.message });
+    }
+  };
+
+  /** GET /api/radar-abasto/v2/export */
+  exportarGlobalV2 = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const out = await this.service.listarGlobalV2({
+        search: req.query.search?.toString(), clues: req.query.clues?.toString(),
+        segmento: req.query.segmento?.toString() as any,
+        estado_operativo: req.query.estado_operativo?.toString() as any,
+        months: parseIntSafe(req.query.months, 3), page: 1, pageSize: 50000, export: true
+      });
+      res.json(out);
+    } catch (e: any) {
+      res.status(400).json({ error: 'exportar_radar_global_v2_failed', detail: e?.message });
+    }
+  };
+
+  /** POST /api/radar-abasto/v2/export/detalles */
+  exportarGlobalV2Detalles = async (req: Request, res: Response): Promise<void> => {
+    try {
+      res.json(await this.service.exportarGlobalV2Detalles(req.body?.items, req.body?.months));
+    } catch (e: any) {
+      res.status(400).json({ error: 'exportar_radar_global_v2_detalles_failed', detail: e?.message });
+    }
+  };
+
+  /** GET /api/radar-abasto/v2/claves/:clues/:clave/ordenes */
+  listarGlobalV2Ordenes = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const out = await this.service.listarGlobalV2Ordenes(req.params.clues, req.params.clave, req.query.months);
+      res.json(out);
+    } catch (e: any) {
+      res.status(400).json({ error: 'listar_radar_global_v2_ordenes_failed', detail: e?.message });
+    }
+  };
+
+  /** GET /api/radar-abasto/v2/claves/:clues/:clave/salidas */
+  listarGlobalV2Salidas = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const out = await this.service.listarGlobalV2Salidas(req.params.clues, req.params.clave, req.query.months);
+      res.json(out);
+    } catch (e: any) {
+      res.status(400).json({ error: 'listar_radar_global_v2_salidas_failed', detail: e?.message });
     }
   };
 

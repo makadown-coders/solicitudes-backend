@@ -10,8 +10,10 @@ import { RadarGlobalClavesRiesgoInput } from '../models/radar-abasto/RadarGlobal
 import { RadarGlobalSnapshotInput } from '../models/radar-abasto/RadarGlobalSnapshotInput';
 import { RadarGlobalSolicitudRow } from '../models/radar-abasto/RadarGlobalSolicitudRow';
 import { RadarGlobalTimelineInput } from '../models/radar-abasto/RadarGlobalTimelineInput';
-import { RadarGlobalV2Input, RadarGlobalV2Segmento } from '../models/radar-abasto/RadarGlobalV2Input';
+import { RadarGlobalV2EstadoOperativo, RadarGlobalV2Input, RadarGlobalV2Segmento } from '../models/radar-abasto/RadarGlobalV2Input';
 import { RadarGlobalV2Row } from '../models/radar-abasto/RadarGlobalV2Row';
+import { RadarGlobalV2OrdenRow } from '../models/radar-abasto/RadarGlobalV2OrdenRow';
+import { RadarGlobalV2SalidaRow } from '../models/radar-abasto/RadarGlobalV2SalidaRow';
 import { RadarListarEventosInput } from '../models/radar-abasto/RadarListarEventosInput';
 import { RadarRiesgoNivel } from '../models/radar-abasto/RadarRiesgoNivel';
 
@@ -1187,7 +1189,8 @@ export default class RadarAbastoService {
 
   async listarGlobalV2(input: RadarGlobalV2Input) {
     const page = Math.max(1, parseIntSafe(input.page, 1));
-    const pageSize = Math.min(200, Math.max(1, parseIntSafe(input.pageSize, 25)));
+    const pageSizeMax = input.export ? 50000 : 200;
+    const pageSize = Math.min(pageSizeMax, Math.max(1, parseIntSafe(input.pageSize, 25)));
     const offset = (page - 1) * pageSize;
     const months = Math.min(12, Math.max(1, parseIntSafe(input.months, 3)));
     const search = normText(input.search);
@@ -1199,12 +1202,19 @@ export default class RadarAbastoService {
     const segmento = segmentos.includes(input.segmento as RadarGlobalV2Segmento)
       ? input.segmento as RadarGlobalV2Segmento
       : '';
+    const estadosOperativos: RadarGlobalV2EstadoOperativo[] = [
+      'VIGENTE_EN_PROCESO', 'VIGENTE_CON_SALIDA', 'FUERA_UMBRAL_SIN_SALIDA',
+      'HISTORICA_CON_SALIDA', 'SIN_SOLICITUD_OBSERVADA'
+    ];
+    const estadoOperativo = estadosOperativos.includes(input.estado_operativo as RadarGlobalV2EstadoOperativo)
+      ? input.estado_operativo as RadarGlobalV2EstadoOperativo
+      : '';
 
     const sql = `
       WITH ciclos AS (
         SELECT UPPER(TRIM(s.cluesimb)) AS cluesimb, COUNT(DISTINCT s.id)::int AS ciclos_unidad
         FROM public.solicitud_bitacora s
-        WHERE s.created_day >= CURRENT_DATE - make_interval(months => $1::int)
+        WHERE s.created_day BETWEEN CURRENT_DATE - make_interval(months => $1::int) AND CURRENT_DATE
         GROUP BY UPPER(TRIM(s.cluesimb))
       ),
       demanda AS (
@@ -1212,11 +1222,17 @@ export default class RadarAbastoService {
                UPPER(TRIM(d.clave)) AS clave,
                COALESCE(SUM(d.cantidad), 0)::numeric AS solicitado_periodo,
                COUNT(DISTINCT s.id)::int AS ciclos_con_clave,
+               COALESCE(SUM(d.cantidad) FILTER (
+                 WHERE s.created_day BETWEEN CURRENT_DATE - INTERVAL '14 days' AND CURRENT_DATE
+               ), 0)::numeric AS solicitado_vigente,
+               COUNT(DISTINCT s.id) FILTER (
+                 WHERE s.created_day BETWEEN CURRENT_DATE - INTERVAL '14 days' AND CURRENT_DATE
+               )::int AS ciclos_vigentes,
                MIN(s.created_day)::date AS primera_solicitud,
                MAX(s.created_day)::date AS ultima_solicitud
         FROM public.solicitud_bitacora s
         JOIN public.solicitud_bitacora_detalle d ON d.solicitud_id = s.id
-        WHERE s.created_day >= CURRENT_DATE - make_interval(months => $1::int)
+        WHERE s.created_day BETWEEN CURRENT_DATE - make_interval(months => $1::int) AND CURRENT_DATE
           AND NULLIF(UPPER(TRIM(d.clave)), '') IS NOT NULL
         GROUP BY UPPER(TRIM(s.cluesimb)), UPPER(TRIM(d.clave))
       ),
@@ -1270,6 +1286,53 @@ export default class RadarAbastoService {
         LEFT JOIN existencias e ON e.cluesimb = u.cluesimb AND e.clave = a.candidato
         GROUP BY u.cluesimb, u.clave
       ),
+      salidas_posteriores AS (
+        SELECT d.cluesimb, d.clave,
+               COALESCE(SUM(s.cantidad), 0)::numeric AS piezas_salida_posterior,
+               MAX(s.fecha_entregado)::date AS ultima_salida_posterior
+        FROM demanda d
+        JOIN public.unidad_medica um ON UPPER(TRIM(um.cluesimb)) = d.cluesimb
+        JOIN public.salida s ON s.unidad_destino_id = um.id
+          AND UPPER(TRIM(s.clave_cnis)) = d.clave
+          AND s.fecha_entregado::date >= d.ultima_solicitud
+          AND s.fecha_entregado::date <= CURRENT_DATE
+        GROUP BY d.cluesimb, d.clave
+      ),
+      ordenes AS (
+        SELECT UPPER(TRIM(um.cluesimb)) AS cluesimb,
+               UPPER(TRIM(c.clave_cnis)) AS clave,
+               COUNT(DISTINCT c.orden_de_suministro) FILTER (
+                 WHERE GREATEST(COALESCE(c.no_de_piezas_emitidas, 0) - COALESCE(c.pzas_recibidas_por_la_entidad, 0), 0) > 0
+               )::int AS ordenes_pendientes,
+               COALESCE(SUM(GREATEST(COALESCE(c.no_de_piezas_emitidas, 0) - COALESCE(c.pzas_recibidas_por_la_entidad, 0), 0)), 0)::numeric AS piezas_pendientes,
+               COUNT(DISTINCT c.orden_de_suministro) FILTER (
+                 WHERE GREATEST(COALESCE(c.no_de_piezas_emitidas, 0) - COALESCE(c.pzas_recibidas_por_la_entidad, 0), 0) > 0
+                   AND c.fecha_limite_de_entrega BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'
+               )::int AS ordenes_por_vencer,
+               COUNT(DISTINCT c.orden_de_suministro) FILTER (
+                 WHERE GREATEST(COALESCE(c.no_de_piezas_emitidas, 0) - COALESCE(c.pzas_recibidas_por_la_entidad, 0), 0) > 0
+                   AND c.fecha_limite_de_entrega < CURRENT_DATE
+               )::int AS ordenes_vencidas,
+               COUNT(DISTINCT c.orden_de_suministro) FILTER (
+                 WHERE c.fecha_recepcion_max >= CURRENT_DATE - INTERVAL '30 days'
+               )::int AS recepciones_recientes,
+               COALESCE(SUM(c.pzas_recibidas_por_la_entidad) FILTER (
+                 WHERE c.fecha_recepcion_max >= CURRENT_DATE - INTERVAL '30 days'
+               ), 0)::numeric AS piezas_recibidas_recientes,
+               MIN(c.fecha_limite_de_entrega) FILTER (
+                 WHERE GREATEST(COALESCE(c.no_de_piezas_emitidas, 0) - COALESCE(c.pzas_recibidas_por_la_entidad, 0), 0) > 0
+                   AND c.fecha_limite_de_entrega >= CURRENT_DATE
+               ) AS proxima_entrega
+        FROM public.citas c
+        JOIN public.unidad_medica um
+          ON UPPER(TRIM(c.clues_destino)) IN (UPPER(TRIM(um.cluesimb)), UPPER(TRIM(um.cluessa)))
+        WHERE NULLIF(UPPER(TRIM(c.clave_cnis)), '') IS NOT NULL
+          AND (c.fecha_emision >= CURRENT_DATE - make_interval(months => $1::int)
+            OR c.fecha_recepcion_max >= CURRENT_DATE - INTERVAL '30 days'
+            OR (c.fecha_limite_de_entrega >= CURRENT_DATE - INTERVAL '30 days'
+              AND GREATEST(COALESCE(c.no_de_piezas_emitidas, 0) - COALESCE(c.pzas_recibidas_por_la_entidad, 0), 0) > 0))
+        GROUP BY UPPER(TRIM(um.cluesimb)), UPPER(TRIM(c.clave_cnis))
+      ),
       base AS (
         SELECT u.cluesimb, vumd.nombre_de_unidad, u.clave, a.descripcion,
                COALESCE(c.cpm, 0)::numeric AS cpm,
@@ -1284,20 +1347,49 @@ export default class RadarAbastoService {
                CASE WHEN COALESCE(ci.ciclos_unidad, 0) > 0
                     THEN ROUND(d.ciclos_con_clave::numeric / ci.ciclos_unidad, 4) ELSE 0 END AS frecuencia_solicitud,
                d.primera_solicitud, d.ultima_solicitud,
+               COALESCE(d.solicitado_vigente, 0)::numeric AS solicitado_vigente,
+               COALESCE(d.ciclos_vigentes, 0)::int AS ciclos_vigentes,
+               (COALESCE(d.ciclos_vigentes, 0) > 0) AS solicitud_vigente,
+               CASE WHEN d.ultima_solicitud IS NOT NULL THEN (CURRENT_DATE - d.ultima_solicitud)::int END AS dias_desde_ultima_solicitud,
+               CASE WHEN d.ultima_solicitud IS NOT NULL THEN (d.ultima_solicitud + 14)::date END AS fecha_fin_umbral,
+               CASE WHEN d.ultima_solicitud IS NOT NULL THEN GREATEST((d.ultima_solicitud + 14 - CURRENT_DATE)::int, 0) END AS dias_restantes_umbral,
+               (COALESCE(sp.piezas_salida_posterior, 0) > 0) AS salida_posterior,
+               COALESCE(sp.piezas_salida_posterior, 0)::numeric AS piezas_salida_posterior,
+               sp.ultima_salida_posterior,
                COALESCE(hs.homologos_disponibles, 0)::int AS homologos_disponibles,
                ROUND(COALESCE(hs.existencia_homologos_equivalente, 0), 2) AS existencia_homologos_equivalente,
-               hs.mejor_homologo
+               hs.mejor_homologo,
+               COALESCE(o.ordenes_pendientes, 0)::int AS ordenes_pendientes,
+               COALESCE(o.piezas_pendientes, 0)::numeric AS piezas_pendientes,
+               COALESCE(o.ordenes_por_vencer, 0)::int AS ordenes_por_vencer,
+               COALESCE(o.ordenes_vencidas, 0)::int AS ordenes_vencidas,
+               COALESCE(o.recepciones_recientes, 0)::int AS recepciones_recientes,
+               COALESCE(o.piezas_recibidas_recientes, 0)::numeric AS piezas_recibidas_recientes,
+               o.proxima_entrega,
+               ROUND(COALESCE(e.existencia_actual, 0) + COALESCE(hs.existencia_homologos_equivalente, 0) + COALESCE(o.piezas_pendientes, 0), 2) AS cobertura_proyectada,
+               CASE WHEN COALESCE(c.cpm, 0) > 0 THEN ROUND(
+                 (COALESCE(e.existencia_actual, 0) + COALESCE(hs.existencia_homologos_equivalente, 0) + COALESCE(o.piezas_pendientes, 0)) / c.cpm, 2
+               ) END AS cobertura_proyectada_cpm
         FROM universo u
         LEFT JOIN demanda d ON d.cluesimb = u.cluesimb AND d.clave = u.clave
         LEFT JOIN ciclos ci ON ci.cluesimb = u.cluesimb
         LEFT JOIN cpm_ c ON c.cluesimb = u.cluesimb AND c.clave = u.clave
         LEFT JOIN existencias e ON e.cluesimb = u.cluesimb AND e.clave = u.clave
         LEFT JOIN homologos_stock hs ON hs.cluesimb = u.cluesimb AND hs.clave = u.clave
+        LEFT JOIN salidas_posteriores sp ON sp.cluesimb = u.cluesimb AND sp.clave = u.clave
+        LEFT JOIN ordenes o ON o.cluesimb = u.cluesimb AND o.clave = u.clave
         LEFT JOIN public.v_unidad_medica_detalle vumd ON UPPER(TRIM(vumd.cluesimb)) = u.cluesimb
         LEFT JOIN public.articulos a ON UPPER(TRIM(a.clave)) = u.clave
       ),
       clasificado AS (
         SELECT b.*,
+          CASE
+            WHEN b.solicitud_vigente AND b.salida_posterior THEN 'VIGENTE_CON_SALIDA'
+            WHEN b.solicitud_vigente THEN 'VIGENTE_EN_PROCESO'
+            WHEN b.ultima_solicitud IS NOT NULL AND b.salida_posterior THEN 'HISTORICA_CON_SALIDA'
+            WHEN b.ultima_solicitud IS NOT NULL THEN 'FUERA_UMBRAL_SIN_SALIDA'
+            ELSE 'SIN_SOLICITUD_OBSERVADA'
+          END AS estado_operativo,
           CASE
             WHEN b.cpm > 0 AND b.existencia_actual < b.cpm AND b.solicitado_periodo > 0
               AND b.existencia_actual + b.existencia_homologos_equivalente >= b.cpm THEN 'CUBIERTA'
@@ -1327,14 +1419,22 @@ export default class RadarAbastoService {
             CASE WHEN c.frecuencia_solicitud >= .5 THEN 'Solicitada en al menos la mitad de los ciclos' END,
             CASE WHEN c.existencia_actual <= 0 THEN 'Sin existencia en el snapshot actual' END,
             CASE WHEN c.homologos_disponibles > 0 THEN 'Cuenta con alternativas con existencia local' END
+            ,CASE WHEN c.ordenes_pendientes > 0 THEN 'Cuenta con orden de suministro pendiente para la unidad' END
+            ,CASE WHEN c.ordenes_por_vencer > 0 THEN 'Tiene órdenes con entrega prevista en los próximos 30 días' END
+            ,CASE WHEN c.ordenes_vencidas > 0 THEN 'Tiene órdenes vencidas con saldo pendiente' END
+            ,CASE WHEN c.recepciones_recientes > 0 THEN 'Registra recepciones durante los últimos 30 días' END
+            ,CASE WHEN c.solicitud_vigente THEN 'Solicitud dentro del umbral operativo de 14 días' END
+            ,CASE WHEN c.estado_operativo = 'FUERA_UMBRAL_SIN_SALIDA' THEN 'Solicitud fuera del umbral sin salida posterior observada' END
+            ,CASE WHEN c.salida_posterior THEN 'Registra salida posterior a la última solicitud' END
           ], NULL)::text[] AS razones
         FROM clasificado c
         WHERE ($2 = '' OR c.cluesimb = $2)
           AND ($3 = '' OR c.segmento = $3)
-          AND ($4 = '' OR c.cluesimb ILIKE '%' || $4 || '%'
-            OR c.clave ILIKE '%' || $4 || '%'
-            OR COALESCE(c.nombre_de_unidad, '') ILIKE '%' || $4 || '%'
-            OR COALESCE(c.descripcion, '') ILIKE '%' || $4 || '%')
+          AND ($4 = '' OR c.estado_operativo = $4)
+          AND ($5 = '' OR c.cluesimb ILIKE '%' || $5 || '%'
+            OR c.clave ILIKE '%' || $5 || '%'
+            OR COALESCE(c.nombre_de_unidad, '') ILIKE '%' || $5 || '%'
+            OR COALESCE(c.descripcion, '') ILIKE '%' || $5 || '%')
       )
       SELECT f.*,
              COUNT(*) OVER()::int AS total_rows,
@@ -1345,10 +1445,10 @@ export default class RadarAbastoService {
              COUNT(*) FILTER (WHERE segmento = 'CUBIERTA') OVER()::int AS total_cubiertas
       FROM filtrado f
       ORDER BY f.prioridad DESC, f.frecuencia_solicitud DESC, f.solicitado_periodo DESC, f.cluesimb, f.clave
-      LIMIT $5 OFFSET $6;
+      LIMIT $6 OFFSET $7;
     `;
 
-    const { rows } = await pool.query(sql, [months, clues, segmento, search, pageSize, offset]);
+    const { rows } = await pool.query(sql, [months, clues, segmento, estadoOperativo, search, pageSize, offset]);
     const first = rows?.[0] ?? {};
     const data: RadarGlobalV2Row[] = (rows ?? []).map((r: any) => ({
       cluesimb: String(r.cluesimb ?? ''), nombre_de_unidad: r.nombre_de_unidad ?? null,
@@ -1361,21 +1461,192 @@ export default class RadarAbastoService {
       ciclos_unidad: Number(r.ciclos_unidad ?? 0), frecuencia_solicitud: Number(r.frecuencia_solicitud ?? 0),
       primera_solicitud: r.primera_solicitud?.toISOString?.().slice(0, 10) ?? r.primera_solicitud ?? null,
       ultima_solicitud: r.ultima_solicitud?.toISOString?.().slice(0, 10) ?? r.ultima_solicitud ?? null,
+      solicitado_vigente: Number(r.solicitado_vigente ?? 0), ciclos_vigentes: Number(r.ciclos_vigentes ?? 0),
+      solicitud_vigente: Boolean(r.solicitud_vigente),
+      dias_desde_ultima_solicitud: r.dias_desde_ultima_solicitud == null ? null : Number(r.dias_desde_ultima_solicitud),
+      fecha_fin_umbral: r.fecha_fin_umbral?.toISOString?.().slice(0, 10) ?? r.fecha_fin_umbral ?? null,
+      dias_restantes_umbral: r.dias_restantes_umbral == null ? null : Number(r.dias_restantes_umbral),
+      salida_posterior: Boolean(r.salida_posterior), piezas_salida_posterior: Number(r.piezas_salida_posterior ?? 0),
+      ultima_salida_posterior: r.ultima_salida_posterior?.toISOString?.().slice(0, 10) ?? r.ultima_salida_posterior ?? null,
+      estado_operativo: r.estado_operativo,
       homologos_disponibles: Number(r.homologos_disponibles ?? 0),
       existencia_homologos_equivalente: Number(r.existencia_homologos_equivalente ?? 0),
       mejor_homologo: r.mejor_homologo ?? null, segmento: r.segmento, prioridad: Number(r.prioridad ?? 0),
+      ordenes_pendientes: Number(r.ordenes_pendientes ?? 0), piezas_pendientes: Number(r.piezas_pendientes ?? 0),
+      ordenes_por_vencer: Number(r.ordenes_por_vencer ?? 0), ordenes_vencidas: Number(r.ordenes_vencidas ?? 0),
+      recepciones_recientes: Number(r.recepciones_recientes ?? 0),
+      piezas_recibidas_recientes: Number(r.piezas_recibidas_recientes ?? 0),
+      proxima_entrega: r.proxima_entrega?.toISOString?.().slice(0, 10) ?? r.proxima_entrega ?? null,
+      cobertura_proyectada: Number(r.cobertura_proyectada ?? 0),
+      cobertura_proyectada_cpm: r.cobertura_proyectada_cpm == null ? null : Number(r.cobertura_proyectada_cpm),
       razones: Array.isArray(r.razones) ? r.razones : []
     }));
 
     return {
       mode: 'radar-global-v2', window: { months }, page, pageSize,
       total: Number(first.total_rows ?? 0),
+      truncated: Boolean(input.export && Number(first.total_rows ?? 0) > data.length),
       summary: {
         criticas_cpm: Number(first.total_criticas ?? 0), atencion_cpm: Number(first.total_atencion ?? 0),
         demanda_sin_cpm: Number(first.total_sin_cpm ?? 0), cpm_sin_solicitud: Number(first.total_sin_solicitud ?? 0),
         cubiertas: Number(first.total_cubiertas ?? 0)
       },
       data
+    };
+  }
+
+  async listarGlobalV2Ordenes(cluesInput: unknown, claveInput: unknown, monthsInput: unknown) {
+    const clues = normUpper(cluesInput);
+    const clave = normUpper(claveInput);
+    const months = Math.min(12, Math.max(1, parseIntSafe(monthsInput, 3)));
+    if (!clues || !clave) throw new Error('clues y clave son requeridos');
+
+    const { rows } = await pool.query(`
+      SELECT c.orden_de_suministro, c.proveedor,
+             c.fecha_emision::text AS fecha_emision,
+             c.fecha_limite_de_entrega::text AS fecha_limite_de_entrega,
+             c.fecha_recepcion_max::text AS fecha_recepcion,
+             COALESCE(c.no_de_piezas_emitidas, 0)::numeric AS piezas_emitidas,
+             COALESCE(c.pzas_recibidas_por_la_entidad, 0)::numeric AS piezas_recibidas,
+             GREATEST(COALESCE(c.no_de_piezas_emitidas, 0) - COALESCE(c.pzas_recibidas_por_la_entidad, 0), 0)::numeric AS piezas_pendientes,
+             CASE
+               WHEN GREATEST(COALESCE(c.no_de_piezas_emitidas, 0) - COALESCE(c.pzas_recibidas_por_la_entidad, 0), 0) <= 0
+                 AND c.fecha_recepcion_max >= CURRENT_DATE - INTERVAL '30 days' THEN 'CUMPLIDA_RECIENTE'
+               WHEN c.fecha_limite_de_entrega < CURRENT_DATE
+                 AND GREATEST(COALESCE(c.no_de_piezas_emitidas, 0) - COALESCE(c.pzas_recibidas_por_la_entidad, 0), 0) > 0 THEN 'VENCIDA'
+               WHEN c.fecha_limite_de_entrega BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'
+                 AND GREATEST(COALESCE(c.no_de_piezas_emitidas, 0) - COALESCE(c.pzas_recibidas_por_la_entidad, 0), 0) > 0 THEN 'POR_VENCER'
+               ELSE 'PENDIENTE'
+             END AS estado_radar
+      FROM public.citas c
+      JOIN public.unidad_medica um
+        ON UPPER(TRIM(c.clues_destino)) IN (UPPER(TRIM(um.cluesimb)), UPPER(TRIM(um.cluessa)))
+      WHERE UPPER(TRIM(um.cluesimb)) = $1 AND UPPER(TRIM(c.clave_cnis)) = $2
+        AND (c.fecha_emision >= CURRENT_DATE - make_interval(months => $3::int)
+          OR c.fecha_recepcion_max >= CURRENT_DATE - INTERVAL '30 days'
+          OR (c.fecha_limite_de_entrega >= CURRENT_DATE - INTERVAL '30 days'
+            AND GREATEST(COALESCE(c.no_de_piezas_emitidas, 0) - COALESCE(c.pzas_recibidas_por_la_entidad, 0), 0) > 0))
+      ORDER BY
+        CASE
+          WHEN c.fecha_limite_de_entrega < CURRENT_DATE
+            AND GREATEST(COALESCE(c.no_de_piezas_emitidas, 0) - COALESCE(c.pzas_recibidas_por_la_entidad, 0), 0) > 0 THEN 0
+          WHEN GREATEST(COALESCE(c.no_de_piezas_emitidas, 0) - COALESCE(c.pzas_recibidas_por_la_entidad, 0), 0) > 0 THEN 1
+          ELSE 2
+        END,
+        COALESCE(c.fecha_limite_de_entrega, c.fecha_recepcion_max) DESC NULLS LAST
+      LIMIT 50`, [clues, clave, months]);
+
+    const data: RadarGlobalV2OrdenRow[] = rows.map((r: any) => ({
+      orden_de_suministro: r.orden_de_suministro ?? null,
+      proveedor: r.proveedor ?? null,
+      fecha_emision: r.fecha_emision ?? null,
+      fecha_limite_de_entrega: r.fecha_limite_de_entrega ?? null,
+      fecha_recepcion: r.fecha_recepcion ?? null,
+      piezas_emitidas: Number(r.piezas_emitidas ?? 0),
+      piezas_recibidas: Number(r.piezas_recibidas ?? 0),
+      piezas_pendientes: Number(r.piezas_pendientes ?? 0),
+      estado_radar: r.estado_radar
+    }));
+    return { cluesimb: clues, clave, window: { months }, total: data.length, data };
+  }
+
+  async listarGlobalV2Salidas(cluesInput: unknown, claveInput: unknown, monthsInput: unknown) {
+    const clues = normUpper(cluesInput);
+    const clave = normUpper(claveInput);
+    const months = Math.min(12, Math.max(1, parseIntSafe(monthsInput, 3)));
+    if (!clues || !clave) throw new Error('clues y clave son requeridos');
+
+    const { rows } = await pool.query(`
+      WITH ultima_solicitud AS (
+        SELECT MAX(sb.created_day)::date AS fecha
+        FROM public.solicitud_bitacora sb
+        JOIN public.solicitud_bitacora_detalle d ON d.solicitud_id = sb.id
+        WHERE UPPER(TRIM(sb.cluesimb)) = $1
+          AND UPPER(TRIM(d.clave)) = $2
+          AND sb.created_day BETWEEN CURRENT_DATE - make_interval(months => $3::int) AND CURRENT_DATE
+      )
+      SELECT s.id, s.fecha_entregado::text AS fecha_entregado, s.folio, s.folio_extra,
+             COALESCE(s.cantidad, 0)::numeric AS cantidad, s.tipo, s.programa,
+             COALESCE(um_origen.nombre, s.unidad_origen_texto) AS unidad_origen,
+             COALESCE(um_destino.nombre, s.unidad_destino_texto) AS unidad_destino
+      FROM public.salida s
+      JOIN public.unidad_medica um_destino ON um_destino.id = s.unidad_destino_id
+      LEFT JOIN public.unidad_medica um_origen ON um_origen.id = s.unidad_origen_id
+      CROSS JOIN ultima_solicitud us
+      WHERE UPPER(TRIM(um_destino.cluesimb)) = $1
+        AND UPPER(TRIM(s.clave_cnis)) = $2
+        AND us.fecha IS NOT NULL
+        AND s.fecha_entregado::date BETWEEN us.fecha AND CURRENT_DATE
+      ORDER BY s.fecha_entregado DESC, s.id DESC
+      LIMIT 50`, [clues, clave, months]);
+
+    const data: RadarGlobalV2SalidaRow[] = rows.map((r: any) => ({
+      id: Number(r.id), fecha_entregado: String(r.fecha_entregado), folio: r.folio ?? null,
+      folio_extra: r.folio_extra ?? null, cantidad: Number(r.cantidad ?? 0), tipo: r.tipo ?? null,
+      programa: r.programa ?? null, unidad_origen: r.unidad_origen ?? null, unidad_destino: r.unidad_destino ?? null
+    }));
+    return { cluesimb: clues, clave, window: { months }, total: data.length, data };
+  }
+
+  async exportarGlobalV2Detalles(itemsInput: unknown, monthsInput: unknown) {
+    const months = Math.min(12, Math.max(1, parseIntSafe(monthsInput, 3)));
+    const items = Array.isArray(itemsInput) ? itemsInput.slice(0, 50000) : [];
+    const paresUnicos = new Map<string, { cluesimb: string; clave: string }>();
+    for (const item of items) {
+      const cluesimb = normUpper(item?.cluesimb);
+      const clave = normUpper(item?.clave);
+      if (cluesimb && clave) paresUnicos.set(`${cluesimb}|${clave}`, { cluesimb, clave });
+    }
+    const pares = Array.from(paresUnicos.values());
+    if (!pares.length) return { salidas: [], ordenes: [] };
+
+    const params = [JSON.stringify(pares), months];
+    const salidasSql = `
+      WITH pares AS (SELECT UPPER(TRIM(cluesimb)) cluesimb, UPPER(TRIM(clave)) clave
+        FROM jsonb_to_recordset($1::jsonb) AS x(cluesimb text, clave text)),
+      ultimas AS (SELECT p.cluesimb, p.clave, MAX(sb.created_day)::date ultima_solicitud
+        FROM pares p JOIN public.solicitud_bitacora sb ON UPPER(TRIM(sb.cluesimb))=p.cluesimb
+        JOIN public.solicitud_bitacora_detalle d ON d.solicitud_id=sb.id AND UPPER(TRIM(d.clave))=p.clave
+        WHERE sb.created_day BETWEEN CURRENT_DATE-make_interval(months=>$2::int) AND CURRENT_DATE GROUP BY p.cluesimb,p.clave)
+      SELECT u.cluesimb,u.clave,u.ultima_solicitud::text,s.id,s.fecha_entregado::text,s.folio,s.folio_extra,
+        COALESCE(s.cantidad,0)::numeric cantidad,s.tipo,s.programa,
+        COALESCE(o.nombre,s.unidad_origen_texto) unidad_origen,COALESCE(d.nombre,s.unidad_destino_texto) unidad_destino
+      FROM ultimas u JOIN public.unidad_medica d ON UPPER(TRIM(d.cluesimb))=u.cluesimb
+      JOIN public.salida s ON s.unidad_destino_id=d.id AND UPPER(TRIM(s.clave_cnis))=u.clave
+        AND s.fecha_entregado::date BETWEEN u.ultima_solicitud AND CURRENT_DATE
+      LEFT JOIN public.unidad_medica o ON o.id=s.unidad_origen_id ORDER BY u.cluesimb,u.clave,s.fecha_entregado DESC`;
+    const ordenesSql = `
+      WITH pares AS (SELECT UPPER(TRIM(cluesimb)) cluesimb,UPPER(TRIM(clave)) clave
+        FROM jsonb_to_recordset($1::jsonb) AS x(cluesimb text,clave text))
+      SELECT p.cluesimb,p.clave,c.orden_de_suministro,c.proveedor,c.fecha_emision::text,
+        c.fecha_limite_de_entrega::text,c.fecha_recepcion_max::text fecha_recepcion,
+        COALESCE(c.no_de_piezas_emitidas,0)::numeric piezas_emitidas,
+        COALESCE(c.pzas_recibidas_por_la_entidad,0)::numeric piezas_recibidas,
+        GREATEST(COALESCE(c.no_de_piezas_emitidas,0)-COALESCE(c.pzas_recibidas_por_la_entidad,0),0)::numeric piezas_pendientes,
+        CASE
+          WHEN GREATEST(COALESCE(c.no_de_piezas_emitidas,0)-COALESCE(c.pzas_recibidas_por_la_entidad,0),0)<=0
+            AND c.fecha_recepcion_max>=CURRENT_DATE-INTERVAL '30 days' THEN 'CUMPLIDA_RECIENTE'
+          WHEN c.fecha_limite_de_entrega<CURRENT_DATE
+            AND GREATEST(COALESCE(c.no_de_piezas_emitidas,0)-COALESCE(c.pzas_recibidas_por_la_entidad,0),0)>0 THEN 'VENCIDA'
+          WHEN c.fecha_limite_de_entrega BETWEEN CURRENT_DATE AND CURRENT_DATE+INTERVAL '30 days'
+            AND GREATEST(COALESCE(c.no_de_piezas_emitidas,0)-COALESCE(c.pzas_recibidas_por_la_entidad,0),0)>0 THEN 'POR_VENCER'
+          ELSE 'PENDIENTE'
+        END estado_radar
+      FROM pares p JOIN public.unidad_medica um ON UPPER(TRIM(um.cluesimb))=p.cluesimb
+      JOIN public.citas c ON UPPER(TRIM(c.clues_destino)) IN (UPPER(TRIM(um.cluesimb)),UPPER(TRIM(um.cluessa)))
+        AND UPPER(TRIM(c.clave_cnis))=p.clave
+      WHERE c.fecha_emision>=CURRENT_DATE-make_interval(months=>$2::int)
+        OR c.fecha_recepcion_max>=CURRENT_DATE-INTERVAL '30 days'
+        OR (c.fecha_limite_de_entrega>=CURRENT_DATE-INTERVAL '30 days'
+          AND GREATEST(COALESCE(c.no_de_piezas_emitidas,0)-COALESCE(c.pzas_recibidas_por_la_entidad,0),0)>0)
+      ORDER BY p.cluesimb,p.clave,c.fecha_limite_de_entrega DESC NULLS LAST`;
+    const [salidas, ordenes] = await Promise.all([pool.query(salidasSql, params), pool.query(ordenesSql, params)]);
+    return {
+      salidas: salidas.rows.map((r: any) => ({ ...r, id: Number(r.id), cantidad: Number(r.cantidad ?? 0) })),
+      ordenes: ordenes.rows.map((r: any) => ({
+        ...r, piezas_emitidas: Number(r.piezas_emitidas ?? 0), piezas_recibidas: Number(r.piezas_recibidas ?? 0),
+        piezas_pendientes: Number(r.piezas_pendientes ?? 0)
+      }))
     };
   }
 }

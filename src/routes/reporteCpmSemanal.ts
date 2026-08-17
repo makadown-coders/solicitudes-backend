@@ -6,6 +6,8 @@ const controller = new ReporteCpmSemanalController();
 
 router.get('/reporte', controller.reporte.bind(controller));
 router.get('/reporte-excel', controller.reporteExcel.bind(controller));
+router.get('/reporte-v2', controller.reporteV2.bind(controller));
+router.get('/reporte-excel-v2', controller.reporteExcelV2.bind(controller));
 router.post('/init', controller.init.bind(controller));
 router.post('/batch', controller.batch.bind(controller));
 

@@ -54,12 +54,14 @@ export default class ReporteCpmSemanalController {
 
   reporte = async (req: Request, res: Response): Promise<void> => { await this.handleReporte(req,res,false); };
   reporteExcel = async (req: Request, res: Response): Promise<void> => { await this.handleReporte(req,res,true); };
-  private async handleReporte(req: Request,res: Response,excel:boolean): Promise<void> {
+  reporteV2 = async (req: Request, res: Response): Promise<void> => { await this.handleReporte(req,res,false,true); };
+  reporteExcelV2 = async (req: Request, res: Response): Promise<void> => { await this.handleReporte(req,res,true,true); };
+  private async handleReporte(req: Request,res: Response,excel:boolean,v2=false): Promise<void> {
     let fecha: string|undefined;
     try {
       fecha=this.fecha(req.query.fechaCorte);
-      if(excel){ const {buffer,reporte}=await this.service.generarReporteExcel(fecha); res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); res.setHeader('Content-Disposition',`attachment; filename="${reporte.nombreArchivo}"`); res.setHeader('Cache-Control','no-store'); res.setHeader('X-Reporte-Fecha-Corte',reporte.fechaCorte); res.send(buffer); }
-      else res.json(await this.service.obtenerReporteSemanal(fecha));
+      if(excel){ const {buffer,reporte}=v2 ? await this.service.generarReporteExcelV2(fecha) : await this.service.generarReporteExcel(fecha); res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); res.setHeader('Content-Disposition',`attachment; filename="${reporte.nombreArchivo}"`); res.setHeader('Cache-Control','no-store'); res.setHeader('X-Reporte-Fecha-Corte',reporte.fechaCorte); res.send(buffer); }
+      else res.json(v2 ? await this.service.obtenerReporteSemanalV2(fecha) : await this.service.obtenerReporteSemanal(fecha));
     } catch(error:any){
       if(error instanceof ReporteCpmValidationError){res.status(400).json({ok:false,error:'invalid_fecha_corte',detail:'fechaCorte debe utilizar el formato YYYY-MM-DD.'});return;}
       if(error instanceof ReporteCpmNotFoundError){res.status(404).json({ok:false,error:'reporte_cpm_not_found',detail:fecha?`No existen registros para la fecha ${fecha}.`:'No existen registros de reporte CPM.'});return;}

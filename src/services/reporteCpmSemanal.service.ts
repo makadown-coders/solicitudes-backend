@@ -1,6 +1,8 @@
 import { PoolClient } from 'pg';
 import * as XLSX from 'xlsx';
 import { pool } from '../db/pool';
+import RadarAbastoService from './radar-abasto.service';
+import { RadarGlobalV2Row } from '../models/radar-abasto/RadarGlobalV2Row';
 import {
   ReporteCpmBatchResult,
   ReporteCpmInitResult,
@@ -50,8 +52,34 @@ export type ReporteCpmCompleto = {
   correo: { encabezadoHtml: string; notaMetodologicaHtml: string }; advertencias: string[];
 };
 
+type ResumenHospitalSinExistencia = {
+  hospital: string; clues: string; totalClavesEnCpm: number; clavesCpmIdentificadas: number;
+  clavesSinExistencia: number; solicitadasTresMeses: number; solicitudesVigentes: number;
+  conOrdenPendiente: number; conOrdenVencida: number; conSalidaPosterior: number;
+  sinSolicitudObservada: number; diferenciaUniverso: number;
+};
+
+export type ReporteCpmCompletoV2 = ReporteCpmCompleto & {
+  ventanaOperativaMeses: 3;
+  lecturaOperativa: {
+    titulo: string; explicacion: string; alcance: string; aclaraciones: string[];
+  };
+  resumenSinExistencia: {
+    claves: number; solicitadasTresMeses: number; solicitudesVigentes: number;
+    conOrdenPendiente: number; conOrdenVencida: number; conSalidaPosterior: number;
+    sinSolicitudObservada: number;
+  };
+  hospitalesSinExistencia: ResumenHospitalSinExistencia[];
+  tablaCorreoSinExistencia: Record<string, string | number>[];
+  clavesSinExistencia: RadarGlobalV2Row[];
+  ordenesRelacionadas: Record<string, unknown>[];
+  salidasRelacionadas: Record<string, unknown>[];
+};
+
 export default class ReporteCpmSemanalService {
   private readonly tableName = 'public.reporte_cpm_semanal';
+  private readonly radar = new RadarAbastoService();
+  private readonly ventanaOperativaMeses = 3 as const;
 
   async init(truncate = false): Promise<ReporteCpmInitResult> {
     const client = await pool.connect();
@@ -265,6 +293,126 @@ export default class ReporteCpmSemanalService {
       totalClavesEnCpmReportando:this.number(r.cpm_reportando), coberturaEstatalPonderada:this.pct(this.number(r.cpm_reportando),this.number(r.total_cpm)),
       promedioSimpleCobertura:r.promedio===null?null:Number(Number(r.promedio).toFixed(2)), totalClavesReportando:this.number(r.total_reportando),
       medicamentos:this.number(r.medicamentos), materialCuracion:this.number(r.material), otros:this.number(r.otros) }));
+  }
+
+  async obtenerReporteSemanalV2(fechaSolicitada?: string): Promise<ReporteCpmCompletoV2> {
+    const reporte = await this.obtenerReporteSemanal(fechaSolicitada);
+    const radar = await this.radar.listarGlobalV2({
+      months: this.ventanaOperativaMeses,
+      page: 1,
+      pageSize: 50000,
+      export: true,
+    });
+    const hospitalesPorClues = new Map(reporte.hospitales.map(h => [h.clues.trim().toUpperCase(), h]));
+    const universoReporte = radar.data.filter(r => hospitalesPorClues.has(r.cluesimb) && r.en_cpm);
+    const clavesSinExistencia = universoReporte.filter(r => r.existencia_actual <= 0);
+    const detalles = await this.radar.exportarGlobalV2Detalles(
+      clavesSinExistencia.map(r => ({ cluesimb: r.cluesimb, clave: r.clave })),
+      this.ventanaOperativaMeses,
+    );
+    const contar = (items: RadarGlobalV2Row[], predicate: (row: RadarGlobalV2Row) => boolean) => items.filter(predicate).length;
+    const hospitalesSinExistencia = reporte.hospitales.map((hospital): ResumenHospitalSinExistencia => {
+      const clues = hospital.clues.trim().toUpperCase();
+      const identificadas = universoReporte.filter(r => r.cluesimb === clues);
+      const sinExistencia = clavesSinExistencia.filter(r => r.cluesimb === clues);
+      return {
+        hospital: hospital.hospital,
+        clues: hospital.clues,
+        totalClavesEnCpm: hospital.totalClavesEnCpm,
+        clavesCpmIdentificadas: identificadas.length,
+        clavesSinExistencia: sinExistencia.length,
+        solicitadasTresMeses: contar(sinExistencia, r => r.solicitado_periodo > 0),
+        solicitudesVigentes: contar(sinExistencia, r => r.solicitud_vigente),
+        conOrdenPendiente: contar(sinExistencia, r => r.ordenes_pendientes > 0),
+        conOrdenVencida: contar(sinExistencia, r => r.ordenes_vencidas > 0),
+        conSalidaPosterior: contar(sinExistencia, r => r.salida_posterior),
+        sinSolicitudObservada: contar(sinExistencia, r => r.solicitado_periodo <= 0),
+        diferenciaUniverso: identificadas.length - hospital.totalClavesEnCpm,
+      };
+    });
+    const resumenSinExistencia = {
+      claves: clavesSinExistencia.length,
+      solicitadasTresMeses: contar(clavesSinExistencia, r => r.solicitado_periodo > 0),
+      solicitudesVigentes: contar(clavesSinExistencia, r => r.solicitud_vigente),
+      conOrdenPendiente: contar(clavesSinExistencia, r => r.ordenes_pendientes > 0),
+      conOrdenVencida: contar(clavesSinExistencia, r => r.ordenes_vencidas > 0),
+      conSalidaPosterior: contar(clavesSinExistencia, r => r.salida_posterior),
+      sinSolicitudObservada: contar(clavesSinExistencia, r => r.solicitado_periodo <= 0),
+    };
+    const tablaCorreoSinExistencia = hospitalesSinExistencia.map(h => ({
+      Hospital: h.hospital, CLUES: h.clues, 'Total CPM reportado': h.totalClavesEnCpm,
+      'CPM identificadas actualmente': h.clavesCpmIdentificadas, 'Sin existencia actual': h.clavesSinExistencia,
+      'Solicitadas en 3 meses': h.solicitadasTresMeses, 'Solicitud vigente (14 días)': h.solicitudesVigentes,
+      'Con orden pendiente': h.conOrdenPendiente, 'Con salida posterior': h.conSalidaPosterior,
+      'Sin solicitud observada': h.sinSolicitudObservada,
+    }));
+    const advertencias = [...reporte.advertencias];
+    if (radar.truncated) advertencias.push('El universo operativo del Radar fue truncado; el detalle puede estar incompleto.');
+    const diferencias = hospitalesSinExistencia.filter(h => h.diferenciaUniverso !== 0);
+    if (diferencias.length) advertencias.push(`El CPM vigente no coincide con el total reportado en ${diferencias.length} hospital(es); ambas cifras se muestran sin recortar claves.`);
+    const explicacion = `Se identificaron ${resumenSinExistencia.claves} claves con CPM mayor a cero y existencia actual igual a cero. ${resumenSinExistencia.solicitadasTresMeses} tuvieron solicitudes observadas en los últimos tres meses y ${resumenSinExistencia.conOrdenPendiente} cuentan con alguna orden pendiente.`;
+    return {
+      ...reporte,
+      nombreArchivo: `reporte-semanal-cpm-v2-${reporte.fechaCorte}.xlsx`,
+      asuntoCorreo: `Reporte semanal CPM y seguimiento operativo | Corte ${this.fechaLarga(reporte.fechaCorte)}`,
+      advertencias,
+      ventanaOperativaMeses: this.ventanaOperativaMeses,
+      lecturaOperativa: {
+        titulo: 'Seguimiento de claves CPM sin existencia actual',
+        explicacion,
+        alcance: 'El corte identifica el reporte elaborado; el seguimiento operativo usa CPM, existencias, solicitudes, órdenes y salidas disponibles al momento de generar este documento.',
+        aclaraciones: [
+          'Solicitud observada significa que la clave fue registrada en solicitud_bitacora; no confirma envío ni autorización.',
+          'Solicitud vigente significa que la última solicitud está dentro del umbral operativo de 14 días.',
+          'Una orden pendiente representa cobertura proyectada y no existencia disponible. Las órdenes vencidas se señalan por separado.',
+          'Una salida posterior es evidencia de movimiento hacia la unidad después de su última solicitud; no confirma por sí sola la existencia actual.',
+          'Sin solicitud observada en tres meses no significa que la clave carezca de necesidad clínica.',
+        ],
+      },
+      resumenSinExistencia,
+      hospitalesSinExistencia,
+      tablaCorreoSinExistencia,
+      clavesSinExistencia,
+      ordenesRelacionadas: detalles.ordenes,
+      salidasRelacionadas: detalles.salidas,
+      correo: {
+        ...reporte.correo,
+        encabezadoHtml: `${reporte.correo.encabezadoHtml}<h3>Seguimiento de claves CPM sin existencia actual</h3><p>${explicacion}</p>`,
+        notaMetodologicaHtml: `${reporte.correo.notaMetodologicaHtml}<p><small>Lectura operativa: solicitud observada no confirma envío ni autorización; una orden es cobertura proyectada, no existencia; y una salida posterior no confirma existencia actual. La ventana de solicitudes es de tres meses y la vigencia operativa es de 14 días.</small></p>`,
+      },
+    };
+  }
+
+  async generarReporteExcelV2(fechaSolicitada?: string): Promise<{ buffer: Buffer; reporte: ReporteCpmCompletoV2 }> {
+    const [{ buffer }, reporte] = await Promise.all([
+      this.generarReporteExcel(fechaSolicitada),
+      this.obtenerReporteSemanalV2(fechaSolicitada),
+    ]);
+    const wb = XLSX.read(buffer, { type: 'buffer' });
+    const detalle = reporte.clavesSinExistencia.map(r => ({
+      Hospital: r.nombre_de_unidad, CLUES: r.cluesimb, Clave: r.clave, Descripción: r.descripcion,
+      CPM: r.cpm, 'Existencia actual': r.existencia_actual, 'Fecha snapshot': r.snapshot_existencias,
+      'Solicitado en 3 meses': r.solicitado_periodo, 'Ciclos con clave': r.ciclos_con_clave,
+      'Ciclos de la unidad': r.ciclos_unidad, 'Frecuencia de solicitud': r.frecuencia_solicitud,
+      'Primera solicitud': r.primera_solicitud, 'Última solicitud': r.ultima_solicitud,
+      'Solicitud vigente': r.solicitud_vigente ? 'Sí' : 'No', 'Estado operativo': r.estado_operativo,
+      'Órdenes pendientes': r.ordenes_pendientes, 'Piezas pendientes': r.piezas_pendientes,
+      'Órdenes vencidas': r.ordenes_vencidas, 'Próxima entrega': r.proxima_entrega,
+      'Salida posterior': r.salida_posterior ? 'Sí' : 'No', 'Piezas en salida posterior': r.piezas_salida_posterior,
+      'Última salida posterior': r.ultima_salida_posterior, 'Homólogos disponibles': r.homologos_disponibles,
+      'Existencia equivalente en homólogos': r.existencia_homologos_equivalente, 'Mejor homólogo': r.mejor_homologo,
+    }));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(reporte.tablaCorreoSinExistencia), 'Resumen sin existencia');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(detalle), 'CPM sin existencia');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(reporte.ordenesRelacionadas), 'Ordenes relacionadas');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(reporte.salidasRelacionadas), 'Salidas relacionadas');
+    const guia = [
+      ['GUÍA DE LECTURA'], [], [reporte.lecturaOperativa.explicacion], [reporte.lecturaOperativa.alcance], [],
+      ...reporte.lecturaOperativa.aclaraciones.map(texto => [texto]), [], ['ADVERTENCIAS'],
+      ...reporte.advertencias.map(texto => [texto]),
+    ];
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(guia), 'Guia de lectura');
+    return { buffer: XLSX.write(wb, { bookType: 'xlsx', type: 'buffer', cellStyles: true }) as Buffer, reporte };
   }
 
   async generarReporteExcel(fechaSolicitada?: string): Promise<{ buffer: Buffer; reporte: ReporteCpmCompleto }> {

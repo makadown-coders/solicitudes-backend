@@ -23,13 +23,24 @@ export default class ReporteRadarSemanalController {
         res.json(await this.service.obtenerReporte(months));
         return;
       }
-      const { buffer, reporte } = await this.service.generarExcel(months, version as string | undefined);
+      const { archivo, limpiar, reporte } = await this.service.generarExcel(months, version as string | undefined);
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename="${reporte.nombreArchivo}"`);
       res.setHeader('X-Reporte-Version', reporte.versionDatos);
-      res.send(buffer);
+      try {
+        if (!res.destroyed) {
+          await new Promise<void>((resolve, reject) => {
+            res.sendFile(archivo, error => error ? reject(error) : resolve());
+          });
+        }
+      } finally { await limpiar(); }
     } catch (error) {
+      if (res.destroyed) return;
+      if (res.headersSent) { res.destroy(); return; }
+      res.removeHeader('Content-Disposition');
+      res.removeHeader('Content-Type');
       if (error instanceof ReporteRadarError) {
+        if (error.status === 503) res.setHeader('Retry-After', '30');
         res.status(error.status).json({ ok: false, error: error.code, detail: error.message });
         return;
       }

@@ -1,5 +1,6 @@
 // Presentación del libro equivalente a radar-global-v2 (sin filtros).
 import * as XLSX from 'xlsx';
+import { escribirArchivoReporte, mapearFilas, ArchivoReporte } from './reporteXlsxStream';
 import { RadarGlobalV2Row } from '../models/radar-abasto/RadarGlobalV2Row';
 import { RadarGlobalV2OrdenRow } from '../models/radar-abasto/RadarGlobalV2OrdenRow';
 import { RadarGlobalV2Segmento, RadarGlobalV2EstadoOperativo } from '../models/radar-abasto/RadarGlobalV2Input';
@@ -89,10 +90,11 @@ export default class ReporteRadarSemanalExcel {
   private etiquetaEstado(estado: RadarGlobalV2EstadoOperativo): string {
     return this.estadosOperativos.find(x => x.value === estado)?.label ?? estado;
   }
-  generar(out: Radar, evidencia: Evidencia): Buffer {
+  async generar(out: Radar, evidencia: Evidencia): Promise<ArchivoReporte> {
+    return escribirArchivoReporte(async libro => {
     const rows = out.data;
       const indice = new Map(rows.map(row => [`${row.cluesimb}|${row.clave}`, row]));
-      const radar = rows.map(row => ({
+      const radar = mapearFilas(rows, row => ({
         'Requiere seguimiento': this.requiereSeguimiento(row) ? 'Sí' : 'No',
         'Motivos de seguimiento': this.motivosSeguimiento(row),
         'Estado operativo': this.etiquetaEstado(row.estado_operativo), Segmento: this.etiqueta(row.segmento),
@@ -117,7 +119,7 @@ export default class ReporteRadarSemanalExcel {
         'Próxima entrega': this.fechaCorta(row.proxima_entrega), 'Cobertura proyectada en piezas': row.cobertura_proyectada,
         'Cobertura proyectada en CPM': row.cobertura_proyectada_cpm ?? '', Razones: row.razones.join(' | ')
       }));
-      const salidas = evidencia.salidas.map(salida => {
+      const salidas = mapearFilas(evidencia.salidas, salida => {
         const row = indice.get(`${salida.cluesimb}|${salida.clave}`);
         return { CLUES: salida.cluesimb, Unidad: row?.nombre_de_unidad ?? salida.unidad_destino ?? '',
           Clave: salida.clave, Descripción: row?.descripcion ?? '',
@@ -125,7 +127,7 @@ export default class ReporteRadarSemanalExcel {
           Cantidad: Number(salida.cantidad), Folio: salida.folio ?? '', 'Folio extra': salida.folio_extra ?? '',
           Origen: salida.unidad_origen ?? '', Destino: salida.unidad_destino ?? '', Tipo: salida.tipo ?? '', Programa: salida.programa ?? '' };
       });
-      const ordenes = evidencia.ordenes.map(orden => {
+      const ordenes = mapearFilas(evidencia.ordenes, orden => {
         const row = indice.get(`${orden.cluesimb}|${orden.clave}`);
         return { CLUES: orden.cluesimb, Unidad: row?.nombre_de_unidad ?? '', Clave: orden.clave,
           Descripción: row?.descripcion ?? '', 'Orden de suministro': orden.orden_de_suministro ?? '',
@@ -134,14 +136,14 @@ export default class ReporteRadarSemanalExcel {
           'Fecha de recepción': this.fechaCorta(orden.fecha_recepcion), 'Piezas emitidas': Number(orden.piezas_emitidas),
           'Piezas recibidas': Number(orden.piezas_recibidas), 'Piezas pendientes': Number(orden.piezas_pendientes) };
       });
-      const workbook = XLSX.utils.book_new();
+
       const guia = XLSX.utils.aoa_to_sheet([
         ['Radar de demanda y cobertura — guía y alcance'], ['Fecha de exportación', this.generadoEn],
         ['Periodo analizado', `${this.months} meses`], ['Búsqueda', 'Sin filtro'],
         ['CLUES', 'Todas'], ['Segmento', 'Todos'],
         ['Estado operativo', 'Todos'],
         ['Origen de solicitudes', 'Registros asociados a LOS EXCELES GENERADOS CON LA HERRAMIENTA DE SOLICITUDES. Piloto de información de prueba; no acredita recepción, procesamiento ni surtimiento por Abasto y/o Almacenes.'],
-        ['Resultados encontrados', out.total], ['Resultados exportados', radar.length], [],
+        ['Resultados encontrados', out.total], ['Resultados exportados', rows.length], [],
         ['Regla operativa', 'Una solicitud se considera vigente durante 14 días naturales a partir de su última fecha registrada.'],
         ['Evidencia principal', 'Las salidas se vinculan por unidad destino. Una salida no confirma por sí sola la recepción ni la cobertura total.'],
         ['Órdenes', 'Se muestran únicamente como contexto. Las piezas pendientes no equivalen a existencia disponible.'],
@@ -155,17 +157,15 @@ export default class ReporteRadarSemanalExcel {
       guia['!cols'] = [{ wch: 28 }, { wch: 100 }];
       const resumen = this.crearResumenExcel(out, rows);
       const resumenUnidades = this.crearResumenUnidadesExcel(rows);
-      const radarSheet = this.crearHojaTabla(radar, 'Sin resultados para los filtros seleccionados');
-      this.formatearColumna(radarSheet, 'Frecuencia de solicitud', '0.00%');
-      XLSX.utils.book_append_sheet(workbook, guia, 'Guía y alcance');
-      XLSX.utils.book_append_sheet(workbook, resumen, 'Resumen');
-      XLSX.utils.book_append_sheet(workbook, resumenUnidades, 'Resumen por unidad');
-      XLSX.utils.book_append_sheet(workbook, radarSheet, 'Radar');
-      XLSX.utils.book_append_sheet(workbook, this.crearHojaTabla(salidas, 'Sin salidas posteriores observadas'), 'Detalle salidas');
-      XLSX.utils.book_append_sheet(workbook, this.crearHojaTabla(ordenes, 'Sin órdenes relacionadas'), 'Órdenes contexto');
-
-    return XLSX.write(workbook, { bookType: 'xlsx', type: 'buffer' }) as Buffer;
+      libro.hojaPequena('Guía y alcance', guia);
+      libro.hojaPequena('Resumen', resumen);
+      libro.hojaPequena('Resumen por unidad', resumenUnidades);
+      await libro.tabla('Radar', radar, 'Sin resultados para los filtros seleccionados', ['Frecuencia de solicitud']);
+      await libro.tabla('Detalle salidas', salidas, 'Sin salidas posteriores observadas');
+      await libro.tabla('Órdenes contexto', ordenes, 'Sin órdenes relacionadas');
+    });
   }
+
   private crearResumenExcel(out: Radar, rows: RadarGlobalV2Row[]): XLSX.WorkSheet {
     const porEstado = this.estadosOperativos.filter(x => x.value).map(x => [x.label,
       rows.filter(row => row.estado_operativo === x.value).length]);
@@ -226,30 +226,6 @@ export default class ReporteRadarSemanalExcel {
       if (cell) cell.z = '0.00%';
     }
     return sheet;
-  }
-
-  private crearHojaTabla(data: Record<string, unknown>[], mensaje: string): XLSX.WorkSheet {
-    const rows = data.length ? data : [{ Mensaje: mensaje }];
-    const sheet = XLSX.utils.json_to_sheet(rows);
-    if (sheet['!ref']) sheet['!autofilter'] = { ref: sheet['!ref'] };
-    const headers = Object.keys(rows[0]);
-    sheet['!cols'] = headers.map(header => ({
-      wch: Math.min(48, Math.max(12, header.length + 2, ...rows.slice(0, 200).map(row => String(row[header] ?? '').length + 2)))
-    }));
-    (sheet as any)['!freeze'] = { xSplit: 0, ySplit: 1, topLeftCell: 'A2', activePane: 'bottomLeft', state: 'frozen' };
-    return sheet;
-  }
-
-  private formatearColumna(sheet: XLSX.WorkSheet, encabezado: string, formato: string): void {
-    if (!sheet['!ref']) return;
-    const range = XLSX.utils.decode_range(sheet['!ref']);
-    for (let col = range.s.c; col <= range.e.c; col++) {
-      if (sheet[XLSX.utils.encode_cell({ r: 0, c: col })]?.v !== encabezado) continue;
-      for (let row = 1; row <= range.e.r; row++) {
-        const cell = sheet[XLSX.utils.encode_cell({ r: row, c: col })];
-        if (cell) cell.z = formato;
-      }
-    }
   }
 
   private requiereSeguimiento(row: RadarGlobalV2Row): boolean {

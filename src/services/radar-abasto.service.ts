@@ -1279,7 +1279,7 @@ export default class RadarAbastoService {
         SELECT u.cluesimb, u.clave,
                COUNT(*) FILTER (WHERE COALESCE(e.existencia_actual, 0) > 0)::int AS homologos_disponibles,
                COALESCE(SUM(COALESCE(e.existencia_actual, 0) / a.factor), 0)::numeric AS existencia_homologos_equivalente,
-               (ARRAY_AGG(a.candidato ORDER BY COALESCE(e.existencia_actual, 0) / a.factor DESC)
+               (ARRAY_AGG(a.candidato ORDER BY COALESCE(e.existencia_actual, 0) / a.factor DESC, a.candidato COLLATE "C" ASC)
                  FILTER (WHERE COALESCE(e.existencia_actual, 0) > 0))[1] AS mejor_homologo
         FROM universo u
         JOIN aristas a ON a.clave = u.clave
@@ -1450,37 +1450,42 @@ export default class RadarAbastoService {
 
     const { rows } = await pool.query(sql, [months, clues, segmento, estadoOperativo, search, pageSize, offset]);
     const first = rows?.[0] ?? {};
-    const data: RadarGlobalV2Row[] = (rows ?? []).map((r: any) => ({
-      cluesimb: String(r.cluesimb ?? ''), nombre_de_unidad: r.nombre_de_unidad ?? null,
-      clave: String(r.clave ?? ''), descripcion: r.descripcion ?? null,
-      cpm: Number(r.cpm ?? 0), en_cpm: Boolean(r.en_cpm), existencia_actual: Number(r.existencia_actual ?? 0),
-      snapshot_existencias: r.snapshot_existencias ? new Date(r.snapshot_existencias).toISOString() : null,
-      cobertura_cpm: r.cobertura_cpm == null ? null : Number(r.cobertura_cpm),
-      cobertura_dias: r.cobertura_dias == null ? null : Number(r.cobertura_dias),
-      solicitado_periodo: Number(r.solicitado_periodo ?? 0), ciclos_con_clave: Number(r.ciclos_con_clave ?? 0),
-      ciclos_unidad: Number(r.ciclos_unidad ?? 0), frecuencia_solicitud: Number(r.frecuencia_solicitud ?? 0),
-      primera_solicitud: r.primera_solicitud?.toISOString?.().slice(0, 10) ?? r.primera_solicitud ?? null,
-      ultima_solicitud: r.ultima_solicitud?.toISOString?.().slice(0, 10) ?? r.ultima_solicitud ?? null,
-      solicitado_vigente: Number(r.solicitado_vigente ?? 0), ciclos_vigentes: Number(r.ciclos_vigentes ?? 0),
-      solicitud_vigente: Boolean(r.solicitud_vigente),
-      dias_desde_ultima_solicitud: r.dias_desde_ultima_solicitud == null ? null : Number(r.dias_desde_ultima_solicitud),
-      fecha_fin_umbral: r.fecha_fin_umbral?.toISOString?.().slice(0, 10) ?? r.fecha_fin_umbral ?? null,
-      dias_restantes_umbral: r.dias_restantes_umbral == null ? null : Number(r.dias_restantes_umbral),
-      salida_posterior: Boolean(r.salida_posterior), piezas_salida_posterior: Number(r.piezas_salida_posterior ?? 0),
-      ultima_salida_posterior: r.ultima_salida_posterior?.toISOString?.().slice(0, 10) ?? r.ultima_salida_posterior ?? null,
-      estado_operativo: r.estado_operativo,
-      homologos_disponibles: Number(r.homologos_disponibles ?? 0),
-      existencia_homologos_equivalente: Number(r.existencia_homologos_equivalente ?? 0),
-      mejor_homologo: r.mejor_homologo ?? null, segmento: r.segmento, prioridad: Number(r.prioridad ?? 0),
-      ordenes_pendientes: Number(r.ordenes_pendientes ?? 0), piezas_pendientes: Number(r.piezas_pendientes ?? 0),
-      ordenes_por_vencer: Number(r.ordenes_por_vencer ?? 0), ordenes_vencidas: Number(r.ordenes_vencidas ?? 0),
-      recepciones_recientes: Number(r.recepciones_recientes ?? 0),
-      piezas_recibidas_recientes: Number(r.piezas_recibidas_recientes ?? 0),
-      proxima_entrega: r.proxima_entrega?.toISOString?.().slice(0, 10) ?? r.proxima_entrega ?? null,
-      cobertura_proyectada: Number(r.cobertura_proyectada ?? 0),
-      cobertura_proyectada_cpm: r.cobertura_proyectada_cpm == null ? null : Number(r.cobertura_proyectada_cpm),
-      razones: Array.isArray(r.razones) ? r.razones : []
-    }));
+    // Reemplaza cada fila cruda conforme se convierte; no retiene dos arreglos completos.
+    const data: RadarGlobalV2Row[] = rows ?? [];
+    for (let index = 0; index < data.length; index++) {
+      const r: any = data[index];
+      data[index] = {
+        cluesimb: String(r.cluesimb ?? ''), nombre_de_unidad: r.nombre_de_unidad ?? null,
+        clave: String(r.clave ?? ''), descripcion: r.descripcion ?? null,
+        cpm: Number(r.cpm ?? 0), en_cpm: Boolean(r.en_cpm), existencia_actual: Number(r.existencia_actual ?? 0),
+        snapshot_existencias: r.snapshot_existencias ? new Date(r.snapshot_existencias).toISOString() : null,
+        cobertura_cpm: r.cobertura_cpm == null ? null : Number(r.cobertura_cpm),
+        cobertura_dias: r.cobertura_dias == null ? null : Number(r.cobertura_dias),
+        solicitado_periodo: Number(r.solicitado_periodo ?? 0), ciclos_con_clave: Number(r.ciclos_con_clave ?? 0),
+        ciclos_unidad: Number(r.ciclos_unidad ?? 0), frecuencia_solicitud: Number(r.frecuencia_solicitud ?? 0),
+        primera_solicitud: r.primera_solicitud?.toISOString?.().slice(0, 10) ?? r.primera_solicitud ?? null,
+        ultima_solicitud: r.ultima_solicitud?.toISOString?.().slice(0, 10) ?? r.ultima_solicitud ?? null,
+        solicitado_vigente: Number(r.solicitado_vigente ?? 0), ciclos_vigentes: Number(r.ciclos_vigentes ?? 0),
+        solicitud_vigente: Boolean(r.solicitud_vigente),
+        dias_desde_ultima_solicitud: r.dias_desde_ultima_solicitud == null ? null : Number(r.dias_desde_ultima_solicitud),
+        fecha_fin_umbral: r.fecha_fin_umbral?.toISOString?.().slice(0, 10) ?? r.fecha_fin_umbral ?? null,
+        dias_restantes_umbral: r.dias_restantes_umbral == null ? null : Number(r.dias_restantes_umbral),
+        salida_posterior: Boolean(r.salida_posterior), piezas_salida_posterior: Number(r.piezas_salida_posterior ?? 0),
+        ultima_salida_posterior: r.ultima_salida_posterior?.toISOString?.().slice(0, 10) ?? r.ultima_salida_posterior ?? null,
+        estado_operativo: r.estado_operativo,
+        homologos_disponibles: Number(r.homologos_disponibles ?? 0),
+        existencia_homologos_equivalente: Number(r.existencia_homologos_equivalente ?? 0),
+        mejor_homologo: r.mejor_homologo ?? null, segmento: r.segmento, prioridad: Number(r.prioridad ?? 0),
+        ordenes_pendientes: Number(r.ordenes_pendientes ?? 0), piezas_pendientes: Number(r.piezas_pendientes ?? 0),
+        ordenes_por_vencer: Number(r.ordenes_por_vencer ?? 0), ordenes_vencidas: Number(r.ordenes_vencidas ?? 0),
+        recepciones_recientes: Number(r.recepciones_recientes ?? 0),
+        piezas_recibidas_recientes: Number(r.piezas_recibidas_recientes ?? 0),
+        proxima_entrega: r.proxima_entrega?.toISOString?.().slice(0, 10) ?? r.proxima_entrega ?? null,
+        cobertura_proyectada: Number(r.cobertura_proyectada ?? 0),
+        cobertura_proyectada_cpm: r.cobertura_proyectada_cpm == null ? null : Number(r.cobertura_proyectada_cpm),
+        razones: Array.isArray(r.razones) ? r.razones : []
+      };
+    }
 
     return {
       mode: 'radar-global-v2', window: { months }, page, pageSize,
@@ -1640,14 +1645,18 @@ export default class RadarAbastoService {
         OR (c.fecha_limite_de_entrega>=CURRENT_DATE-INTERVAL '30 days'
           AND GREATEST(COALESCE(c.no_de_piezas_emitidas,0)-COALESCE(c.pzas_recibidas_por_la_entidad,0),0)>0)
       ORDER BY p.cluesimb,p.clave,c.fecha_limite_de_entrega DESC NULLS LAST`;
-    const [salidas, ordenes] = await Promise.all([pool.query(salidasSql, params), pool.query(ordenesSql, params)]);
-    return {
-      salidas: salidas.rows.map((r: any) => ({ ...r, id: Number(r.id), cantidad: Number(r.cantidad ?? 0) })),
-      ordenes: ordenes.rows.map((r: any) => ({
-        ...r, piezas_emitidas: Number(r.piezas_emitidas ?? 0), piezas_recibidas: Number(r.piezas_recibidas ?? 0),
-        piezas_pendientes: Number(r.piezas_pendientes ?? 0)
-      }))
-    };
+    const salidas = await pool.query(salidasSql, params);
+    for (const row of salidas.rows) {
+      row.id = Number(row.id);
+      row.cantidad = Number(row.cantidad ?? 0);
+    }
+    const ordenes = await pool.query(ordenesSql, params);
+    for (const row of ordenes.rows) {
+      row.piezas_emitidas = Number(row.piezas_emitidas ?? 0);
+      row.piezas_recibidas = Number(row.piezas_recibidas ?? 0);
+      row.piezas_pendientes = Number(row.piezas_pendientes ?? 0);
+    }
+    return { salidas: salidas.rows, ordenes: ordenes.rows };
   }
 }
 

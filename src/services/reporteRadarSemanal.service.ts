@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { versionReporte } from './reporteRadarVersion';
 import RadarAbastoService from './radar-abasto.service';
 import ReporteRadarSemanalExcel from './reporteRadarSemanal.excel';
 
@@ -10,17 +10,19 @@ export class ReporteRadarError extends Error {
   }
 }
 
-// Las consultas de evidencia no garantizan el orden entre filas con la misma fecha.
-// La versión compara contenido, no orden de presentación ni hora de generación.
-function canonico(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonico).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
-  if (value !== null && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonico(item)]));
-  }
-  return value;
-}
-
 export default class ReporteRadarSemanalService {
+  // Compartido entre controladores/instancias del servicio dentro del mismo proceso.
+  private static ocupado = false;
+
+  private async exclusivo<T>(tarea: () => Promise<T>): Promise<T> {
+    if (ReporteRadarSemanalService.ocupado) {
+      throw new ReporteRadarError(503, 'reporte_radar_ocupado', 'Ya se está preparando un reporte del radar. Intente nuevamente en unos segundos.');
+    }
+    ReporteRadarSemanalService.ocupado = true;
+    try { return await tarea(); }
+    finally { ReporteRadarSemanalService.ocupado = false; }
+  }
+
   constructor(private readonly radar: FuenteRadar = new RadarAbastoService()) {}
 
   private async preparar(months: number) {
@@ -37,7 +39,7 @@ export default class ReporteRadarSemanalService {
     const fechaGeneracion = new Intl.DateTimeFormat('en-CA', {
       timeZone: 'America/Tijuana', year: 'numeric', month: '2-digit', day: '2-digit'
     }).format(new Date(generadoEn));
-    const versionDatos = createHash('sha256').update(JSON.stringify(canonico({ months, out, evidencia }))).digest('hex');
+    const versionDatos = await versionReporte({ months, out, evidencia });
     const unidades = new Map<string, {
       clues: string; unidad: string; clavesSolicitadas: number; sinExistencia: number;
       requiereSeguimiento: number; fueraUmbralSinSalida: number;
@@ -92,15 +94,17 @@ export default class ReporteRadarSemanalService {
   }
 
   async obtenerReporte(months: number) {
-    return (await this.preparar(months)).reporte;
+    return this.exclusivo(async () => (await this.preparar(months)).reporte);
   }
 
   async generarExcel(months: number, versionDatos?: string) {
-    const { out, evidencia, reporte } = await this.preparar(months);
-    if (versionDatos && versionDatos !== reporte.versionDatos) {
-      throw new ReporteRadarError(409, 'reporte_radar_actualizado', 'Los datos cambiaron desde la consulta JSON. Vuelva a ejecutar el flujo completo antes de enviar el correo.');
-    }
-    const buffer = new ReporteRadarSemanalExcel(months, reporte.generadoEn).generar(out, evidencia);
-    return { buffer, reporte };
+    return this.exclusivo(async () => {
+      const { out, evidencia, reporte } = await this.preparar(months);
+      if (versionDatos && versionDatos !== reporte.versionDatos) {
+        throw new ReporteRadarError(409, 'reporte_radar_actualizado', 'Los datos cambiaron desde la consulta JSON. Vuelva a ejecutar el flujo completo antes de enviar el correo.');
+      }
+      const archivo = await new ReporteRadarSemanalExcel(months, reporte.generadoEn).generar(out, evidencia);
+      return { ...archivo, reporte };
+    });
   }
 }

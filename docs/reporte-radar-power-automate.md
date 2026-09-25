@@ -1,6 +1,6 @@
 # Piloto semanal: Radar de demanda y cobertura
 
-Reporte independiente del semanal CPM. No modifica `/api/radar-abasto/v2/export` ni la descarga del frontend. Reutiliza los servicios analíticos del Radar V2 y reproduce sus seis hojas en el servidor. No agrega tablas ni dependencias.
+Reporte independiente del semanal CPM. No modifica `/api/radar-abasto/v2/export` ni la descarga del frontend. Reutiliza los servicios analíticos del Radar V2 y reproduce sus seis hojas en el servidor. No agrega tablas. Utiliza ExcelJS 4.4.0 para escribir el Excel incrementalmente.
 
 ## Contrato
 
@@ -105,3 +105,35 @@ Las pruebas usan fuentes simuladas: validan resumen, origen del piloto, XLSX rea
 Después de desplegar: ejecutar con el correo del responsable, abrir el adjunto, comparar el universo y las seis hojas con una exportación del Radar sin filtros y del mismo periodo. Confirmar los cortes disponibles y que no haya truncamiento. Medir tiempo/tamaño con datos reales antes de activar los lunes. El flow no se crea ni activa mediante estos archivos.
 
 Referencias: [Programación](https://learn.microsoft.com/en-us/power-automate/run-scheduled-tasks), [Outlook](https://learn.microsoft.com/en-us/connectors/office365/).
+
+## Diagnóstico de `reporte_radar_actualizado` (409)
+
+Comprobar en el historial que HTTP excel utiliza `months` y `versionDatos` de HTTP JSON de la misma ejecución. La versión ahora ordena cadenas por su valor exacto, sin depender del idioma del servidor ni empatar textos con caracteres invisibles. En empates de existencia equivalente, el mejor homólogo se elige por clave con orden estable.
+
+Después de desplegar esta corrección, repetir desde HTTP JSON: una versión calculada antes del despliegue puede diferir. No quitar `versionDatos` ni reintentar sólo HTTP excel con una versión anterior. Si el 409 persiste, pueden haber cambiado existencias, solicitudes, órdenes, salidas o la fecha operativa; repetir el flujo completo fuera de la ventana de cargas. Esta validación no congela los datos. Un error 500 es distinto y requiere revisar los logs del backend.
+
+
+## Memoria y concurrencia (instancia de 512 MB)
+
+- Las tablas del Excel se escriben fila a fila en un archivo temporal, con presión de escritura sobre el ZIP y sin tabla global de cadenas compartidas. Se conservan las seis hojas, valores, columnas y formatos porcentuales.
+- La respuesta HTTP transmite el archivo desde disco; no carga el XLSX completo en un Buffer. El temporal se elimina al terminar la descarga o ante errores manejados. El directorio temporal de la instancia debe permitir escritura y tener espacio suficiente. Un cierre forzado del proceso puede dejar temporales hasta que la instancia se recicle.
+- El hash usa huellas SHA-256 por elemento en lugar de clonar y serializar todo el reporte. El procesamiento cede el event loop por lotes para no bloquear health checks. La versión cambia respecto del algoritmo anterior: después de desplegar, comenzar desde HTTP JSON.
+- Sólo se prepara un reporte semanal del Radar a la vez por proceso (JSON o Excel). Otra petición recibe HTTP 503, código `reporte_radar_ocupado` y `Retry-After: 30`. Mantener concurrencia 1 en Power Automate y reintentos para 503; nunca enviar correo si falla el adjunto. Esto no limita otros endpoints ni coordina varias réplicas.
+- El listado conserva el máximo de 50,000 filas. La evidencia aún se consulta en PostgreSQL y permanece en memoria; no se promete memoria constante para una cantidad arbitraria de movimientos. Las consultas de salidas y órdenes son secuenciales y sus valores numéricos se convierten sin duplicar filas.
+- Se agregó la dependencia de producción `exceljs@4.4.0`. No hace falta cambiar las URLs ni las expresiones del flujo. No se aumentó el heap ni se cambió NODE_OPTIONS.
+
+Prueba sintética reproducible, sin PostgreSQL ni llamadas a Koyeb:
+
+```text
+npm run build
+node --test scripts/reporte-radar-semanal.test.cjs
+node --max-old-space-size=224 scripts/reporte-radar-memory.cjs 50000
+```
+
+Genera 50,000 filas de Radar, 50,000 salidas y 50,000 órdenes, ejecuta JSON → Excel y elimina el archivo. Informa pico de heap muestreado, RSS máximo y duración. Un heap limitado no simula un contenedor completo de 512 MB; las cifras locales no garantizan el consumo con el resto de la API, la base real, otra versión de Node o textos/movimientos más grandes.
+
+### Resultado de la prueba local
+
+Windows, Node 24.17.0, heap limitado a 224 MB: 50,000 filas de Radar + 50,000 salidas + 50,000 órdenes. El generador anterior falló con JavaScript heap out of memory. El optimizado completó JSON y Excel en 43 segundos: archivo de 17,684,505 bytes, pico de heap muestreado de 165 MiB y RSS máximo de 419 MiB. Las 15 pruebas funcionales y el build pasaron. Se compararon también valores, columnas y formatos porcentuales de las seis hojas contra el generador anterior.
+
+Estas cifras son una medición sintética local, no una garantía de memoria o duración en Koyeb. Falta medir con PostgreSQL, CPU y tráfico reales. La implementación respeta la presión del consumidor ZIP de ExcelJS 4.4; al actualizar esa dependencia deben repetirse las pruebas funcionales y de volumen.

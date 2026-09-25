@@ -2,25 +2,11 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const express = require('express');
 const XLSX = require('xlsx');
+const fs = require('node:fs/promises');
 const Service = require('../dist/services/reporteRadarSemanal.service').default;
 const Controller = require('../dist/controllers/reporteRadarSemanal.controller').default;
 
-function row(overrides = {}) {
-  return {
-    cluesimb: 'BC001', nombre_de_unidad: 'Unidad de prueba', clave: '010.000.0001.00', descripcion: 'Insumo',
-    cpm: 10, en_cpm: true, existencia_actual: 0, snapshot_existencias: '2026-09-20T10:00:00Z',
-    cobertura_cpm: 0, cobertura_dias: 0, solicitado_periodo: 20, ciclos_con_clave: 1, ciclos_unidad: 2,
-    frecuencia_solicitud: .5, primera_solicitud: '2026-09-01', ultima_solicitud: '2026-09-01',
-    solicitado_vigente: 0, ciclos_vigentes: 0, solicitud_vigente: false, dias_desde_ultima_solicitud: 23,
-    fecha_fin_umbral: '2026-09-15', dias_restantes_umbral: 0, salida_posterior: true,
-    piezas_salida_posterior: 2, ultima_salida_posterior: '2026-09-21', estado_operativo: 'HISTORICA_CON_SALIDA',
-    homologos_disponibles: 0, existencia_homologos_equivalente: 0, mejor_homologo: null,
-    ordenes_pendientes: 1, piezas_pendientes: 3, ordenes_por_vencer: 0, ordenes_vencidas: 1,
-    recepciones_recientes: 0, piezas_recibidas_recientes: 0, proxima_entrega: null,
-    cobertura_proyectada: 3, cobertura_proyectada_cpm: .3, segmento: 'CRITICA_CPM', prioridad: 100,
-    razones: ['Sin existencia', 'Orden vencida'], ...overrides
-  };
-}
+const row = require('./fixtures/radar-reporte.cjs');
 
 function fixture(rows = [row()]) {
   const out = { mode: 'radar-global-v2', window: { months: 3 }, page: 1, pageSize: 50000,
@@ -56,7 +42,7 @@ test('resume por unidad, conserva origen y consulta evidencia relevante', async 
 test('libro real contiene seis hojas, evidencia y formatos sin perder claves', async () => {
   const { service } = fixture();
   const report = await service.obtenerReporte(3);
-  const { buffer } = await service.generarExcel(3, report.versionDatos);
+  const buffer = await leerExcel(service, report.versionDatos);
   assert.ok(Buffer.isBuffer(buffer));
   const book = XLSX.read(buffer, { type: 'buffer', cellNF: true });
   assert.deepEqual(book.SheetNames, ['Guía y alcance', 'Resumen', 'Resumen por unidad', 'Radar', 'Detalle salidas', 'Órdenes contexto']);
@@ -98,7 +84,7 @@ test('sin datos devuelve resumen vacío, advertencia y un Excel válido', async 
   assert.equal(report.resumen.registrosUnidadClave, 0);
   assert.deepEqual(report.tablaCorreo, []);
   assert.ok(report.advertencias.some(text => text.includes('No se encontraron registros')));
-  const { buffer } = await service.generarExcel(3, report.versionDatos);
+  const buffer = await leerExcel(service, report.versionDatos);
   assert.equal(XLSX.read(buffer, { type: 'buffer' }).SheetNames.length, 6);
   assert.equal(calls.filter(call => call[0] === 'detalle').length, 0);
 });
@@ -131,4 +117,133 @@ test('contrato HTTP: JSON, XLSX binario, validación y conflicto', async () => {
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
+});
+
+
+test('version estable ante evidencia reordenada con caracteres invisibles distintos', async () => {
+  const { service, evidencia } = fixture();
+  evidencia.ordenes = [
+    { ...evidencia.ordenes[0], proveedor: 'AB' },
+    { ...evidencia.ordenes[0], proveedor: 'A\u200bB' }
+  ];
+  const original = await service.obtenerReporte(3);
+  evidencia.ordenes.reverse();
+  assert.equal((await service.obtenerReporte(3)).versionDatos, original.versionDatos);
+  const buffer = await leerExcel(service, original.versionDatos);
+  assert.equal(XLSX.read(buffer, { type: 'buffer' }).SheetNames.length, 6);
+  evidencia.ordenes[0].piezas_pendientes++;
+  await assert.rejects(service.generarExcel(3, original.versionDatos), error => error.status === 409);
+});
+
+test('version estable ante filas y propiedades reordenadas; no ignora cambios de texto', async () => {
+  const { service, out } = fixture([row(), row({ clave: '010.000.0002.00' })]);
+  const original = await service.obtenerReporte(3);
+  out.data = out.data.reverse().map(item => Object.fromEntries(Object.entries(item).reverse()));
+  assert.equal((await service.obtenerReporte(3)).versionDatos, original.versionDatos);
+  out.data[0].descripcion += '\u200b';
+  await assert.rejects(service.generarExcel(3, original.versionDatos), error => error.status === 409);
+});
+
+
+async function leerExcel(service, version) {
+  const result = await service.generarExcel(3, version);
+  try { return await fs.readFile(result.archivo); }
+  finally {
+    await result.limpiar();
+    await assert.rejects(fs.access(result.archivo), error => error.code === 'ENOENT');
+  }
+}
+
+test('limita concurrencia entre servicios y libera el cupo después de errores', async () => {
+  let liberar;
+  const pendiente = new Promise(resolve => { liberar = resolve; });
+  const { out } = fixture([]);
+  const lento = new Service({
+    async listarGlobalV2() { await pendiente; throw new Error('Fallo de prueba'); },
+    async exportarGlobalV2Detalles() { return { salidas: [], ordenes: [] }; }
+  });
+  const primero = lento.obtenerReporte(3);
+  const rechazo = assert.rejects(primero, /Fallo de prueba/);
+  const { service } = fixture([]);
+  try {
+    await assert.rejects(service.obtenerReporte(3), error => error.status === 503);
+    await assert.rejects(service.generarExcel(3), error => error.status === 503);
+  } finally { liberar(); }
+  await rechazo;
+  assert.equal((await service.obtenerReporte(3)).resumen.registrosUnidadClave, 0);
+});
+
+test('version conserva multiplicidad, null, tipos y diferencias invisibles', async () => {
+  const { versionReporte } = require('../dist/services/reporteRadarVersion');
+  assert.equal(await versionReporte([{ a: 1, b: null }, 2]), await versionReporte([2, { b: null, a: 1 }]));
+  assert.notEqual(await versionReporte([1]), await versionReporte([1, 1]));
+  assert.notEqual(await versionReporte([1]), await versionReporte(['1']));
+  assert.notEqual(await versionReporte({ a: null }), await versionReporte({}));
+  assert.notEqual(await versionReporte(['AB']), await versionReporte(['A\u200bB']));
+});
+
+
+test('escritura incremental conserva filas posteriores a la muestra y formato numérico', async () => {
+  const rows = Array.from({ length: 501 }, (_, n) => row({ clave: String(n).padStart(12, '0') }));
+  const { service } = fixture(rows);
+  const report = await service.obtenerReporte(3);
+  const book = XLSX.read(await leerExcel(service, report.versionDatos), { type: 'buffer', cellNF: true });
+  const values = XLSX.utils.sheet_to_json(book.Sheets.Radar);
+  assert.equal(values.length, 501);
+  assert.equal(values[0].Clave, '000000000000');
+  assert.equal(values[500].Clave, '000000000500');
+  assert.equal(values[500]['Frecuencia de solicitud'], .5);
+  assert.equal(book.Sheets.Radar['!autofilter'].ref.endsWith('502'), true);
+});
+
+test('elimina el temporal cuando falla la escritura del libro', async () => {
+  const { escribirArchivoReporte } = require('../dist/services/reporteXlsxStream');
+  const { tmpdir } = require('node:os');
+  const listado = async () => (await fs.readdir(tmpdir())).filter(name => name.startsWith('radar-reporte-')).sort();
+  const before = await listado();
+  await assert.rejects(escribirArchivoReporte(async libro => {
+    await libro.tabla('Prueba', [{ Clave: '001' }], 'Sin filas');
+    throw new Error('Fallo intencional de escritura');
+  }), /Fallo intencional/);
+  assert.deepEqual(await listado(), before);
+});
+
+test('el hash por lotes permite atender el event loop mientras procesa filas', async () => {
+  const { versionReporte } = require('../dist/services/reporteRadarVersion');
+  let atendido = false;
+  setImmediate(() => { atendido = true; });
+  await versionReporte({ data: Array.from({ length: 1000 }, (_, n) => ({ clave: String(n) })) });
+  assert.equal(atendido, true);
+});
+
+
+test('mapeo del radar conserva conteos y convierte numeric sin duplicar el resultado', async () => {
+  const { pool } = require('../dist/db/pool');
+  const Radar = require('../dist/services/radar-abasto.service').default;
+  const query = pool.query;
+  pool.query = async () => ({ rows: [{ ...row(), cpm: '10.5', existencia_actual: '2', total_rows: 1,
+    total_criticas: 1, total_atencion: 0, total_sin_cpm: 0, total_sin_solicitud: 0, total_cubiertas: 0 }] });
+  try {
+    const result = await new Radar().listarGlobalV2({ months: 3, export: true });
+    assert.equal(result.total, 1);
+    assert.equal(result.summary.criticas_cpm, 1);
+    assert.equal(result.data[0].cpm, 10.5);
+    assert.equal(result.data[0].existencia_actual, 2);
+    assert.equal('total_rows' in result.data[0], false);
+  } finally { pool.query = query; }
+});
+
+test('controlador responde 503 con Retry-After sin iniciar otra generación', async () => {
+  const { ReporteRadarError } = require('../dist/services/reporteRadarSemanal.service');
+  const controller = new Controller({ async obtenerReporte() {
+    throw new ReporteRadarError(503, 'reporte_radar_ocupado', 'En proceso');
+  } });
+  const headers = {}, res = {
+    setHeader(key, value) { headers[key] = value; }, removeHeader(key) { delete headers[key]; },
+    status(value) { this.statusCode = value; return this; }, json(value) { this.body = value; }
+  };
+  await controller.reporte({ query: {} }, res);
+  assert.equal(res.statusCode, 503);
+  assert.equal(headers['Retry-After'], '30');
+  assert.equal(res.body.error, 'reporte_radar_ocupado');
 });

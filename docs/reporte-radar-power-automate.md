@@ -2,7 +2,7 @@
 
 ## Flujo recomendado: una petición, un Excel
 
-**Recurrence → HTTP_excel → Send an email (V2)**.
+**Recurrence → HTTP_preparar → Do until listo → HTTP_excel → Send an email (V2)**.
 
 La descarga directa de tres meses consulta las vistas materializadas del reporte, genera las seis hojas y transmite el archivo. No requiere consultar JSON previamente, no calcula hash ni arma el HTML del correo. Mantiene la escritura incremental a disco y la limpieza del temporal.
 
@@ -22,14 +22,28 @@ Una frecuencia recomendada para el piloto es el lunes antes del envío. La petic
 
 1. Conservar **Recurrence**: lunes, 08:00, zona de Baja California/Tijuana. Concurrencia 1.
 2. Retirar **HTTP JSON**, **Parse JSON**, **Create HTML table** y **Compose Cuerpo Correo** de este flujo.
-3. En **HTTP_excel**, configurar método GET y pegar esta URI literal (sin expresión concat ni versionDatos):
+3. Agregar **HTTP_preparar** con método POST. Responde inmediatamente con HTTP 202 mientras el backend genera el archivo:
+
+```text
+https://minor-flossy-imssb-737587a4.koyeb.app/api/reportes-radar-semanal/preparar-excel
+```
+
+4. Agregar un **Do until** que consulte cada 20 segundos mediante GET hasta que `listo` sea `true`. Configurar un límite suficiente, por ejemplo 10 intentos o 5 minutos:
+
+```text
+https://minor-flossy-imssb-737587a4.koyeb.app/api/reportes-radar-semanal/estado-excel
+```
+
+Si `error` contiene texto, terminar el flujo sin enviar correo.
+
+5. En **HTTP_excel**, configurar método GET y pegar esta URI literal (sin expresión concat ni versionDatos):
 
 ```text
 https://minor-flossy-imssb-737587a4.koyeb.app/api/reportes-radar-semanal/reporte-excel?months=3
 ```
 
    Encabezado Accept: `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`.
-4. En **Send an email (V2)**:
+6. En **Send an email (V2)**:
    - To: correo del responsable durante la prueba; después los destinatarios acordados.
    - Subject (texto): **[PILOTO] Radar de demanda y cobertura — seguimiento semanal**.
    - Body: pegar el HTML de abajo en la vista HTML del editor; eliminar las referencias al Compose y al JSON anteriores.

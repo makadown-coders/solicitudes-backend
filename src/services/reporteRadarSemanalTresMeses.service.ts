@@ -8,8 +8,38 @@ const TAMANO_LOTE = 500;
 
 export default class ReporteRadarSemanalTresMesesService {
   private static ocupado = false;
+  private static preparado?: Awaited<ReturnType<ReporteRadarSemanalTresMesesService['generarNuevo']>>;
+  private static errorPreparacion?: string;
+
+  estado() {
+    const preparado = ReporteRadarSemanalTresMesesService.preparado;
+    return { ok: true as const, procesando: ReporteRadarSemanalTresMesesService.ocupado,
+      listo: Boolean(preparado) && !ReporteRadarSemanalTresMesesService.ocupado,
+      nombreArchivo: preparado?.reporte.nombreArchivo, generadoEn: preparado?.reporte.generadoEn };
+  }
+
+  preparar() {
+    if (!ReporteRadarSemanalTresMesesService.ocupado) {
+      ReporteRadarSemanalTresMesesService.errorPreparacion = undefined;
+      void this.generarNuevo().then(async nuevo => {
+        const anterior = ReporteRadarSemanalTresMesesService.preparado;
+        ReporteRadarSemanalTresMesesService.preparado = nuevo;
+        if (anterior) await anterior.limpiar().catch(() => undefined);
+      }).catch(error => {
+        ReporteRadarSemanalTresMesesService.errorPreparacion = error instanceof Error ? error.message : String(error);
+        console.error('Error al preparar reporte radar semanal 3m', error);
+      });
+    }
+    return { status: 202, ...this.estado() };
+  }
 
   async generarExcel() {
+    const preparado = ReporteRadarSemanalTresMesesService.preparado;
+    if (preparado) return { ...preparado, limpiar: async () => undefined };
+    return this.generarNuevo();
+  }
+
+  private async generarNuevo() {
     if (ReporteRadarSemanalTresMesesService.ocupado) {
       throw new ReporteRadarError(503, 'reporte_radar_ocupado', 'Ya se está preparando un reporte del radar. Intente nuevamente en unos segundos.');
     }

@@ -65,8 +65,13 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cors());
 app.use(express.json());
 
-// la libreria de compresion es extremadamente util para enviar el archivo de excel en base64
-app.use(compression());
+app.use(compression({
+  filter: (req, res) => {
+    // XLSX ya es un contenedor ZIP. Recomprimir este reporte consume CPU y memoria sin reducirlo de forma útil.
+    if (req.path === '/api/reportes-radar-semanal/reporte-excel') return false;
+    return compression.filter(req, res);
+  }
+}));
 // Rutas
 app.use('/api/articulos', articulosRoutes);
 app.use('/api/citas', citasRoutes);

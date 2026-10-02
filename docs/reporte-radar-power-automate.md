@@ -70,9 +70,11 @@ El nombre con fecha también viene en el encabezado HTTP `X-Reporte-Nombre-Archi
 
 - Las tablas del Excel se escriben fila a fila en un archivo temporal, con presión de escritura sobre el ZIP y sin tabla global de cadenas compartidas. Se conservan las seis hojas, valores, columnas y formatos porcentuales.
 - La respuesta HTTP transmite el archivo desde disco; no carga el XLSX completo en un Buffer. El temporal se elimina al terminar la descarga o ante errores manejados. El directorio temporal de la instancia debe permitir escritura y tener espacio suficiente. Un cierre forzado del proceso puede dejar temporales hasta que la instancia se recicle.
+- Para `months=3`, Radar, salidas y órdenes se leen desde las vistas materializadas mediante cursores PostgreSQL de 500 filas. Cada lote se escribe y se descarta antes de solicitar el siguiente; las tres colecciones no permanecen simultáneamente en memoria.
+- El XLSX de esta ruta se excluye del middleware HTTP de compresión porque el formato ya contiene datos ZIP. Esto evita trabajo adicional en la instancia de 0.1 vCPU.
 - El hash usa huellas SHA-256 por elemento en lugar de clonar y serializar todo el reporte. El procesamiento cede el event loop por lotes para no bloquear health checks. Sólo se usa en la ruta JSON y cuando el cliente solicita validación explícita. La descarga directa no calcula hash.
 - Sólo se prepara un reporte semanal del Radar a la vez por proceso (JSON o Excel). Otra petición recibe HTTP 503, código `reporte_radar_ocupado` y `Retry-After: 30`. Mantener concurrencia 1 en Power Automate y reintentos para 503; nunca enviar correo si falla el adjunto. Esto no limita otros endpoints ni coordina varias réplicas.
-- El listado conserva el máximo de 50,000 filas. La evidencia aún se consulta en PostgreSQL y permanece en memoria; no se promete memoria constante para una cantidad arbitraria de movimientos. Las consultas de salidas y órdenes son secuenciales y sus valores numéricos se convierten sin duplicar filas.
+- El listado conserva el máximo de 50,000 filas de Radar. Los detalles respetan el límite físico de 1,048,576 filas por hoja de Excel; si lo exceden, la generación falla sin enviar un archivo parcial.
 - Se agregó la dependencia de producción `exceljs@4.4.0`. El flujo simplificado usa únicamente la URL de Excel, sin versionDatos. No se aumentó el heap ni se cambió NODE_OPTIONS.
 
 Prueba sintética reproducible, sin PostgreSQL ni llamadas a Koyeb:
@@ -81,6 +83,7 @@ Prueba sintética reproducible, sin PostgreSQL ni llamadas a Koyeb:
 npm run build
 node --test scripts/reporte-radar-semanal.test.cjs
 node --max-old-space-size=224 scripts/reporte-radar-memory.cjs 50000
+node --max-old-space-size=224 scripts/reporte-radar-paginado-memory.cjs 50000
 ```
 
 Genera 50,000 filas de Radar, 50,000 salidas y 50,000 órdenes, ejecuta la descarga directa de Excel y elimina el archivo. Informa pico de heap muestreado, RSS máximo y duración. Un heap limitado no simula un contenedor completo de 512 MB; las cifras locales no garantizan el consumo con el resto de la API, la base real, otra versión de Node o textos/movimientos más grandes.
@@ -89,4 +92,6 @@ Genera 50,000 filas de Radar, 50,000 salidas y 50,000 órdenes, ejecuta la desca
 
 Prueba sintética local en Windows con heap limitado a 224 MB: 50,000 filas de Radar + 50,000 salidas + 50,000 órdenes. La descarga directa completó el archivo en 16 segundos; tamaño 17,684,504 bytes, pico de heap muestreado de 172 MiB y RSS máximo de 430 MiB. Build correcto y 17 pruebas aprobadas, incluyendo una que impide calcular hash durante la descarga directa.
 
-No incluye el tiempo ni la memoria de PostgreSQL o la carga del resto de la API. Debe verificarse en Koyeb antes de dar por resuelto el timeout. No se cambió NODE_OPTIONS ni se agregó una dependencia en este cambio.
+La generación paginada equivalente completó 50,000 filas de Radar + 50,000 salidas + 50,000 órdenes en 10 segundos, con pico de heap de 105 MiB y RSS de 317 MiB. La prueba crea los registros por lotes y no conserva las 150,000 filas de entrada en arreglos globales.
+
+No incluye el tiempo ni la memoria de PostgreSQL o la carga del resto de la API. Debe verificarse en Koyeb antes de dar por resuelto el OOM. No se cambió NODE_OPTIONS ni se agregó una dependencia en este cambio.

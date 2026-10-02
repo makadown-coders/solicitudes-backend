@@ -86,6 +86,42 @@ export class LibroReporte {
     await ceder();
     this.verificar();
   }
+
+  async tablaAsync(nombre: string, data: AsyncIterable<Record<string, unknown>>, mensaje: string,
+    porcentajes: string[] = []): Promise<void> {
+    const iterator = data[Symbol.asyncIterator]();
+    const muestra: Record<string, unknown>[] = [];
+    for (let n = 0; n < 200; n++) {
+      const next = await iterator.next();
+      if (next.done) break;
+      muestra.push(next.value);
+    }
+    const filasIniciales = muestra.length ? muestra : [{ Mensaje: mensaje }];
+    const headers = Object.keys(filasIniciales[0]);
+    const hoja = this.workbook.addWorksheet(nombre, { views: [{ state: 'frozen', ySplit: 1 }] });
+    await this.esperarEscritura(hoja);
+    hoja.columns = headers.map(header => ({ width: Math.min(48,
+      Math.max(12, header.length + 2, ...filasIniciales.map(row => String(row[header] ?? '').length + 2))) }));
+    hoja.addRow(headers).commit();
+    const columnasPorcentaje = headers.map((header, index) => porcentajes.includes(header) ? index + 1 : 0).filter(Boolean);
+    let count = 1;
+    const agregar = async (dataRow: Record<string, unknown>) => {
+      this.verificar();
+      if (count >= 1048576) throw new Error('El detalle excede el límite de filas de Excel.');
+      const row = hoja.addRow(headers.map(header => dataRow[header] ?? null));
+      for (const index of columnasPorcentaje) row.getCell(index).numFmt = '0.00%';
+      row.commit();
+      if (++count % 100 === 0) await this.esperarEscritura(hoja);
+    };
+    for (const row of filasIniciales) await agregar(row);
+    if (muestra.length) {
+      for (let next = await iterator.next(); !next.done; next = await iterator.next()) await agregar(next.value);
+    }
+    hoja.autoFilter = { from: { row: 1, column: 1 }, to: { row: count, column: headers.length } };
+    hoja.commit();
+    await ceder();
+    this.verificar();
+  }
 }
 
 export async function escribirArchivoReporte(escribir: (libro: LibroReporte) => Promise<void>): Promise<ArchivoReporte> {

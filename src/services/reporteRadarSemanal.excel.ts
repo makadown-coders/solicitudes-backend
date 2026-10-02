@@ -9,6 +9,22 @@ import RadarAbastoService from './radar-abasto.service';
 type Radar = Awaited<ReturnType<RadarAbastoService['listarGlobalV2']>>;
 type Evidencia = Awaited<ReturnType<RadarAbastoService['exportarGlobalV2Detalles']>>;
 
+export type ResumenRadarPaginado = {
+  total: number;
+  segmentos: Radar['summary'];
+  estados: Record<RadarGlobalV2EstadoOperativo, number>;
+  fueraUmbralSinSalida: number;
+  conOrdenesVencidas: number;
+  conSalidaPosterior: number;
+  unidades: Array<{ unidad: string; clavesSolicitadas: number; sinExistencia: number }>;
+};
+
+export type FuentesRadarPaginadas = {
+  radar: AsyncIterable<RadarGlobalV2Row>;
+  salidas: AsyncIterable<any>;
+  ordenes: AsyncIterable<any>;
+};
+
 export default class ReporteRadarSemanalExcel {
   constructor(private readonly months: number, private readonly generadoEn: string) {}
   readonly segmentos: Array<{ value: RadarGlobalV2Segmento | ''; label: string }> = [
@@ -91,6 +107,7 @@ export default class ReporteRadarSemanalExcel {
     return this.estadosOperativos.find(x => x.value === estado)?.label ?? estado;
   }
   async generar(out: Radar, evidencia: Evidencia): Promise<ArchivoReporte> {
+    console.info('Generando archivo excel para radar global usando power automate');
     return escribirArchivoReporte(async libro => {
     const rows = out.data;
       const indice = new Map(rows.map(row => [`${row.cluesimb}|${row.clave}`, row]));
@@ -164,6 +181,118 @@ export default class ReporteRadarSemanalExcel {
       await libro.tabla('Detalle salidas', salidas, 'Sin salidas posteriores observadas');
       await libro.tabla('Órdenes contexto', ordenes, 'Sin órdenes relacionadas');
     });
+  }
+
+  async generarPaginado(resumenDatos: ResumenRadarPaginado, fuentes: FuentesRadarPaginadas): Promise<ArchivoReporte> {
+    const radar = this.mapearAsync(fuentes.radar, row => this.filaRadar(row));
+    const salidas = this.mapearAsync(fuentes.salidas, salida => ({
+      CLUES: salida.cluesimb, Unidad: salida.nombre_de_unidad ?? salida.unidad_destino ?? '',
+      Clave: salida.clave, Descripción: salida.descripcion ?? '',
+      'Última solicitud': this.fechaCorta(salida.ultima_solicitud),
+      'Fecha de salida': this.fechaCorta(salida.fecha_entregado), Cantidad: Number(salida.cantidad),
+      Folio: salida.folio ?? '', 'Folio extra': salida.folio_extra ?? '', Origen: salida.unidad_origen ?? '',
+      Destino: salida.unidad_destino ?? '', Tipo: salida.tipo ?? '', Programa: salida.programa ?? ''
+    }));
+    const ordenes = this.mapearAsync(fuentes.ordenes, orden => ({
+      CLUES: orden.cluesimb, Unidad: orden.nombre_de_unidad ?? '', Clave: orden.clave,
+      Descripción: orden.descripcion ?? '', 'Orden de suministro': orden.orden_de_suministro ?? '',
+      Estado: this.etiquetaOrden(orden.estado_radar), Proveedor: orden.proveedor ?? '',
+      'Fecha de emisión': this.fechaCorta(orden.fecha_emision),
+      'Fecha límite': this.fechaCorta(orden.fecha_limite_de_entrega),
+      'Fecha de recepción': this.fechaCorta(orden.fecha_recepcion),
+      'Piezas emitidas': Number(orden.piezas_emitidas), 'Piezas recibidas': Number(orden.piezas_recibidas),
+      'Piezas pendientes': Number(orden.piezas_pendientes)
+    }));
+    return escribirArchivoReporte(async libro => {
+      const guia = XLSX.utils.aoa_to_sheet([
+        ['Radar de demanda y cobertura — guía y alcance'], ['Fecha de exportación', this.generadoEn],
+        ['Periodo analizado', `${this.months} meses`], ['Búsqueda', 'Sin filtro'], ['CLUES', 'Todas'],
+        ['Segmento', 'Todos'], ['Estado operativo', 'Todos'],
+        ['Origen de solicitudes', 'Registros asociados a LOS EXCELES GENERADOS CON LA HERRAMIENTA DE SOLICITUDES. Piloto de información de prueba; no acredita recepción, procesamiento ni surtimiento por Abasto y/o Almacenes.'],
+        ['Resultados encontrados', resumenDatos.total], ['Resultados exportados', resumenDatos.total], [],
+        ['Regla operativa', 'Una solicitud se considera vigente durante 14 días naturales a partir de su última fecha registrada.'],
+        ['Evidencia principal', 'Las salidas se vinculan por unidad destino. Una salida no confirma por sí sola la recepción ni la cobertura total.'],
+        ['Órdenes', 'Se muestran únicamente como contexto. Las piezas pendientes no equivalen a existencia disponible.'],
+        ['Alcance', 'Información analítica de apoyo; debe validarse contra sistemas institucionales, documentos oficiales y registros de las áreas responsables.'],
+        ['Precaución', 'Sin solicitud observada no significa que la unidad no necesite la clave.'], [],
+        ['Segmento', 'Significado'],
+        ...this.segmentos.filter(x => x.value).map(x => [x.label, this.definicionesSegmento[x.value as RadarGlobalV2Segmento].descripcion]), [],
+        ['Estado operativo', 'Significado'],
+        ...this.estadosOperativos.filter(x => x.value).map(x => [x.label, this.definicionesEstado[x.value as RadarGlobalV2EstadoOperativo].descripcion])
+      ]);
+      guia['!cols'] = [{ wch: 28 }, { wch: 100 }];
+      const porEstado = this.estadosOperativos.filter(x => x.value)
+        .map(x => [x.label, resumenDatos.estados[x.value as RadarGlobalV2EstadoOperativo] ?? 0]);
+      const resumen = XLSX.utils.aoa_to_sheet([
+        ['Resumen del universo exportado'], [], ['Segmentos', 'Total'],
+        ['Críticas con CPM', resumenDatos.segmentos.criticas_cpm],
+        ['Atención con CPM', resumenDatos.segmentos.atencion_cpm],
+        ['Demanda sin CPM', resumenDatos.segmentos.demanda_sin_cpm],
+        ['CPM sin solicitud observada', resumenDatos.segmentos.cpm_sin_solicitud],
+        ['Cubiertas', resumenDatos.segmentos.cubiertas], [], ['Estados operativos', 'Total'], ...porEstado, [],
+        ['Indicadores para seguimiento', 'Total'],
+        ['Fuera del umbral sin salida', resumenDatos.fueraUmbralSinSalida],
+        ['Con órdenes vencidas', resumenDatos.conOrdenesVencidas],
+        ['Críticas con CPM', resumenDatos.segmentos.criticas_cpm],
+        ['Con salida posterior observada', resumenDatos.conSalidaPosterior]
+      ]);
+      const unidades = resumenDatos.unidades.map(item => [item.unidad, item.clavesSolicitadas,
+        item.sinExistencia, item.clavesSolicitadas ? item.sinExistencia / item.clavesSolicitadas : 0]);
+      const resumenUnidades = XLSX.utils.aoa_to_sheet([
+        ['Resumen actual por unidad'], ['Periodo de solicitudes', `Últimos ${this.months} meses`],
+        ['Alcance', 'Las cifras consideran el universo exportado y respetan los filtros aplicados.'],
+        ['Existencias', 'Snapshot disponible al generar el archivo; no representa existencias históricas ni información en tiempo real.'],
+        ['Definición', 'Claves distintas solicitadas cuenta claves CNIS únicas por unidad. Sin existencia actual es el subconjunto con existencia igual a cero.'],
+        [], ['Unidad', 'Claves distintas solicitadas', 'Sin existencia actual', '% sin existencia'],
+        ...(unidades.length ? unidades : [['Sin unidades con solicitudes en el universo exportado', 0, 0, 0]])
+      ]);
+      resumenUnidades['!cols'] = [{ wch: 62 }, { wch: 28 }, { wch: 24 }, { wch: 18 }];
+      resumenUnidades['!autofilter'] = { ref: `A7:D${Math.max(8, unidades.length + 7)}` };
+      (resumenUnidades as any)['!freeze'] = { xSplit: 0, ySplit: 7, topLeftCell: 'A8', activePane: 'bottomLeft', state: 'frozen' };
+      for (let row = 7; row < Math.max(1, unidades.length) + 7; row++) {
+        const cell = resumenUnidades[XLSX.utils.encode_cell({ r: row, c: 3 })];
+        if (cell) cell.z = '0.00%';
+      }
+      libro.hojaPequena('Guía y alcance', guia);
+      libro.hojaPequena('Resumen', resumen);
+      libro.hojaPequena('Resumen por unidad', resumenUnidades);
+      await libro.tablaAsync('Radar', radar, 'Sin resultados para los filtros seleccionados', ['Frecuencia de solicitud']);
+      await libro.tablaAsync('Detalle salidas', salidas, 'Sin salidas posteriores observadas');
+      await libro.tablaAsync('Órdenes contexto', ordenes, 'Sin órdenes relacionadas');
+    });
+  }
+
+  private async *mapearAsync<T>(data: AsyncIterable<T>, convertir: (row: T) => Record<string, unknown>) {
+    for await (const row of data) yield convertir(row);
+  }
+
+  private filaRadar(row: RadarGlobalV2Row): Record<string, unknown> {
+    return {
+      'Requiere seguimiento': this.requiereSeguimiento(row) ? 'Sí' : 'No',
+      'Motivos de seguimiento': this.motivosSeguimiento(row),
+      'Estado operativo': this.etiquetaEstado(row.estado_operativo), Segmento: this.etiqueta(row.segmento),
+      Prioridad: row.prioridad, CLUES: row.cluesimb, Unidad: row.nombre_de_unidad ?? '', Clave: row.clave,
+      Descripción: row.descripcion ?? '', CPM: row.cpm, 'En universo CPM': row.en_cpm ? 'Sí' : 'No',
+      'Existencia disponible': row.existencia_actual, 'Fecha del snapshot': this.fechaCorta(row.snapshot_existencias),
+      'Cobertura en CPM': row.cobertura_cpm ?? '', 'Cobertura estimada en días': row.cobertura_dias ?? '',
+      'Solicitado en periodo': row.solicitado_periodo, 'Ciclos con clave': row.ciclos_con_clave,
+      'Ciclos de la unidad': row.ciclos_unidad, 'Frecuencia de solicitud': row.frecuencia_solicitud,
+      'Primera solicitud': this.fechaCorta(row.primera_solicitud), 'Última solicitud': this.fechaCorta(row.ultima_solicitud),
+      'Solicitud vigente (14 días)': row.solicitud_vigente ? 'Sí' : 'No', 'Solicitado vigente': row.solicitado_vigente,
+      'Ciclos vigentes': row.ciclos_vigentes, 'Días desde última solicitud': row.dias_desde_ultima_solicitud ?? '',
+      'Fin del umbral': this.fechaCorta(row.fecha_fin_umbral), 'Días restantes del umbral': row.dias_restantes_umbral ?? '',
+      'Salida posterior observada': row.salida_posterior ? 'Sí' : 'No',
+      'Piezas en salidas posteriores': row.piezas_salida_posterior,
+      'Última salida posterior': this.fechaCorta(row.ultima_salida_posterior),
+      'Alternativas con existencia': row.homologos_disponibles,
+      'Existencia alternativa equivalente': row.existencia_homologos_equivalente,
+      'Mejor alternativa': row.mejor_homologo ?? '', 'Órdenes pendientes (contexto)': row.ordenes_pendientes,
+      'Piezas pendientes (contexto)': row.piezas_pendientes, 'Órdenes por vencer': row.ordenes_por_vencer,
+      'Órdenes vencidas': row.ordenes_vencidas, 'Recepciones últimos 30 días': row.recepciones_recientes,
+      'Piezas recibidas últimos 30 días': row.piezas_recibidas_recientes,
+      'Próxima entrega': this.fechaCorta(row.proxima_entrega), 'Cobertura proyectada en piezas': row.cobertura_proyectada,
+      'Cobertura proyectada en CPM': row.cobertura_proyectada_cpm ?? '', Razones: row.razones.join(' | ')
+    };
   }
 
   private crearResumenExcel(out: Radar, rows: RadarGlobalV2Row[]): XLSX.WorkSheet {

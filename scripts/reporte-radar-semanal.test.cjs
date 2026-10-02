@@ -279,24 +279,46 @@ test('HTTP Excel directo funciona sin JSON previo y devuelve el nombre del archi
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
-test('reporte fijo de tres meses consulta únicamente las vistas materializadas', async () => {
+test('reporte fijo de tres meses consulta únicamente las vistas materializadas por lotes', async () => {
   const { pool } = require('../dist/db/pool');
   const TresMeses = require('../dist/services/reporteRadarSemanalTresMeses.service').default;
-  const query = pool.query;
+  const query = pool.query, connect = pool.connect;
   const queries = [];
   pool.query = async sql => {
     queries.push(sql);
-    if (sql.includes('_salidas')) return { rows: [] };
-    if (sql.includes('_ordenes')) return { rows: [] };
-    return { rows: [row()] };
+    if (sql.includes('GROUP BY cluesimb')) return { rows: [{ unidad: 'Unidad de prueba · BC001', claves_solicitadas: 1, sin_existencia: 1 }] };
+    return { rows: [{ total: 1, criticas_cpm: 1, atencion_cpm: 0, demanda_sin_cpm: 0,
+      cpm_sin_solicitud: 0, cubiertas: 0, vigente_en_proceso: 0, vigente_con_salida: 0,
+      fuera_umbral_sin_salida: 0, historica_con_salida: 1, sin_solicitud_observada: 0,
+      con_ordenes_vencidas: 1, con_salida_posterior: 1 }] };
+  };
+  pool.connect = async () => {
+    let cursor = '', entregado = false;
+    return { async query(sql) {
+      queries.push(sql);
+      if (sql.startsWith('DECLARE')) cursor = sql;
+      if (!sql.startsWith('FETCH') || entregado) return { rows: [] };
+      entregado = true;
+      if (cursor.includes('_salidas')) return { rows: [{ cluesimb: 'BC001', clave: '010.000.0001.00',
+        nombre_de_unidad: 'Unidad de prueba', descripcion: 'Insumo', ultima_solicitud: '2026-09-01',
+        id: 1, fecha_entregado: '2026-09-21', cantidad: '2', folio: 'SAL-1' }] };
+      if (cursor.includes('_ordenes')) return { rows: [{ cluesimb: 'BC001', clave: '010.000.0001.00',
+        nombre_de_unidad: 'Unidad de prueba', descripcion: 'Insumo', orden_de_suministro: 'ORD-1',
+        estado_radar: 'VENCIDA', piezas_emitidas: '5', piezas_recibidas: '2', piezas_pendientes: '3' }] };
+      return { rows: [row()] };
+    }, release() {} };
   };
   try {
     const result = await new TresMeses().generarExcel();
     try {
-      assert.equal(queries.length, 3);
-      assert.ok(queries.every(sql => sql.includes('mv_reporte_radar_semanal_3m')));
+      const consultasDatos = queries.filter(sql => sql.includes('SELECT') || sql.startsWith('DECLARE'));
+      assert.ok(consultasDatos.every(sql => sql.includes('mv_reporte_radar_semanal_3m')));
       assert.ok(queries.every(sql => !sql.includes('solicitud_bitacora')));
       assert.match(result.reporte.nombreArchivo, /^radar_demanda_cobertura_\d{8}\.xlsx$/);
+      const book = XLSX.read(await fs.readFile(result.archivo), { type: 'buffer' });
+      assert.equal(XLSX.utils.sheet_to_json(book.Sheets.Radar).length, 1);
+      assert.equal(XLSX.utils.sheet_to_json(book.Sheets['Detalle salidas']).length, 1);
+      assert.equal(XLSX.utils.sheet_to_json(book.Sheets['Órdenes contexto']).length, 1);
     } finally { await result.limpiar(); }
-  } finally { pool.query = query; }
+  } finally { pool.query = query; pool.connect = connect; }
 });

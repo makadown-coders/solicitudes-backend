@@ -25,7 +25,7 @@ export default class ReporteRadarSemanalService {
 
   constructor(private readonly radar: FuenteRadar = new RadarAbastoService()) {}
 
-  private async preparar(months: number) {
+  private async consultar(months: number) {
     const out = await this.radar.listarGlobalV2({ months, page: 1, pageSize: 50000, export: true });
     if (out.truncated || out.total !== out.data.length) {
       throw new ReporteRadarError(422, 'reporte_radar_incompleto', 'El radar supera el límite de 50,000 filas o cambió durante la consulta. No se generó un reporte parcial.');
@@ -39,6 +39,12 @@ export default class ReporteRadarSemanalService {
     const fechaGeneracion = new Intl.DateTimeFormat('en-CA', {
       timeZone: 'America/Tijuana', year: 'numeric', month: '2-digit', day: '2-digit'
     }).format(new Date(generadoEn));
+    return { out, evidencia, generadoEn, fechaGeneracion,
+      nombreArchivo: `radar_demanda_cobertura_${fechaGeneracion.replace(/-/g, '')}.xlsx` };
+  }
+
+  private async preparar(months: number) {
+    const { out, evidencia, generadoEn, fechaGeneracion, nombreArchivo } = await this.consultar(months);
     const versionDatos = await versionReporte({ months, out, evidencia });
     const unidades = new Map<string, {
       clues: string; unidad: string; clavesSolicitadas: number; sinExistencia: number;
@@ -72,7 +78,7 @@ export default class ReporteRadarSemanalService {
     const reporte = {
       ok: true as const, piloto: true as const, generadoEn, fechaGeneracion, zonaHoraria: 'America/Tijuana',
       months, versionDatos,
-      nombreArchivo: `radar_demanda_cobertura_${fechaGeneracion.replace(/-/g, '')}.xlsx`,
+      nombreArchivo,
       asuntoCorreo: `[PILOTO · Información de prueba] Radar de demanda y cobertura | ${fechaGeneracion}`,
       resumen: { unidades: hospitales.length, registrosUnidadClave: out.total,
         registrosConSeguimiento: hospitales.reduce((sum, item) => sum + item.requiereSeguimiento, 0),
@@ -99,12 +105,15 @@ export default class ReporteRadarSemanalService {
 
   async generarExcel(months: number, versionDatos?: string) {
     return this.exclusivo(async () => {
-      const { out, evidencia, reporte } = await this.preparar(months);
-      if (versionDatos && versionDatos !== reporte.versionDatos) {
+      const { out, evidencia, generadoEn, fechaGeneracion, nombreArchivo } = await this.consultar(months);
+      // La descarga directa no prepara JSON, HTML ni hash. Se conserva la validación
+      // únicamente para clientes anteriores que envíen versionDatos explícitamente.
+      const versionActual = versionDatos ? await versionReporte({ months, out, evidencia }) : undefined;
+      if (versionDatos && versionDatos !== versionActual) {
         throw new ReporteRadarError(409, 'reporte_radar_actualizado', 'Los datos cambiaron desde la consulta JSON. Vuelva a ejecutar el flujo completo antes de enviar el correo.');
       }
-      const archivo = await new ReporteRadarSemanalExcel(months, reporte.generadoEn).generar(out, evidencia);
-      return { ...archivo, reporte };
+      const archivo = await new ReporteRadarSemanalExcel(months, generadoEn).generar(out, evidencia);
+      return { ...archivo, reporte: { nombreArchivo, generadoEn, fechaGeneracion, versionDatos: versionActual } };
     });
   }
 }

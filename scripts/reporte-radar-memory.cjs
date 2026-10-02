@@ -30,14 +30,12 @@ async function run() {
   sample();
   const Service = require(path.join(backend, 'dist/services/reporteRadarSemanal.service')).default;
   const service = new Service({ async listarGlobalV2() { return out; }, async exportarGlobalV2Detalles() { return evidencia; } });
-  const report = await service.obtenerReporte(3);
-  sample();
-  const result = await service.generarExcel(3, report.versionDatos);
+  const result = await service.generarExcel(3);
   try {
     sample();
     const stat = await fs.stat(result.archivo);
     assert.ok(stat.size > 0);
-    console.log(JSON.stringify({ tipo: 'optimizado', registros: count, salidas: count, ordenes: count, bytes: stat.size,
+    console.log(JSON.stringify({ tipo: 'excel-directo', registros: count, salidas: count, ordenes: count, bytes: stat.size,
       peakHeapMiB: Math.round(peakHeap / 2**20), peakRssMiB: Math.round(Math.max(peakRss / 2**20, process.resourceUsage().maxRSS / 1024)), segundos: Math.round((performance.now() - before) / 1000) }));
   } finally { await result.limpiar(); }
 }

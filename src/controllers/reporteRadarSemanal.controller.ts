@@ -1,8 +1,17 @@
 import { Request, Response } from 'express';
 import ReporteRadarSemanalService, { ReporteRadarError } from '../services/reporteRadarSemanal.service';
+import ReporteRadarSemanalTresMesesService from '../services/reporteRadarSemanalTresMeses.service';
 
 export default class ReporteRadarSemanalController {
-  constructor(private readonly service = new ReporteRadarSemanalService()) {}
+  private readonly service: ReporteRadarSemanalService;
+  private readonly tresMeses?: ReporteRadarSemanalTresMesesService;
+
+  constructor(service?: ReporteRadarSemanalService, tresMeses?: ReporteRadarSemanalTresMesesService) {
+    this.service = service ?? new ReporteRadarSemanalService();
+    // Las pruebas y consumidores que inyectan el servicio conservan la ruta anterior.
+    // El controlador productivo usa las vistas materializadas sólo para el reporte fijo de 3 meses.
+    this.tresMeses = tresMeses ?? (service ? undefined : new ReporteRadarSemanalTresMesesService());
+  }
 
   reporte = async (req: Request, res: Response): Promise<void> => { await this.handle(req, res, false); };
   reporteExcel = async (req: Request, res: Response): Promise<void> => { await this.handle(req, res, true); };
@@ -23,7 +32,9 @@ export default class ReporteRadarSemanalController {
         res.json(await this.service.obtenerReporte(months));
         return;
       }
-      const { archivo, limpiar, reporte } = await this.service.generarExcel(months, version as string | undefined);
+      const { archivo, limpiar, reporte } = months === 3 && this.tresMeses
+        ? await this.tresMeses.generarExcel(version as string | undefined)
+        : await this.service.generarExcel(months, version as string | undefined);
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename="${reporte.nombreArchivo}"`);
       res.setHeader('X-Reporte-Nombre-Archivo', reporte.nombreArchivo);

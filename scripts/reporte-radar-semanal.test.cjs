@@ -278,3 +278,25 @@ test('HTTP Excel directo funciona sin JSON previo y devuelve el nombre del archi
     assert.deepEqual(calls.map(call => call[0]), ['radar', 'detalle']);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
+
+test('reporte fijo de tres meses consulta únicamente las vistas materializadas', async () => {
+  const { pool } = require('../dist/db/pool');
+  const TresMeses = require('../dist/services/reporteRadarSemanalTresMeses.service').default;
+  const query = pool.query;
+  const queries = [];
+  pool.query = async sql => {
+    queries.push(sql);
+    if (sql.includes('_salidas')) return { rows: [] };
+    if (sql.includes('_ordenes')) return { rows: [] };
+    return { rows: [row()] };
+  };
+  try {
+    const result = await new TresMeses().generarExcel();
+    try {
+      assert.equal(queries.length, 3);
+      assert.ok(queries.every(sql => sql.includes('mv_reporte_radar_semanal_3m')));
+      assert.ok(queries.every(sql => !sql.includes('solicitud_bitacora')));
+      assert.match(result.reporte.nombreArchivo, /^radar_demanda_cobertura_\d{8}\.xlsx$/);
+    } finally { await result.limpiar(); }
+  } finally { pool.query = query; }
+});

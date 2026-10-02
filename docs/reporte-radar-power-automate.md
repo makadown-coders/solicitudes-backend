@@ -4,7 +4,19 @@
 
 **Recurrence → HTTP_excel → Send an email (V2)**.
 
-La descarga directa consulta una vez el listado y su evidencia, genera las seis hojas y transmite el archivo. No requiere consultar JSON previamente, no calcula hash ni arma el HTML del correo. Mantiene la escritura incremental a disco y la limpieza del temporal.
+La descarga directa de tres meses consulta las vistas materializadas del reporte, genera las seis hojas y transmite el archivo. No requiere consultar JSON previamente, no calcula hash ni arma el HTML del correo. Mantiene la escritura incremental a disco y la limpieza del temporal.
+
+### Preparación y actualización de datos
+
+Antes de desplegar el backend, aplicar `sql/002_reporte_radar_semanal_3m.sql` en PostgreSQL. El script crea tres vistas materializadas: Radar, detalle de salidas y contexto de órdenes. También crea sus índices y el procedimiento de actualización.
+
+Las vistas representan una fotografía de los últimos tres meses al momento del refresco. Programar esta instrucción antes del flujo de Power Automate, fuera de la petición HTTP:
+
+```sql
+CALL public.refrescar_reporte_radar_semanal_3m();
+```
+
+Una frecuencia recomendada para el piloto es el lunes antes del envío. La petición HTTP sólo debe ejecutarse después de que termine el refresco. Si no se programa esta operación, el archivo seguirá disponible pero mostrará la última fotografía materializada.
 
 ### Cambiar el flujo existente
 
@@ -51,8 +63,8 @@ El nombre con fecha también viene en el encabezado HTTP `X-Reporte-Nombre-Archi
 - La ruta JSON `/reporte?months=3` sigue disponible para clientes anteriores.
 - Si se envía explícitamente `versionDatos`, se conserva la comparación y el posible 409. El flujo simplificado debe omitirlo.
 - 400: parámetros inválidos. 422: universo incompleto. 503: reporte ocupado (Retry-After: 30). 500: error de generación. No se ocultan fallos ni se envían archivos parciales.
-- Se preservan las seis hojas, las reglas analíticas y el origen del piloto. No hay nuevas dependencias ni tablas por esta simplificación.
-- Eliminar la consulta JSON previa evita repetir los cruces; omitir versionDatos elimina el trabajo de hash. No garantiza resolver cualquier timeout: la consulta SQL y la escritura del archivo siguen tomando tiempo y deben medirse en el despliegue real.
+- Se preservan las seis hojas, las reglas analíticas y el origen del piloto. No hay nuevas dependencias ni tablas; se agregan tres vistas materializadas e índices exclusivos para este reporte.
+- Eliminar la consulta JSON previa evita repetir los cruces; omitir versionDatos elimina el trabajo de hash. El costo de los cruces se traslada al refresco programado y queda fuera de la petición HTTP. La escritura del archivo todavía debe medirse en el despliegue real.
 
 ## Memoria y concurrencia (instancia de 512 MB)
 

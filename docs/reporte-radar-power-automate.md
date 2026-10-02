@@ -1,126 +1,67 @@
 # Piloto semanal: Radar de demanda y cobertura
 
-Reporte independiente del semanal CPM. No modifica `/api/radar-abasto/v2/export` ni la descarga del frontend. Reutiliza los servicios analíticos del Radar V2 y reproduce sus seis hojas en el servidor. No agrega tablas. Utiliza ExcelJS 4.4.0 para escribir el Excel incrementalmente.
+## Flujo recomendado: una petición, un Excel
 
-## Contrato
+**Recurrence → HTTP_excel → Send an email (V2)**.
 
-- `GET /api/reportes-radar-semanal/reporte?months=3`: JSON para correo.
-- `GET /api/reportes-radar-semanal/reporte-excel?months=3&versionDatos=<versionDatos del JSON>`: XLSX binario.
-- `months`: entero de 1 a 12; predeterminado 3. Universo completo, sin filtros de unidad, segmento o estado.
-- `versionDatos`: hash del contenido analítico, incluidas salidas y órdenes. Opcional para descargas directas, necesario en el flujo para comparar resumen y adjunto.
-- `400`: parámetros inválidos. `409`: cambió el contenido desde el JSON; repetir todo el flujo. `422`: universo incompleto o superior a 50,000 filas; no enviar reporte parcial. `500`: no se pudo generar el reporte.
-- Sin registros: HTTP 200, tabla vacía y Excel con leyendas explícitas.
-- `fechaGeneracion` usa America/Tijuana; `generadoEn` es UTC. No se devuelve `fechaCorte`: las fuentes no tienen un corte común. Las fechas de snapshot se conservan por fila y en `fechasSnapshotExistencias`.
-- Las consultas internas no constituyen un snapshot transaccional único; la versión detecta diferencias entre las consultas JSON y Excel, pero no inmoviliza la base. No es un archivo histórico persistido.
-- No se configuran destinatarios ni credenciales en el backend. Las rutas usan el mismo montaje y exposición que los reportes existentes.
+La descarga directa consulta una vez el listado y su evidencia, genera las seis hojas y transmite el archivo. No requiere consultar JSON previamente, no calcula hash ni arma el HTML del correo. Mantiene la escritura incremental a disco y la limpieza del temporal.
 
-## Flujo en Power Automate
+### Cambiar el flujo existente
 
-Crear un flujo independiente llamado **PILOTO — Radar de demanda y cobertura semanal**. Mantenerlo desactivado hasta desplegar el backend y probar el adjunto. Destinatarios tentativos: química Troyo, Lic. Avelar, Elia Rojas y Abril Núñez; completar sus correos institucionales en Outlook, sin inferir direcciones. Primera prueba con el correo del responsable.
-
-Secuencia: **Recurrence → HTTP JSON → Parse JSON → Create HTML table → Compose Cuerpo Correo → HTTP excel → Send an email (V2)**.
-
-1. **Recurrence**: Frequency `Week`, Interval `1`, Monday, 08:00 (horario propuesto). Zona de Baja California/Tijuana, identificador de Windows `Pacific Standard Time (Mexico)`. Elegir una fecha de inicio futura. Configurar concurrencia del disparador a 1 para evitar ejecuciones superpuestas.
-2. **HTTP JSON**: método `GET`; URI `https://minor-flossy-imssb-737587a4.koyeb.app/api/reportes-radar-semanal/reporte?months=3`; encabezado `Accept: application/json`. Configurar la autenticación que corresponda al despliegue. El conector HTTP requiere verificar la licencia disponible.
-3. **Parse JSON**: Content = `Body` de HTTP JSON. Pegar el esquema siguiente.
-4. **Create HTML table**: From = expresión `body('Parse_JSON')?['tablaCorreo']`; Columns = `Automatic`. Las claves son combinaciones unidad–clave, no un conteo estatal de claves CNIS únicas. La columna de seguimiento incluye todo el universo; solicitadas sin existencia incluye únicamente claves con demanda observada y existencia <= 0.
-5. **Compose Cuerpo Correo**: pegar esta expresión. Si Power Automate asigna otros nombres internos a las acciones, sustituirlos usando contenido dinámico.
+1. Conservar **Recurrence**: lunes, 08:00, zona de Baja California/Tijuana. Concurrencia 1.
+2. Retirar **HTTP JSON**, **Parse JSON**, **Create HTML table** y **Compose Cuerpo Correo** de este flujo.
+3. En **HTTP_excel**, configurar método GET y pegar esta URI literal (sin expresión concat ni versionDatos):
 
 ```text
-concat(
-  '<style>table{border-collapse:collapse;font-family:Segoe UI,Arial,sans-serif;font-size:13px;width:100%}th{background:#176b58;color:#fff;text-align:left}th,td{padding:9px;border:1px solid #dce5e1}</style>',
-  body('Parse_JSON')?['correo']?['encabezadoHtml'],
-  body('Create_HTML_table'),
-  body('Parse_JSON')?['correo']?['notaMetodologicaHtml']
-)
+https://minor-flossy-imssb-737587a4.koyeb.app/api/reportes-radar-semanal/reporte-excel?months=3
 ```
 
-6. **HTTP excel**: método `GET`, encabezado `Accept: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`. URI como expresión:
+   Encabezado Accept: `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`.
+4. En **Send an email (V2)**:
+   - To: correo del responsable durante la prueba; después los destinatarios acordados.
+   - Subject (texto): **[PILOTO] Radar de demanda y cobertura — seguimiento semanal**.
+   - Body: pegar el HTML de abajo en la vista HTML del editor; eliminar las referencias al Compose y al JSON anteriores.
+   - Attachments Name (texto): `radar_demanda_cobertura.xlsx`.
+   - Attachments Content: contenido dinámico **Body** de HTTP_excel, o expresión `body('HTTP_excel')`. No convertir a texto ni aplicar Base64 de nuevo.
+   - Run after: sólo **is successful**. Si falla HTTP_excel, no enviar correo.
 
-```text
-concat(
-  'https://minor-flossy-imssb-737587a4.koyeb.app/api/reportes-radar-semanal/reporte-excel?months=',
-  string(body('Parse_JSON')?['months']),
-  '&versionDatos=',
-  body('Parse_JSON')?['versionDatos']
-)
+El nombre con fecha también viene en el encabezado HTTP `X-Reporte-Nombre-Archivo` y en Content-Disposition; el nombre fijo anterior evita agregar expresiones innecesarias al flujo. El resumen por unidad está en el Excel; el cuerpo del correo deja de contener una tabla dinámica.
+
+### Cuerpo del correo
+
+```html
+<div style="font-family:Segoe UI,Arial,sans-serif;color:#243746;line-height:1.6">
+  <h2 style="color:#176b58">Radar de demanda y cobertura</h2>
+  <p><strong>PILOTO SEMANAL · INFORMACIÓN DE PRUEBA</strong></p>
+  <p>Buen día:</p>
+  <p>Les compartimos el reporte para apoyar el seguimiento de claves por unidad médica.</p>
+  <p><strong>Las solicitudes analizadas provienen de los registros asociados a LOS EXCELES GENERADOS CON LA HERRAMIENTA DE SOLICITUDES.</strong> Su generación no acredita recepción, autorización, procesamiento ni surtimiento por Abasto y/o Almacenes.</p>
+  <p>La estructura ilustra cómo podría presentarse el análisis si posteriormente se integrara el registro de cada solicitud efectivamente procesada. Esa integración aún no forma parte del piloto.</p>
+  <p>El archivo considera los últimos tres meses de solicitudes. El envío semanal no limita el análisis a la última semana. Revisen las fechas disponibles: la generación del reporte no representa un corte común de todas las fuentes.</p>
+  <p>Les sugerimos comenzar por “Guía y alcance”, “Resumen por unidad” y “Radar”, especialmente las columnas “Requiere seguimiento” y “Motivos de seguimiento”.</p>
+  <p>Sin solicitud observada no significa ausencia de necesidad. Las órdenes pendientes no son existencia disponible y una salida no confirma por sí sola recepción ni atención completa.</p>
+  <p>Agradeceremos sus observaciones para mejorar la claridad y utilidad del reporte.</p>
+  <p>Saludos cordiales,<br>Seguimiento de abasto · Prueba piloto</p>
+</div>
 ```
 
-7. **Send an email (V2)**:
-   - To: destinatarios del piloto; usar sólo tu correo durante la prueba.
-   - Subject: `body('Parse_JSON')?['asuntoCorreo']`.
-   - Body: `outputs('Compose_Cuerpo_Correo')`; usar contenido HTML, no pegar la expresión como texto plano.
-   - Attachments Name: `body('Parse_JSON')?['nombreArchivo']`.
-   - Attachments Content: contenido dinámico **Body** de HTTP excel (`body('HTTP_excel')`). No usar el JSON, ni convertir el archivo a texto, ni aplicar Base64 por segunda vez.
-   - Mantener **Run after: is successful**. No enviar si HTTP JSON o HTTP excel fallan.
+## Compatibilidad y alcance
 
-Agregar una rama de aviso al responsable que corra cuando falle o expire la consulta/generación, sin adjuntar reportes anteriores. Si hay 409, repetir desde HTTP JSON; reintentar sólo Excel con la misma versión no lo resuelve. No enviar correos a destinatarios finales desde esa rama.
-
-El JSON y el Excel se generan en dos consultas independientes y pueden tener distinta hora de generación. El hash exige el mismo contenido analítico; no contiene destinatarios ni secretos. Evitar programar el envío durante cargas de datos. El nombre del adjunto se toma del JSON; un cruce de medianoche puede hacer que difiera del encabezado de la descarga.
-
-## Esquema de Parse JSON
-
-```json
-{
-  "type": "object",
-  "required": ["ok", "piloto", "generadoEn", "fechaGeneracion", "months", "versionDatos", "nombreArchivo", "asuntoCorreo", "resumen", "hospitales", "tablaCorreo", "correo", "advertencias"],
-  "properties": {
-    "ok": { "type": "boolean" },
-    "piloto": { "type": "boolean" },
-    "generadoEn": { "type": "string" },
-    "fechaGeneracion": { "type": "string" },
-    "zonaHoraria": { "type": "string" },
-    "months": { "type": "integer" },
-    "versionDatos": { "type": "string" },
-    "nombreArchivo": { "type": "string" },
-    "asuntoCorreo": { "type": "string" },
-    "resumen": { "type": "object" },
-    "fechasSnapshotExistencias": { "type": "array", "items": { "type": "string" } },
-    "hospitales": { "type": "array", "items": { "type": "object" } },
-    "tablaCorreo": { "type": "array", "items": { "type": "object" } },
-    "correo": {
-      "type": "object",
-      "required": ["encabezadoHtml", "notaMetodologicaHtml"],
-      "properties": {
-        "encabezadoHtml": { "type": "string" },
-        "notaMetodologicaHtml": { "type": "string" }
-      }
-    },
-    "advertencias": { "type": "array", "items": { "type": "string" } }
-  }
-}
-```
-
-## Verificación
-
-Desde el backend:
-
-```text
-npm run build
-node --test scripts/reporte-radar-semanal.test.cjs
-```
-
-Las pruebas usan fuentes simuladas: validan resumen, origen del piloto, XLSX real, seis hojas, evidencia, resultados vacíos, truncamiento, cambio de versión y contrato HTTP local. No acceden a PostgreSQL ni envían correos. `npm test` sigue siendo el placeholder existente, no una suite válida.
-
-Después de desplegar: ejecutar con el correo del responsable, abrir el adjunto, comparar el universo y las seis hojas con una exportación del Radar sin filtros y del mismo periodo. Confirmar los cortes disponibles y que no haya truncamiento. Medir tiempo/tamaño con datos reales antes de activar los lunes. El flow no se crea ni activa mediante estos archivos.
-
-Referencias: [Programación](https://learn.microsoft.com/en-us/power-automate/run-scheduled-tasks), [Outlook](https://learn.microsoft.com/en-us/connectors/office365/).
-
-## Diagnóstico de `reporte_radar_actualizado` (409)
-
-Comprobar en el historial que HTTP excel utiliza `months` y `versionDatos` de HTTP JSON de la misma ejecución. La versión ahora ordena cadenas por su valor exacto, sin depender del idioma del servidor ni empatar textos con caracteres invisibles. En empates de existencia equivalente, el mejor homólogo se elige por clave con orden estable.
-
-Después de desplegar esta corrección, repetir desde HTTP JSON: una versión calculada antes del despliegue puede diferir. No quitar `versionDatos` ni reintentar sólo HTTP excel con una versión anterior. Si el 409 persiste, pueden haber cambiado existencias, solicitudes, órdenes, salidas o la fecha operativa; repetir el flujo completo fuera de la ventana de cargas. Esta validación no congela los datos. Un error 500 es distinto y requiere revisar los logs del backend.
-
+- `months`: entero entre 1 y 12, predeterminado 3. Sin filtros adicionales y con un máximo de 50,000 filas del Radar.
+- La ruta JSON `/reporte?months=3` sigue disponible para clientes anteriores.
+- Si se envía explícitamente `versionDatos`, se conserva la comparación y el posible 409. El flujo simplificado debe omitirlo.
+- 400: parámetros inválidos. 422: universo incompleto. 503: reporte ocupado (Retry-After: 30). 500: error de generación. No se ocultan fallos ni se envían archivos parciales.
+- Se preservan las seis hojas, las reglas analíticas y el origen del piloto. No hay nuevas dependencias ni tablas por esta simplificación.
+- Eliminar la consulta JSON previa evita repetir los cruces; omitir versionDatos elimina el trabajo de hash. No garantiza resolver cualquier timeout: la consulta SQL y la escritura del archivo siguen tomando tiempo y deben medirse en el despliegue real.
 
 ## Memoria y concurrencia (instancia de 512 MB)
 
 - Las tablas del Excel se escriben fila a fila en un archivo temporal, con presión de escritura sobre el ZIP y sin tabla global de cadenas compartidas. Se conservan las seis hojas, valores, columnas y formatos porcentuales.
 - La respuesta HTTP transmite el archivo desde disco; no carga el XLSX completo en un Buffer. El temporal se elimina al terminar la descarga o ante errores manejados. El directorio temporal de la instancia debe permitir escritura y tener espacio suficiente. Un cierre forzado del proceso puede dejar temporales hasta que la instancia se recicle.
-- El hash usa huellas SHA-256 por elemento en lugar de clonar y serializar todo el reporte. El procesamiento cede el event loop por lotes para no bloquear health checks. La versión cambia respecto del algoritmo anterior: después de desplegar, comenzar desde HTTP JSON.
+- El hash usa huellas SHA-256 por elemento en lugar de clonar y serializar todo el reporte. El procesamiento cede el event loop por lotes para no bloquear health checks. Sólo se usa en la ruta JSON y cuando el cliente solicita validación explícita. La descarga directa no calcula hash.
 - Sólo se prepara un reporte semanal del Radar a la vez por proceso (JSON o Excel). Otra petición recibe HTTP 503, código `reporte_radar_ocupado` y `Retry-After: 30`. Mantener concurrencia 1 en Power Automate y reintentos para 503; nunca enviar correo si falla el adjunto. Esto no limita otros endpoints ni coordina varias réplicas.
 - El listado conserva el máximo de 50,000 filas. La evidencia aún se consulta en PostgreSQL y permanece en memoria; no se promete memoria constante para una cantidad arbitraria de movimientos. Las consultas de salidas y órdenes son secuenciales y sus valores numéricos se convierten sin duplicar filas.
-- Se agregó la dependencia de producción `exceljs@4.4.0`. No hace falta cambiar las URLs ni las expresiones del flujo. No se aumentó el heap ni se cambió NODE_OPTIONS.
+- Se agregó la dependencia de producción `exceljs@4.4.0`. El flujo simplificado usa únicamente la URL de Excel, sin versionDatos. No se aumentó el heap ni se cambió NODE_OPTIONS.
 
 Prueba sintética reproducible, sin PostgreSQL ni llamadas a Koyeb:
 
@@ -130,10 +71,10 @@ node --test scripts/reporte-radar-semanal.test.cjs
 node --max-old-space-size=224 scripts/reporte-radar-memory.cjs 50000
 ```
 
-Genera 50,000 filas de Radar, 50,000 salidas y 50,000 órdenes, ejecuta JSON → Excel y elimina el archivo. Informa pico de heap muestreado, RSS máximo y duración. Un heap limitado no simula un contenedor completo de 512 MB; las cifras locales no garantizan el consumo con el resto de la API, la base real, otra versión de Node o textos/movimientos más grandes.
+Genera 50,000 filas de Radar, 50,000 salidas y 50,000 órdenes, ejecuta la descarga directa de Excel y elimina el archivo. Informa pico de heap muestreado, RSS máximo y duración. Un heap limitado no simula un contenedor completo de 512 MB; las cifras locales no garantizan el consumo con el resto de la API, la base real, otra versión de Node o textos/movimientos más grandes.
 
-### Resultado de la prueba local
+### Resultado de la descarga directa
 
-Windows, Node 24.17.0, heap limitado a 224 MB: 50,000 filas de Radar + 50,000 salidas + 50,000 órdenes. El generador anterior falló con JavaScript heap out of memory. El optimizado completó JSON y Excel en 43 segundos: archivo de 17,684,505 bytes, pico de heap muestreado de 165 MiB y RSS máximo de 419 MiB. Las 15 pruebas funcionales y el build pasaron. Se compararon también valores, columnas y formatos porcentuales de las seis hojas contra el generador anterior.
+Prueba sintética local en Windows con heap limitado a 224 MB: 50,000 filas de Radar + 50,000 salidas + 50,000 órdenes. La descarga directa completó el archivo en 16 segundos; tamaño 17,684,504 bytes, pico de heap muestreado de 172 MiB y RSS máximo de 430 MiB. Build correcto y 17 pruebas aprobadas, incluyendo una que impide calcular hash durante la descarga directa.
 
-Estas cifras son una medición sintética local, no una garantía de memoria o duración en Koyeb. Falta medir con PostgreSQL, CPU y tráfico reales. La implementación respeta la presión del consumidor ZIP de ExcelJS 4.4; al actualizar esa dependencia deben repetirse las pruebas funcionales y de volumen.
+No incluye el tiempo ni la memoria de PostgreSQL o la carga del resto de la API. Debe verificarse en Koyeb antes de dar por resuelto el timeout. No se cambió NODE_OPTIONS ni se agregó una dependencia en este cambio.

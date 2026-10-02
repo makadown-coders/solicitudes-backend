@@ -26,7 +26,8 @@ export default class ReporteRadarSemanalController {
       const { archivo, limpiar, reporte } = await this.service.generarExcel(months, version as string | undefined);
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename="${reporte.nombreArchivo}"`);
-      res.setHeader('X-Reporte-Version', reporte.versionDatos);
+      res.setHeader('X-Reporte-Nombre-Archivo', reporte.nombreArchivo);
+      if (reporte.versionDatos) res.setHeader('X-Reporte-Version', reporte.versionDatos);
       try {
         if (!res.destroyed) {
           await new Promise<void>((resolve, reject) => {

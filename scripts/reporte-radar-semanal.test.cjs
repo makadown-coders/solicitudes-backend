@@ -247,3 +247,34 @@ test('controlador responde 503 con Retry-After sin iniciar otra generación', as
   assert.equal(headers['Retry-After'], '30');
   assert.equal(res.body.error, 'reporte_radar_ocupado');
 });
+
+
+test('Excel directo consulta una vez y no calcula hash ni prepara el correo JSON', async () => {
+  const versionModule = require('../dist/services/reporteRadarVersion');
+  const versionOriginal = versionModule.versionReporte;
+  versionModule.versionReporte = async () => { throw new Error('No debe calcular hash'); };
+  const { service, calls } = fixture();
+  service.obtenerReporte = async () => { throw new Error('No debe consultar JSON'); };
+  try {
+    const book = XLSX.read(await leerExcel(service), { type: 'buffer' });
+    assert.equal(book.SheetNames.length, 6);
+    assert.equal(XLSX.utils.sheet_to_json(book.Sheets.Radar).length, 1);
+    assert.deepEqual(calls.map(call => call[0]), ['radar', 'detalle']);
+  } finally { versionModule.versionReporte = versionOriginal; }
+});
+
+test('HTTP Excel directo funciona sin JSON previo y devuelve el nombre del archivo', async () => {
+  const { service, calls } = fixture();
+  const app = express();
+  app.get('/reporte-excel', new Controller(service).reporteExcel);
+  const server = await new Promise(resolve => { const instance = app.listen(0, '127.0.0.1', () => resolve(instance)); });
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/reporte-excel?months=3`);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.has('x-reporte-version'), false);
+    assert.match(response.headers.get('x-reporte-nombre-archivo'), /^radar_demanda_cobertura_\d{8}\.xlsx$/);
+    const book = XLSX.read(Buffer.from(await response.arrayBuffer()), { type: 'buffer' });
+    assert.equal(book.SheetNames.length, 6);
+    assert.deepEqual(calls.map(call => call[0]), ['radar', 'detalle']);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});

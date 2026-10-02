@@ -15,6 +15,17 @@ export default class ReporteRadarSemanalController {
 
   reporte = async (req: Request, res: Response): Promise<void> => { await this.handle(req, res, false); };
   reporteExcel = async (req: Request, res: Response): Promise<void> => { await this.handle(req, res, true); };
+  prepararExcel = async (_req: Request, res: Response): Promise<void> => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!this.tresMeses) { res.status(503).json({ ok: false, error: 'reporte_radar_no_disponible' }); return; }
+    const estado = this.tresMeses.preparar();
+    res.status(estado.status).json(estado);
+  };
+  estadoExcel = async (_req: Request, res: Response): Promise<void> => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!this.tresMeses) { res.status(503).json({ ok: false, error: 'reporte_radar_no_disponible' }); return; }
+    res.json(this.tresMeses.estado());
+  };
 
   private async handle(req: Request, res: Response, excel: boolean): Promise<void> {
     res.setHeader('Cache-Control', 'no-store');

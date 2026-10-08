@@ -8,7 +8,7 @@ import {
 } from '../models/articulo.model';
 
 class ArticulosService {
-  async buscarSandboxPrimerNivel(query: string): Promise<{ resultados: Articulo[]; total: number }> {
+  async buscarNecesidadesPrimerNivel(query: string): Promise<{ resultados: Articulo[]; total: number }> {
     const terminos = [...new Set(
       String(query ?? '')
         .trim()

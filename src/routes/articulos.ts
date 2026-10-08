@@ -6,7 +6,7 @@ const router = express.Router();
 const articulosController = new ArticulosController();
 
 router.get('/', articulosController.buscarArticulos.bind(articulosController));
-router.get('/sandbox-primer-nivel', articulosController.buscarArticulosSandboxPrimerNivel.bind(articulosController));
+router.get('/necesidades-primer-nivel', articulosController.buscarArticulosNecesidadesPrimerNivel.bind(articulosController));
 router.get('/all', articulosController.buscarArticulosAll.bind(articulosController));
 router.get('/by-cluesimb-cpm', articulosController.buscarArticulosByCluesIMBCPM.bind(articulosController));
 

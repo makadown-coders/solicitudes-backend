@@ -26,7 +26,7 @@ class ArticulosController {
     }
   }
 
-  async buscarArticulosSandboxPrimerNivel(req: Request, res: Response): Promise<void> {
+  async buscarArticulosNecesidadesPrimerNivel(req: Request, res: Response): Promise<void> {
     const q = String(req.query.q ?? '').trim();
 
     if (q.length < 2 || q.length > 100) {
@@ -35,10 +35,10 @@ class ArticulosController {
     }
 
     try {
-      const resultado = await this.articulosService.buscarSandboxPrimerNivel(q);
+      const resultado = await this.articulosService.buscarNecesidadesPrimerNivel(q);
       res.json(resultado);
     } catch (error) {
-      console.error('Error al buscar artículos para el sandbox de Primer Nivel:', error);
+      console.error('Error al buscar artículos para las necesidades de Primer Nivel:', error);
       res.status(500).json({ error: 'Error del servidor' });
     }
   }

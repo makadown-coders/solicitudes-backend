@@ -12,6 +12,18 @@ const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.s
 type ArticuloCatalogo = { clave: string; descripcion: string | null; presentacion: string | null };
 type UnidadPrimerNivel = { cluesimb: string; nombre_de_unidad: string; es_segundo_nivel: boolean };
 
+function obtenerPeriodoActual(fecha = new Date()): string {
+  const partes = new Intl.DateTimeFormat('es-MX', {
+    month: 'long',
+    year: 'numeric',
+    timeZone: 'America/Tijuana',
+  }).formatToParts(fecha);
+  const mes = partes.find(parte => parte.type === 'month')?.value ?? '';
+  const anio = partes.find(parte => parte.type === 'year')?.value ?? '';
+  const mesCapitalizado = mes ? `${mes.charAt(0).toUpperCase()}${mes.slice(1)}` : '';
+  return `${mesCapitalizado} ${anio}`.trim();
+}
+
 export default class NecesidadesPrimerNivelService {
   constructor(
     private readonly solicitudes = new SolicitudesService(),
@@ -21,7 +33,8 @@ export default class NecesidadesPrimerNivelService {
   async enviar(input: EnviarNecesidadesPrimerNivelInput): Promise<EnviarNecesidadesPrimerNivelResult> {
     const cluesimb = String(input.cluesimb ?? '').trim().toUpperCase();
     const responsable = String(input.responsable ?? '').trim().slice(0, 255);
-    const periodo = String(input.periodo ?? '').trim().slice(0, 120);
+    const periodoCapturado = String(input.periodo ?? '').trim().slice(0, 120);
+    const periodo = periodoCapturado || obtenerPeriodoActual();
     const articulos = this.normalizarArticulos(input.articulos);
 
     if (!cluesimb) throw new Error('cluesimb requerido');
@@ -56,7 +69,7 @@ export default class NecesidadesPrimerNivelService {
       articulos: articulos.map(item => ({ ...item, ...catalogoPorClave.get(item.clave)! })),
     });
 
-    await this.historiales.enviarArchivoASharePoint({
+    await this.historiales.enviarWishlistASharePoint({
       nombreArchivo,
       contenidoBase64: buffer.toString('base64'),
       nombre: responsable || 'No especificado',

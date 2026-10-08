@@ -8,6 +8,56 @@ import {
 } from '../models/articulo.model';
 
 class ArticulosService {
+  async buscarSandboxPrimerNivel(query: string): Promise<{ resultados: Articulo[]; total: number }> {
+    const terminos = [...new Set(
+      String(query ?? '')
+        .trim()
+        .split(/\s+/)
+        .map(termino => termino.trim())
+        .filter(Boolean)
+    )].slice(0, 8);
+
+    const condiciones = terminos.map((_, index) => {
+      const parametro = `$${index + 1}`;
+      return `(
+        COALESCE(clave, '') ILIKE '%' || ${parametro} || '%'
+        OR COALESCE(descripcion, '') ILIKE '%' || ${parametro} || '%'
+        OR COALESCE(presentacion, '') ILIKE '%' || ${parametro} || '%'
+      )`;
+    });
+    const where = `
+      WHERE COALESCE(TRIM(clave), '') NOT LIKE '002%'
+      ${condiciones.length ? `AND ${condiciones.join('\nAND ')}` : ''}
+    `;
+
+    const sqlQuery = `
+      SELECT clave, descripcion, presentacion
+      FROM public.articulos
+      ${where}
+      ORDER BY clave ASC NULLS LAST
+      LIMIT 100
+    `;
+    const sqlCount = `
+      SELECT COUNT(*)::int AS count
+      FROM public.articulos
+      ${where}
+    `;
+
+    const [resultadosResult, totalResult] = await Promise.all([
+      pool.query(sqlQuery, terminos),
+      pool.query<{ count: number }>(sqlCount, terminos),
+    ]);
+
+    return {
+      resultados: resultadosResult.rows.map((row) => ({
+        clave: String(row.clave ?? ''),
+        descripcion: String(row.descripcion ?? ''),
+        presentacion: String(row.presentacion ?? ''),
+      })),
+      total: Number(totalResult.rows[0]?.count ?? 0),
+    };
+  }
+
   async buscar(query: string): Promise<{ resultados: Articulo[]; total: number }> {
     const q = String(query ?? '').trim();
     const sqlQuery = `

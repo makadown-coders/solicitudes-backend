@@ -42,6 +42,7 @@ import ibOncoRoutes from './routes/ib-onco';
 import ibOncoHiddenRoutes from './routes/ib-onco-hidden';
 import dashboardEstatalRoutes from './routes/dashboard-estatal';
 import catalogoClavesRoutes from './routes/catalogo-claves';
+import cnisGruposTerapeuticosRoutes from './routes/cnis-grupos-terapeuticos';
 import reporteCpmSemanalRoutes from './routes/reporteCpmSemanal';
 import reporteRadarSemanalRoutes from './routes/reporteRadarSemanal';
 
@@ -111,6 +112,7 @@ app.use('/api/ib-onco', ibOncoRoutes);
 app.use('/api/ib-onco-hidden', ibOncoHiddenRoutes);
 app.use('/api/dashboard-estatal', dashboardEstatalRoutes);
 app.use('/api/catalogo-claves', catalogoClavesRoutes);
+app.use('/api/cnis/grupos-terapeuticos', cnisGruposTerapeuticosRoutes);
 app.use('/api/reportes-cpm-semanal', reporteCpmSemanalRoutes);
 app.use('/api/reportes-radar-semanal', reporteRadarSemanalRoutes);
 

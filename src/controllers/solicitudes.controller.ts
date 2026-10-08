@@ -1,11 +1,25 @@
 import { Request, Response } from 'express';
 import SolicitudesService from "../services/solicitudes.service";
+import NecesidadesPrimerNivelService from '../services/necesidades-primer-nivel.service';
 
 export class SolicitudesController {
     private service: SolicitudesService;
+    private necesidadesPrimerNivel = new NecesidadesPrimerNivelService();
 
     constructor() {
         this.service = new SolicitudesService();
+    }
+
+    async postEnviarNecesidadesPrimerNivel(req: Request, res: Response) {
+        try {
+            const resultado = await this.necesidadesPrimerNivel.enviar(req.body ?? {});
+            res.status(201).json({ ok: true, ...resultado });
+        } catch (err: any) {
+            console.error('Error enviando necesidades de Primer Nivel:', err);
+            const mensaje = err?.message ?? 'No se pudo enviar la lista para revisión';
+            const esErrorExterno = err?.isAxiosError === true;
+            res.status(esErrorExterno ? 502 : 400).json({ ok: false, error: mensaje });
+        }
     }
 
     async postCrearBitacora(req: Request, res: Response) {

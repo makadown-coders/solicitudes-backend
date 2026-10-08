@@ -6,7 +6,9 @@ El frontend envía la lista a:
 POST /api/solicitudes/primer-nivel/enviar
 ```
 
-El backend valida la unidad y el catálogo, registra `solicitud_bitacora`, genera el Excel en memoria y envía el archivo al flujo configurado en `AZURE_SP_ABASTO_URL`. El archivo no se devuelve al navegador.
+El backend valida la unidad y el catálogo, registra `solicitud_bitacora`, genera el Excel en memoria y envía el archivo al flujo configurado en `AZURE_SP_WISHLIST_URL`. El archivo no se devuelve al navegador.
+
+Cuando `periodo` llega vacío, el backend asigna automáticamente el mes y año en curso usando la zona horaria `America/Tijuana`, por ejemplo `Octubre 2026`.
 
 El webhook de Power Automate recibe el contrato existente:
 

@@ -15,6 +15,7 @@ class HistorialesService {
      * @returns 
      */
     async enviarArchivoASharePoint(data: SolicitudArchivo) {
+        if (!FLOW_URL) throw new Error('Missing env AZURE_SP_ABASTO_URL');
         const response = await axios.post(FLOW_URL, data, {
             headers: { 'Content-Type': 'application/json' }
         });

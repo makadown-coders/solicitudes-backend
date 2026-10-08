@@ -5,6 +5,8 @@ import { SolicitudesController } from '../controllers/solicitudes.controller';
 const r = Router();
 const c = new SolicitudesController();
 
+r.post('/primer-nivel/enviar', c.postEnviarNecesidadesPrimerNivel.bind(c));
+
 // Solo admin en PATCH idealmente (middleware auth)
 // r.get('/get-bitacora', c.getBitacora.bind(c));
 r.post('/bitacora', c.postCrearBitacora.bind(c));

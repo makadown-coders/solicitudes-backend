@@ -26,6 +26,23 @@ class ArticulosController {
     }
   }
 
+  async buscarArticulosSandboxPrimerNivel(req: Request, res: Response): Promise<void> {
+    const q = String(req.query.q ?? '').trim();
+
+    if (q.length < 2 || q.length > 100) {
+      res.status(400).json({ error: 'La búsqueda debe contener entre 2 y 100 caracteres' });
+      return;
+    }
+
+    try {
+      const resultado = await this.articulosService.buscarSandboxPrimerNivel(q);
+      res.json(resultado);
+    } catch (error) {
+      console.error('Error al buscar artículos para el sandbox de Primer Nivel:', error);
+      res.status(500).json({ error: 'Error del servidor' });
+    }
+  }
+
   async buscarArticulosAll(req: Request, res: Response): Promise<void> {    
 
     try {

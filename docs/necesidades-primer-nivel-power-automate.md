@@ -10,6 +10,8 @@ El backend valida la unidad y el catálogo, registra `solicitud_bitacora`, gener
 
 Cuando `periodo` llega vacío, el backend asigna automáticamente el mes y año en curso usando la zona horaria `America/Tijuana`, por ejemplo `Octubre 2026`.
 
+El Excel contiene dos hojas: `Lista de necesidades`, con la captura original de la unidad, y `Análisis operativo`, con CPM de la unidad, meses solicitados, existencias referenciales AZM/AZT/AZE, total en almacenes y faltante referencial. Las existencias provienen del snapshot disponible en PostgreSQL y deben validarse antes del surtimiento.
+
 El webhook de Power Automate recibe el contrato existente:
 
 ```json

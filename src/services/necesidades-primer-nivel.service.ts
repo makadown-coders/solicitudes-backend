@@ -11,6 +11,14 @@ const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.s
 
 type ArticuloCatalogo = { clave: string; descripcion: string | null; presentacion: string | null };
 type UnidadPrimerNivel = { cluesimb: string; nombre_de_unidad: string; es_segundo_nivel: boolean };
+type AnalisisOperativo = {
+  clave: string;
+  cpm: number;
+  existenciaAzm: number;
+  existenciaAzt: number;
+  existenciaAze: number;
+  fechaSnapshot: string | null;
+};
 
 function obtenerPeriodoActual(fecha = new Date()): string {
   const partes = new Intl.DateTimeFormat('es-MX', {
@@ -47,6 +55,7 @@ export default class NecesidadesPrimerNivelService {
     const catalogoPorClave = new Map(catalogo.map(item => [item.clave.trim().toUpperCase(), item]));
     const faltantes = articulos.filter(item => !catalogoPorClave.has(item.clave)).map(item => item.clave);
     if (faltantes.length) throw new Error(`Claves inexistentes en el catálogo: ${faltantes.slice(0, 5).join(', ')}`);
+    const analisis = await this.obtenerAnalisisOperativo(cluesimb, articulos.map(item => item.clave));
 
     const registro = await this.solicitudes.crearBitacora({
       cluesimb,
@@ -67,6 +76,7 @@ export default class NecesidadesPrimerNivelService {
       responsable,
       periodo,
       articulos: articulos.map(item => ({ ...item, ...catalogoPorClave.get(item.clave)! })),
+      analisis,
     });
 
     await this.historiales.enviarWishlistASharePoint({
@@ -131,6 +141,71 @@ export default class NecesidadesPrimerNivelService {
     return rows;
   }
 
+  private async obtenerAnalisisOperativo(cluesimb: string, claves: string[]): Promise<AnalisisOperativo[]> {
+    const { rows } = await pool.query<{
+      clave: string;
+      cpm: string | number | null;
+      existencia_azm: string | number | null;
+      existencia_azt: string | number | null;
+      existencia_aze: string | number | null;
+      fecha_snapshot: Date | string | null;
+    }>(`
+      WITH claves AS (
+        SELECT UNNEST($2::text[]) AS clave
+      ),
+      cpm_unidad AS (
+        SELECT UPPER(TRIM(c.clave_cnis)) AS clave, MAX(c.cpm) AS cpm
+        FROM public.cpm c
+        INNER JOIN public.unidad_medica um ON um.id = c.unidad_medica_id
+        WHERE UPPER(TRIM(um.cluesimb)) = $1
+          AND UPPER(TRIM(c.clave_cnis)) = ANY($2::text[])
+        GROUP BY UPPER(TRIM(c.clave_cnis))
+      ),
+      existencias_almacen AS (
+        SELECT
+          UPPER(TRIM(t.clave_cnis)) AS clave,
+          SUM(t.existencia) FILTER (
+            WHERE UPPER(CONCAT_WS(' ', vumd.nombre_de_unidad, vumd.nombre_municipio, vumd.alias_sas, vumd.cluesimb))
+              SIMILAR TO '%(MEXICALI|AZM)%'
+          ) AS existencia_azm,
+          SUM(t.existencia) FILTER (
+            WHERE UPPER(CONCAT_WS(' ', vumd.nombre_de_unidad, vumd.nombre_municipio, vumd.alias_sas, vumd.cluesimb))
+              SIMILAR TO '%(TIJUANA|AZT)%'
+          ) AS existencia_azt,
+          SUM(t.existencia) FILTER (
+            WHERE UPPER(CONCAT_WS(' ', vumd.nombre_de_unidad, vumd.nombre_municipio, vumd.alias_sas, vumd.cluesimb))
+              SIMILAR TO '%(ENSENADA|AZE)%'
+          ) AS existencia_aze,
+          MAX(t.cargado_en) AS fecha_snapshot
+        FROM public.tmp_existencias t
+        INNER JOIN public.v_unidad_medica_detalle vumd ON vumd.cluesimb = t.cluesimb
+        WHERE vumd.tipo_unidad = 'ALMACENES'
+          AND UPPER(TRIM(t.clave_cnis)) = ANY($2::text[])
+        GROUP BY UPPER(TRIM(t.clave_cnis))
+      )
+      SELECT
+        claves.clave,
+        COALESCE(cpm_unidad.cpm, 0) AS cpm,
+        COALESCE(existencias_almacen.existencia_azm, 0) AS existencia_azm,
+        COALESCE(existencias_almacen.existencia_azt, 0) AS existencia_azt,
+        COALESCE(existencias_almacen.existencia_aze, 0) AS existencia_aze,
+        existencias_almacen.fecha_snapshot
+      FROM claves
+      LEFT JOIN cpm_unidad ON cpm_unidad.clave = claves.clave
+      LEFT JOIN existencias_almacen ON existencias_almacen.clave = claves.clave
+      ORDER BY claves.clave
+    `, [cluesimb, claves]);
+
+    return rows.map(row => ({
+      clave: String(row.clave),
+      cpm: Number(row.cpm ?? 0),
+      existenciaAzm: Number(row.existencia_azm ?? 0),
+      existenciaAzt: Number(row.existencia_azt ?? 0),
+      existenciaAze: Number(row.existencia_aze ?? 0),
+      fechaSnapshot: row.fecha_snapshot ? new Date(row.fecha_snapshot).toISOString() : null,
+    }));
+  }
+
   private async generarExcel(contexto: {
     folio: string;
     recibidoEn: string;
@@ -139,6 +214,7 @@ export default class NecesidadesPrimerNivelService {
     responsable: string;
     periodo: string;
     articulos: Array<ArticuloCatalogo & { cantidad: number }>;
+    analisis: AnalisisOperativo[];
   }): Promise<Buffer> {
     const workbook = new ExcelJS.Workbook();
     workbook.creator = 'IMSS Bienestar BC';
@@ -174,6 +250,59 @@ export default class NecesidadesPrimerNivelService {
     contexto.articulos.forEach((_, index) => {
       hoja.getRow(index + 10).alignment = { vertical: 'top', wrapText: true };
     });
+
+    const analisisPorClave = new Map(contexto.analisis.map(item => [item.clave, item]));
+    const hojaAnalisis = workbook.addWorksheet('Análisis operativo');
+    hojaAnalisis.addRow(['ANÁLISIS OPERATIVO · CPM Y EXISTENCIAS EN ALMACENES']);
+    hojaAnalisis.addRow(['Generado', contexto.recibidoEn]);
+    const fechaSnapshot = contexto.analisis.find(item => item.fechaSnapshot)?.fechaSnapshot;
+    hojaAnalisis.addRow(['Snapshot de existencias', fechaSnapshot ?? 'No disponible']);
+    hojaAnalisis.addRow(['Nota', 'Información referencial; las existencias pueden cambiar y deben validarse antes del surtimiento.']);
+    hojaAnalisis.addRow([]);
+    hojaAnalisis.addRow([
+      'No.', 'Clave', 'Descripción', 'Presentación', 'Necesidad', 'CPM unidad',
+      'Meses solicitados', 'AZM', 'AZT', 'AZE', 'Total almacenes', 'Faltante referencial',
+    ]);
+
+    contexto.articulos.forEach((articulo, index) => {
+      const dato = analisisPorClave.get(articulo.clave);
+      const cpm = dato?.cpm ?? 0;
+      const azm = dato?.existenciaAzm ?? 0;
+      const azt = dato?.existenciaAzt ?? 0;
+      const aze = dato?.existenciaAze ?? 0;
+      const total = azm + azt + aze;
+      const renglon = hojaAnalisis.addRow([
+        index + 1,
+        articulo.clave,
+        articulo.descripcion ?? '',
+        articulo.presentacion ?? '',
+        articulo.cantidad,
+        cpm,
+        cpm > 0 ? articulo.cantidad / cpm : null,
+        azm,
+        azt,
+        aze,
+        total,
+        Math.max(articulo.cantidad - total, 0),
+      ]);
+      renglon.alignment = { vertical: 'top', wrapText: true };
+      if (cpm <= 0) renglon.getCell(6).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFF99' } };
+      if (total < articulo.cantidad) renglon.getCell(12).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFC7CE' } };
+    });
+
+    hojaAnalisis.mergeCells('A1:L1');
+    hojaAnalisis.getRow(1).font = { bold: true, size: 14, color: { argb: 'FF006B5F' } };
+    hojaAnalisis.getRow(6).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    hojaAnalisis.getRow(6).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF006B5F' } };
+    hojaAnalisis.columns = [
+      { width: 8 }, { width: 22 }, { width: 60 }, { width: 34 },
+      { width: 14 }, { width: 14 }, { width: 18 }, { width: 12 },
+      { width: 12 }, { width: 12 }, { width: 18 }, { width: 20 },
+    ];
+    hojaAnalisis.views = [{ state: 'frozen', ySplit: 6 }];
+    hojaAnalisis.autoFilter = { from: 'A6', to: 'L6' };
+    ['E', 'F', 'H', 'I', 'J', 'K', 'L'].forEach(columna => hojaAnalisis.getColumn(columna).numFmt = '0');
+    hojaAnalisis.getColumn('G').numFmt = '0.00';
 
     const contenido = await workbook.xlsx.writeBuffer();
     return Buffer.from(contenido);

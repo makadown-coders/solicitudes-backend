@@ -2,7 +2,12 @@ export type EnviarNecesidadesPrimerNivelInput = {
   cluesimb: string;
   responsable?: string | null;
   periodo?: string | null;
-  articulos: Array<{ clave: string; cantidad: number }>;
+  articulos: Array<{
+    clave: string;
+    cantidad: number;
+    origenCaptura?: 'APS' | 'PROGRAMA_PREVENTIVO' | 'CLAVE';
+    referenciaCaptura?: string | null;
+  }>;
 };
 
 export type EnviarNecesidadesPrimerNivelResult = {

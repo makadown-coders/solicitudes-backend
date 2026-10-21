@@ -1,11 +1,23 @@
 // src/routes/solicitudes-config.routes.ts
 import { Router } from 'express';
 import { SolicitudesController } from '../controllers/solicitudes.controller';
+import { NecesidadesPrimerNivelApsController } from '../controllers/necesidades-primer-nivel-aps.controller';
+import { NecesidadesPrimerNivelProgramasPreventivosController } from '../controllers/necesidades-primer-nivel-programas-preventivos.controller';
 
 const r = Router();
 const c = new SolicitudesController();
+const aps = new NecesidadesPrimerNivelApsController();
+const preventivos = new NecesidadesPrimerNivelProgramasPreventivosController();
 
 r.post('/primer-nivel/enviar', c.postEnviarNecesidadesPrimerNivel.bind(c));
+r.post('/primer-nivel/vista-previa-excel', c.postVistaPreviaNecesidadesPrimerNivel.bind(c));
+r.get('/primer-nivel/aps/estructura', aps.getEstructura.bind(aps));
+r.get('/primer-nivel/aps/medicamentos', aps.getMedicamentos.bind(aps));
+r.get('/primer-nivel/aps/medicamentos/:codigo', aps.getMedicamento.bind(aps));
+r.post('/primer-nivel/aps/resolver', aps.postResolver.bind(aps));
+r.get('/primer-nivel/programas-preventivos', preventivos.getProgramas.bind(preventivos));
+r.post('/primer-nivel/programas-preventivos/resolver', preventivos.postResolver.bind(preventivos));
+r.get('/primer-nivel/programas-preventivos/:codigo', preventivos.getPrograma.bind(preventivos));
 
 // Solo admin en PATCH idealmente (middleware auth)
 // r.get('/get-bitacora', c.getBitacora.bind(c));

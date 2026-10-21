@@ -22,6 +22,36 @@ export class SolicitudesController {
         }
     }
 
+    async postVistaPreviaNecesidadesPrimerNivel(req: Request, res: Response) {
+        const hostname = req.hostname.toLowerCase();
+        const esLocal = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+        if (!esLocal || process.env.NODE_ENV === 'production') {
+            res.status(404).json({ ok: false, error: 'Ruta no disponible' });
+            return;
+        }
+
+        try {
+            const resultado = await this.necesidadesPrimerNivel.generarVistaPrevia(req.body ?? {});
+            res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+            res.setHeader('Content-Disposition', `attachment; filename="${resultado.nombreArchivo}"`);
+            res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition, X-Preview-Result');
+            res.setHeader('X-Preview-Result', Buffer.from(JSON.stringify({
+                solicitudId: resultado.solicitudId,
+                folio: resultado.folio,
+                cluesimb: resultado.cluesimb,
+                unidad: resultado.unidad,
+                periodo: resultado.periodo,
+                totalInsumos: resultado.totalInsumos,
+                totalPiezas: resultado.totalPiezas,
+                recibidoEn: resultado.recibidoEn,
+            })).toString('base64'));
+            res.status(200).send(resultado.buffer);
+        } catch (err: any) {
+            console.error('Error generando vista previa de necesidades de Primer Nivel:', err);
+            res.status(400).json({ ok: false, error: err?.message ?? 'No se pudo generar la vista previa' });
+        }
+    }
+
     async postCrearBitacora(req: Request, res: Response) {
         try {
             const body = req.body ?? {};

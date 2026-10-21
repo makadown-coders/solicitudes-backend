@@ -4,8 +4,12 @@ import {
   EnviarNecesidadesPrimerNivelInput,
   EnviarNecesidadesPrimerNivelResult,
 } from '../models/solicitudes/EnviarNecesidadesPrimerNivel';
+import {
+  ContextoCapturaPrimerNivel,
+  OrigenCapturaPrimerNivel,
+} from '../models/solicitudes/primer-nivel/ContextoCapturaPrimerNivel';
 import HistorialesService from './historiales.service';
-import SolicitudesService from './solicitudes.service';
+import SolicitudesPrimerNivelBitacoraService from './solicitudes-primer-nivel-bitacora.service';
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
@@ -18,6 +22,11 @@ type AnalisisOperativo = {
   existenciaAzt: number;
   existenciaAze: number;
   fechaSnapshot: string | null;
+};
+
+export type VistaPreviaNecesidadesPrimerNivel = EnviarNecesidadesPrimerNivelResult & {
+  nombreArchivo: string;
+  buffer: Buffer;
 };
 
 function obtenerPeriodoActual(fecha = new Date()): string {
@@ -34,11 +43,75 @@ function obtenerPeriodoActual(fecha = new Date()): string {
 
 export default class NecesidadesPrimerNivelService {
   constructor(
-    private readonly solicitudes = new SolicitudesService(),
+    private readonly bitacoraPrimerNivel = new SolicitudesPrimerNivelBitacoraService(),
     private readonly historiales = new HistorialesService()
   ) {}
 
   async enviar(input: EnviarNecesidadesPrimerNivelInput): Promise<EnviarNecesidadesPrimerNivelResult> {
+    const contexto = await this.prepararSolicitud(input);
+    const { cluesimb, responsable, periodo, articulos, contextosCaptura, unidad, catalogoPorClave, analisis } = contexto;
+
+    const registro = await this.bitacoraPrimerNivel.crear({
+      cluesimb,
+      periodo,
+      articulos,
+      contextosCaptura,
+    });
+
+    const recibidoEn = new Date().toISOString();
+    const folio = registro.solicitudId;
+    const nombreArchivo = this.crearNombreArchivo(cluesimb, recibidoEn, folio);
+    const buffer = await this.generarExcel({
+      folio,
+      recibidoEn,
+      unidad: unidad.nombre_de_unidad,
+      cluesimb,
+      responsable,
+      periodo,
+      articulos: articulos.map(item => ({ ...item, ...catalogoPorClave.get(item.clave)! })),
+      analisis,
+      contextosCaptura,
+    });
+
+    await this.historiales.enviarWishlistASharePoint({
+      nombreArchivo,
+      contenidoBase64: buffer.toString('base64'),
+      nombre: responsable || 'No especificado',
+      unidad: unidad.nombre_de_unidad,
+      clues: cluesimb,
+      periodo,
+      tipoMime: XLSX_MIME,
+    });
+
+    return this.crearResultado({ folio, cluesimb, unidad: unidad.nombre_de_unidad, periodo, articulos, recibidoEn });
+  }
+
+  async generarVistaPrevia(input: EnviarNecesidadesPrimerNivelInput): Promise<VistaPreviaNecesidadesPrimerNivel> {
+    const contexto = await this.prepararSolicitud(input);
+    const { cluesimb, responsable, periodo, articulos, contextosCaptura, unidad, catalogoPorClave, analisis } = contexto;
+    const recibidoEn = new Date().toISOString();
+    const folio = `PRUEBA-LOCAL-${Date.now()}`;
+    const nombreArchivo = `Necesidades-${cluesimb}-${recibidoEn.slice(0, 10)}-LOCAL-${Date.now()}.xlsx`;
+    const buffer = await this.generarExcel({
+      folio,
+      recibidoEn,
+      unidad: unidad.nombre_de_unidad,
+      cluesimb,
+      responsable,
+      periodo,
+      articulos: articulos.map(item => ({ ...item, ...catalogoPorClave.get(item.clave)! })),
+      analisis,
+      contextosCaptura,
+    });
+
+    return {
+      ...this.crearResultado({ folio, cluesimb, unidad: unidad.nombre_de_unidad, periodo, articulos, recibidoEn }),
+      nombreArchivo,
+      buffer,
+    };
+  }
+
+  private async prepararSolicitud(input: EnviarNecesidadesPrimerNivelInput) {
     const cluesimb = String(input.cluesimb ?? '').trim().toUpperCase();
     const responsable = String(input.responsable ?? '').trim().slice(0, 255);
     const periodoCapturado = String(input.periodo ?? '').trim().slice(0, 120);
@@ -55,49 +128,114 @@ export default class NecesidadesPrimerNivelService {
     const catalogoPorClave = new Map(catalogo.map(item => [item.clave.trim().toUpperCase(), item]));
     const faltantes = articulos.filter(item => !catalogoPorClave.has(item.clave)).map(item => item.clave);
     if (faltantes.length) throw new Error(`Claves inexistentes en el catálogo: ${faltantes.slice(0, 5).join(', ')}`);
-    const analisis = await this.obtenerAnalisisOperativo(cluesimb, articulos.map(item => item.clave));
+    const [analisis, contextosCaptura] = await Promise.all([
+      this.obtenerAnalisisOperativo(cluesimb, articulos.map(item => item.clave)),
+      this.resolverContextosCaptura(input.articulos),
+    ]);
 
-    const registro = await this.solicitudes.crearBitacora({
-      cluesimb,
-      tipoPedido: 'Ordinario',
-      tipoInsumo: 'Medicamento - Material de Curación',
-      periodo,
-      articulos,
+    return { cluesimb, responsable, periodo, articulos, contextosCaptura, unidad, catalogoPorClave, analisis };
+  }
+
+  private async resolverContextosCaptura(
+    articulos: EnviarNecesidadesPrimerNivelInput['articulos']
+  ): Promise<ContextoCapturaPrimerNivel[]> {
+    const contextos = articulos.map((item, index) => {
+      const clave = String(item?.clave ?? '').trim().toUpperCase();
+      const cantidad = Number(item?.cantidad);
+      const origen = String(item?.origenCaptura ?? 'CLAVE').trim().toUpperCase() as OrigenCapturaPrimerNivel;
+      const referencia = String(item?.referenciaCaptura ?? '').trim().toUpperCase();
+      if (!['APS', 'PROGRAMA_PREVENTIVO', 'CLAVE'].includes(origen)) {
+        throw new Error(`Origen de captura inválido en articulos[${index}]`);
+      }
+      if (origen === 'CLAVE' && referencia) {
+        throw new Error(`La captura por clave no admite referencia en articulos[${index}]`);
+      }
+      if (origen !== 'CLAVE' && !referencia) {
+        throw new Error(`referenciaCaptura requerida para el origen ${origen}`);
+      }
+      return {
+        clave,
+        cantidad,
+        origenCaptura: origen,
+        referenciaCaptura: referencia || null,
+      };
     });
 
-    const recibidoEn = new Date().toISOString();
-    const folio = registro.solicitudId;
-    const nombreArchivo = `Necesidades-${cluesimb}-${recibidoEn.slice(0, 10)}-${folio.slice(0, 8)}.xlsx`;
-    const buffer = await this.generarExcel({
-      folio,
-      recibidoEn,
-      unidad: unidad.nombre_de_unidad,
-      cluesimb,
-      responsable,
-      periodo,
-      articulos: articulos.map(item => ({ ...item, ...catalogoPorClave.get(item.clave)! })),
-      analisis,
-    });
+    const etiquetas = new Map<string, string>();
+    const aps = contextos.filter(item => item.origenCaptura === 'APS');
+    if (aps.length) {
+      const { rows } = await pool.query<{ referencia: string; clave: string; etiqueta: string }>(`
+        SELECT UPPER(TRIM(m.codigo)) AS referencia, UPPER(TRIM(mc.clave)) AS clave,
+               m.etiqueta_usuario AS etiqueta
+        FROM aps.medicamento m
+        INNER JOIN aps.grupo g ON g.id = m.grupo_id AND g.activo = true
+        INNER JOIN aps.eje_atencion ea ON ea.id = g.eje_id AND ea.activo = true
+        INNER JOIN aps.medicamento_clave mc
+          ON mc.medicamento_id = m.id
+         AND mc.activo = true
+         AND mc.tipo_relacion = 'PRINCIPAL'
+        WHERE m.activo = true
+          AND UPPER(TRIM(m.codigo)) = ANY($1::text[])
+          AND UPPER(TRIM(mc.clave)) = ANY($2::text[])
+      `, [aps.map(item => item.referenciaCaptura), aps.map(item => item.clave)]);
+      const permitidos = new Set(rows.map(row => `${row.referencia}|${row.clave}`));
+      rows.forEach(row => etiquetas.set(`APS|${row.referencia}|${row.clave}`, row.etiqueta));
+      const invalido = aps.find(item => !permitidos.has(`${item.referenciaCaptura}|${item.clave}`));
+      if (invalido) {
+        throw new Error(`La clave ${invalido.clave} no es PRINCIPAL del medicamento APS ${invalido.referenciaCaptura}`);
+      }
+    }
 
-    await this.historiales.enviarWishlistASharePoint({
-      nombreArchivo,
-      contenidoBase64: buffer.toString('base64'),
-      nombre: responsable || 'No especificado',
-      unidad: unidad.nombre_de_unidad,
-      clues: cluesimb,
-      periodo,
-      tipoMime: XLSX_MIME,
-    });
+    const programas = contextos.filter(item => item.origenCaptura === 'PROGRAMA_PREVENTIVO');
+    if (programas.length) {
+      const { rows } = await pool.query<{ referencia: string; clave: string; etiqueta: string }>(`
+        SELECT UPPER(TRIM(v.programa_codigo)) AS referencia, UPPER(TRIM(v.clave)) AS clave,
+               p.nombre AS etiqueta
+        FROM preventivos.v_programa_insumo v
+        INNER JOIN preventivos.programa p
+          ON UPPER(TRIM(p.codigo)) = UPPER(TRIM(v.programa_codigo))
+         AND p.activo = true
+        WHERE v.activo = true
+          AND UPPER(TRIM(v.programa_codigo)) = ANY($1::text[])
+          AND UPPER(TRIM(v.clave)) = ANY($2::text[])
+      `, [programas.map(item => item.referenciaCaptura), programas.map(item => item.clave)]);
+      const permitidos = new Set(rows.map(row => `${row.referencia}|${row.clave}`));
+      rows.forEach(row => etiquetas.set(`PROGRAMA_PREVENTIVO|${row.referencia}|${row.clave}`, row.etiqueta));
+      const invalido = programas.find(item => !permitidos.has(`${item.referenciaCaptura}|${item.clave}`));
+      if (invalido) {
+        throw new Error(`La clave ${invalido.clave} no pertenece al programa ${invalido.referenciaCaptura}`);
+      }
+    }
 
+    return contextos.map(item => ({
+      ...item,
+      etiquetaCaptura: item.origenCaptura === 'CLAVE'
+        ? 'Captura por clave CNIS'
+        : etiquetas.get(`${item.origenCaptura}|${item.referenciaCaptura}|${item.clave}`) ?? null,
+    }));
+  }
+
+  private crearNombreArchivo(cluesimb: string, recibidoEn: string, folio: string): string {
+    return `Necesidades-${cluesimb}-${recibidoEn.slice(0, 10)}-${folio.slice(0, 8)}.xlsx`;
+  }
+
+  private crearResultado(contexto: {
+    folio: string;
+    cluesimb: string;
+    unidad: string;
+    periodo: string;
+    articulos: Array<{ clave: string; cantidad: number }>;
+    recibidoEn: string;
+  }): EnviarNecesidadesPrimerNivelResult {
     return {
-      solicitudId: registro.solicitudId,
-      folio,
-      cluesimb,
-      unidad: unidad.nombre_de_unidad,
-      periodo: periodo || null,
-      totalInsumos: articulos.length,
-      totalPiezas: articulos.reduce((total, item) => total + item.cantidad, 0),
-      recibidoEn,
+      solicitudId: contexto.folio,
+      folio: contexto.folio,
+      cluesimb: contexto.cluesimb,
+      unidad: contexto.unidad,
+      periodo: contexto.periodo || null,
+      totalInsumos: contexto.articulos.length,
+      totalPiezas: contexto.articulos.reduce((total, item) => total + item.cantidad, 0),
+      recibidoEn: contexto.recibidoEn,
     };
   }
 
@@ -215,6 +353,7 @@ export default class NecesidadesPrimerNivelService {
     periodo: string;
     articulos: Array<ArticuloCatalogo & { cantidad: number }>;
     analisis: AnalisisOperativo[];
+    contextosCaptura: ContextoCapturaPrimerNivel[];
   }): Promise<Buffer> {
     const workbook = new ExcelJS.Workbook();
     workbook.creator = 'IMSS Bienestar BC';
@@ -229,21 +368,30 @@ export default class NecesidadesPrimerNivelService {
     hoja.addRow(['Responsable', contexto.responsable || 'No especificado']);
     hoja.addRow(['Recibido', contexto.recibidoEn]);
     hoja.addRow([]);
-    hoja.addRow(['Clave', 'Descripción', 'Presentación', 'Cantidad']);
+    hoja.addRow(['Clave', 'Descripción', 'Presentación', 'Cantidad', 'Origen de captura', 'Referencia', 'Contexto']);
+
+    const contextoPorClave = this.agruparContextosPorClave(contexto.contextosCaptura);
 
     for (const articulo of contexto.articulos) {
+      const captura = contextoPorClave.get(articulo.clave);
       hoja.addRow([
         articulo.clave,
         articulo.descripcion ?? '',
         articulo.presentacion ?? '',
         articulo.cantidad,
+        captura?.origen ?? 'Por clave CNIS',
+        captura?.referencia ?? '',
+        captura?.etiqueta ?? 'Captura por clave CNIS',
       ]);
     }
 
     hoja.getRow(1).font = { bold: true, size: 14, color: { argb: 'FF006B5F' } };
     hoja.getRow(9).font = { bold: true, color: { argb: 'FFFFFFFF' } };
     hoja.getRow(9).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF006B5F' } };
-    hoja.columns = [{ width: 22 }, { width: 70 }, { width: 38 }, { width: 14 }];
+    hoja.columns = [
+      { width: 22 }, { width: 64 }, { width: 34 }, { width: 14 },
+      { width: 24 }, { width: 24 }, { width: 38 },
+    ];
     hoja.views = [{ state: 'frozen', ySplit: 9 }];
     hoja.autoFilter = { from: 'A9', to: 'D9' };
     hoja.getColumn(4).numFmt = '0';
@@ -262,6 +410,7 @@ export default class NecesidadesPrimerNivelService {
     hojaAnalisis.addRow([
       'No.', 'Clave', 'Descripción', 'Presentación', 'Necesidad', 'CPM unidad',
       'Meses solicitados', 'AZM', 'AZT', 'AZE', 'Total almacenes', 'Faltante referencial',
+      'Origen de captura', 'Referencia', 'Contexto',
     ]);
 
     contexto.articulos.forEach((articulo, index) => {
@@ -271,6 +420,7 @@ export default class NecesidadesPrimerNivelService {
       const azt = dato?.existenciaAzt ?? 0;
       const aze = dato?.existenciaAze ?? 0;
       const total = azm + azt + aze;
+      const captura = contextoPorClave.get(articulo.clave);
       const renglon = hojaAnalisis.addRow([
         index + 1,
         articulo.clave,
@@ -284,13 +434,16 @@ export default class NecesidadesPrimerNivelService {
         aze,
         total,
         Math.max(articulo.cantidad - total, 0),
+        captura?.origen ?? 'Por clave CNIS',
+        captura?.referencia ?? '',
+        captura?.etiqueta ?? 'Captura por clave CNIS',
       ]);
       renglon.alignment = { vertical: 'top', wrapText: true };
       if (cpm <= 0) renglon.getCell(6).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFF99' } };
       if (total < articulo.cantidad) renglon.getCell(12).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFC7CE' } };
     });
 
-    hojaAnalisis.mergeCells('A1:L1');
+    hojaAnalisis.mergeCells('A1:O1');
     hojaAnalisis.getRow(1).font = { bold: true, size: 14, color: { argb: 'FF006B5F' } };
     hojaAnalisis.getRow(6).font = { bold: true, color: { argb: 'FFFFFFFF' } };
     hojaAnalisis.getRow(6).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF006B5F' } };
@@ -298,13 +451,35 @@ export default class NecesidadesPrimerNivelService {
       { width: 8 }, { width: 22 }, { width: 60 }, { width: 34 },
       { width: 14 }, { width: 14 }, { width: 18 }, { width: 12 },
       { width: 12 }, { width: 12 }, { width: 18 }, { width: 20 },
+      { width: 24 }, { width: 24 }, { width: 38 },
     ];
     hojaAnalisis.views = [{ state: 'frozen', ySplit: 6 }];
-    hojaAnalisis.autoFilter = { from: 'A6', to: 'L6' };
+    hojaAnalisis.autoFilter = { from: 'A6', to: 'O6' };
     ['E', 'F', 'H', 'I', 'J', 'K', 'L'].forEach(columna => hojaAnalisis.getColumn(columna).numFmt = '0');
     hojaAnalisis.getColumn('G').numFmt = '0.00';
 
     const contenido = await workbook.xlsx.writeBuffer();
     return Buffer.from(contenido);
+  }
+
+  private agruparContextosPorClave(contextos: ContextoCapturaPrimerNivel[]): Map<string, {
+    origen: string;
+    referencia: string;
+    etiqueta: string;
+  }> {
+    const etiquetasOrigen: Record<OrigenCapturaPrimerNivel, string> = {
+      APS: 'Por APS',
+      PROGRAMA_PREVENTIVO: 'Por programa preventivo',
+      CLAVE: 'Por clave CNIS',
+    };
+    const agrupados = new Map<string, ContextoCapturaPrimerNivel[]>();
+    for (const item of contextos) {
+      agrupados.set(item.clave, [...(agrupados.get(item.clave) ?? []), item]);
+    }
+    return new Map([...agrupados.entries()].map(([clave, items]) => [clave, {
+      origen: [...new Set(items.map(item => etiquetasOrigen[item.origenCaptura]))].join(' / '),
+      referencia: [...new Set(items.map(item => item.referenciaCaptura).filter(Boolean))].join(' / '),
+      etiqueta: [...new Set(items.map(item => item.etiquetaCaptura).filter(Boolean))].join(' / '),
+    }]));
   }
 }

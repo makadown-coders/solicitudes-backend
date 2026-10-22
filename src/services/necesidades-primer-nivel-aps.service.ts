@@ -170,11 +170,8 @@ export default class NecesidadesPrimerNivelApsService {
         ea.nombre AS eje_nombre,
         mc.clave,
         mc.clave_normalizada,
-        CASE WHEN mc.origen_catalogo = 'CNIS' THEN i.nombre ELSE a.descripcion END AS nombre_catalogo,
-        CASE
-          WHEN mc.origen_catalogo = 'CNIS' THEN i.descripcion
-          ELSE concat_ws(' | ', a.descripcion, a.presentacion)
-        END AS descripcion_catalogo,
+        i.nombre AS nombre_catalogo,
+        i.descripcion AS descripcion_catalogo,
         mc.origen_catalogo
       FROM aps.medicamento m
       INNER JOIN aps.grupo g ON g.id = m.grupo_id AND g.activo = true
@@ -183,8 +180,7 @@ export default class NecesidadesPrimerNivelApsService {
         ON mc.medicamento_id = m.id
        AND mc.activo = true
        AND mc.tipo_relacion = 'PRINCIPAL'
-      LEFT JOIN cnis.insumo i ON i.id = mc.insumo_id
-      LEFT JOIN public.articulos a ON a.id = mc.articulo_id
+      LEFT JOIN cnis.insumo i ON i.id = mc.insumo_id AND i.activo = true
       WHERE m.activo = true
         AND m.codigo = $1
       ORDER BY mc.prioridad, mc.clave

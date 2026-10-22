@@ -14,7 +14,12 @@ import SolicitudesPrimerNivelBitacoraService from './solicitudes-primer-nivel-bi
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 type ArticuloCatalogo = { clave: string; descripcion: string | null; presentacion: string | null };
-type UnidadPrimerNivel = { cluesimb: string; nombre_de_unidad: string; es_segundo_nivel: boolean };
+type UnidadPrimerNivel = {
+  cluesimb: string;
+  nombre_de_unidad: string;
+  jurisdiccion: string | null;
+  es_segundo_nivel: boolean;
+};
 type AnalisisOperativo = {
   clave: string;
   cpm: number;
@@ -41,6 +46,24 @@ function obtenerPeriodoActual(fecha = new Date()): string {
   return `${mesCapitalizado} ${anio}`.trim();
 }
 
+function formatearFechaPacifico(valor: string | Date | null): string | null {
+  if (!valor) return null;
+  const fecha = valor instanceof Date ? valor : new Date(valor);
+  if (Number.isNaN(fecha.getTime())) return null;
+  const partes = new Intl.DateTimeFormat('es-MX', {
+    timeZone: 'America/Tijuana',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(fecha);
+  const parte = (tipo: Intl.DateTimeFormatPartTypes) => partes.find(item => item.type === tipo)?.value ?? '';
+  return `${parte('day')}/${parte('month')}/${parte('year')} ${parte('hour')}:${parte('minute')}:${parte('second')} (hora del Pacífico)`;
+}
+
 export default class NecesidadesPrimerNivelService {
   constructor(
     private readonly bitacoraPrimerNivel = new SolicitudesPrimerNivelBitacoraService(),
@@ -65,6 +88,7 @@ export default class NecesidadesPrimerNivelService {
       folio,
       recibidoEn,
       unidad: unidad.nombre_de_unidad,
+      jurisdiccion: unidad.jurisdiccion,
       cluesimb,
       responsable,
       periodo,
@@ -96,6 +120,7 @@ export default class NecesidadesPrimerNivelService {
       folio,
       recibidoEn,
       unidad: unidad.nombre_de_unidad,
+      jurisdiccion: unidad.jurisdiccion,
       cluesimb,
       responsable,
       periodo,
@@ -260,7 +285,17 @@ export default class NecesidadesPrimerNivelService {
 
   private async obtenerUnidadPrimerNivel(cluesimb: string): Promise<UnidadPrimerNivel | null> {
     const { rows } = await pool.query<UnidadPrimerNivel>(`
-      SELECT cluesimb, nombre_de_unidad, es_segundo_nivel
+      SELECT
+        cluesimb,
+        nombre_de_unidad,
+        CASE
+          WHEN UPPER(TRIM(cluesimb)) = 'BCIMB000133' THEN 'MEXICALI'
+          WHEN UPPER(TRIM(nombre_municipio)) IN ('TIJUANA', 'TECATE', 'PLAYAS DE ROSARITO') THEN 'TIJUANA'
+          WHEN UPPER(TRIM(nombre_municipio)) IN ('MEXICALI', 'SAN FELIPE') THEN 'MEXICALI'
+          WHEN UPPER(TRIM(nombre_municipio)) IN ('ENSENADA', 'SAN QUINTIN', 'SAN QUINTÍN') THEN 'ENSENADA'
+          ELSE UPPER(TRIM(nombre_municipio))
+        END AS jurisdiccion,
+        es_segundo_nivel
       FROM public.v_unidad_medica_detalle
       WHERE UPPER(TRIM(cluesimb)) = $1
         AND es_segundo_nivel = false
@@ -271,10 +306,18 @@ export default class NecesidadesPrimerNivelService {
 
   private async obtenerArticulos(claves: string[]): Promise<ArticuloCatalogo[]> {
     const { rows } = await pool.query<ArticuloCatalogo>(`
-      SELECT clave, descripcion, presentacion
-      FROM public.articulos
-      WHERE UPPER(TRIM(clave)) = ANY($1::text[])
-      ORDER BY clave
+      SELECT
+        i.clave,
+        CONCAT_WS(
+          ' | ',
+          NULLIF(TRIM(i.nombre), ''),
+          NULLIF(REGEXP_REPLACE(TRIM(i.descripcion), '[[:space:]]+', ' ', 'g'), '')
+        ) AS descripcion,
+        NULL::text AS presentacion
+      FROM cnis.insumo i
+      WHERE i.activo = true
+        AND UPPER(TRIM(i.clave)) = ANY($1::text[])
+      ORDER BY i.clave
     `, [claves]);
     return rows;
   }
@@ -348,6 +391,7 @@ export default class NecesidadesPrimerNivelService {
     folio: string;
     recibidoEn: string;
     unidad: string;
+    jurisdiccion: string | null;
     cluesimb: string;
     responsable: string;
     periodo: string;
@@ -364,9 +408,10 @@ export default class NecesidadesPrimerNivelService {
     hoja.addRow(['Folio', contexto.folio]);
     hoja.addRow(['Unidad', contexto.unidad]);
     hoja.addRow(['CLUES', contexto.cluesimb]);
+    hoja.addRow(['Jurisdicción', contexto.jurisdiccion || 'No especificada']);
     hoja.addRow(['Periodo', contexto.periodo || 'No especificado']);
     hoja.addRow(['Responsable', contexto.responsable || 'No especificado']);
-    hoja.addRow(['Recibido', contexto.recibidoEn]);
+    hoja.addRow(['Recibido', formatearFechaPacifico(contexto.recibidoEn)]);
     hoja.addRow([]);
     hoja.addRow(['Clave', 'Descripción', 'Presentación', 'Cantidad', 'Origen de captura', 'Referencia', 'Contexto']);
 
@@ -386,25 +431,26 @@ export default class NecesidadesPrimerNivelService {
     }
 
     hoja.getRow(1).font = { bold: true, size: 14, color: { argb: 'FF006B5F' } };
-    hoja.getRow(9).font = { bold: true, color: { argb: 'FFFFFFFF' } };
-    hoja.getRow(9).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF006B5F' } };
+    hoja.getRow(10).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    hoja.getRow(10).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF006B5F' } };
     hoja.columns = [
       { width: 22 }, { width: 64 }, { width: 34 }, { width: 14 },
       { width: 24 }, { width: 24 }, { width: 38 },
     ];
-    hoja.views = [{ state: 'frozen', ySplit: 9 }];
-    hoja.autoFilter = { from: 'A9', to: 'D9' };
+    hoja.views = [{ state: 'frozen', ySplit: 10 }];
+    hoja.autoFilter = { from: 'A10', to: 'G10' };
     hoja.getColumn(4).numFmt = '0';
     contexto.articulos.forEach((_, index) => {
-      hoja.getRow(index + 10).alignment = { vertical: 'top', wrapText: true };
+      hoja.getRow(index + 11).alignment = { vertical: 'top', wrapText: true };
     });
 
     const analisisPorClave = new Map(contexto.analisis.map(item => [item.clave, item]));
     const hojaAnalisis = workbook.addWorksheet('Análisis operativo');
     hojaAnalisis.addRow(['ANÁLISIS OPERATIVO · CPM Y EXISTENCIAS EN ALMACENES']);
-    hojaAnalisis.addRow(['Generado', contexto.recibidoEn]);
+    hojaAnalisis.addRow(['Generado', formatearFechaPacifico(contexto.recibidoEn)]);
+    hojaAnalisis.addRow(['Jurisdicción', contexto.jurisdiccion || 'No especificada']);
     const fechaSnapshot = contexto.analisis.find(item => item.fechaSnapshot)?.fechaSnapshot;
-    hojaAnalisis.addRow(['Snapshot de existencias', fechaSnapshot ?? 'No disponible']);
+    hojaAnalisis.addRow(['Snapshot de existencias', formatearFechaPacifico(fechaSnapshot ?? null) ?? 'No disponible']);
     hojaAnalisis.addRow(['Nota', 'Información referencial; las existencias pueden cambiar y deben validarse antes del surtimiento.']);
     hojaAnalisis.addRow([]);
     hojaAnalisis.addRow([
@@ -445,16 +491,16 @@ export default class NecesidadesPrimerNivelService {
 
     hojaAnalisis.mergeCells('A1:O1');
     hojaAnalisis.getRow(1).font = { bold: true, size: 14, color: { argb: 'FF006B5F' } };
-    hojaAnalisis.getRow(6).font = { bold: true, color: { argb: 'FFFFFFFF' } };
-    hojaAnalisis.getRow(6).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF006B5F' } };
+    hojaAnalisis.getRow(7).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    hojaAnalisis.getRow(7).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF006B5F' } };
     hojaAnalisis.columns = [
       { width: 8 }, { width: 22 }, { width: 60 }, { width: 34 },
       { width: 14 }, { width: 14 }, { width: 18 }, { width: 12 },
       { width: 12 }, { width: 12 }, { width: 18 }, { width: 20 },
       { width: 24 }, { width: 24 }, { width: 38 },
     ];
-    hojaAnalisis.views = [{ state: 'frozen', ySplit: 6 }];
-    hojaAnalisis.autoFilter = { from: 'A6', to: 'O6' };
+    hojaAnalisis.views = [{ state: 'frozen', ySplit: 7 }];
+    hojaAnalisis.autoFilter = { from: 'A7', to: 'O7' };
     ['E', 'F', 'H', 'I', 'J', 'K', 'L'].forEach(columna => hojaAnalisis.getColumn(columna).numFmt = '0');
     hojaAnalisis.getColumn('G').numFmt = '0.00';
 

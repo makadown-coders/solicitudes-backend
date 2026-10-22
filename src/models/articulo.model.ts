@@ -5,6 +5,12 @@ export interface Articulo {
   presentacion: string;
 }
 
+export interface ArticuloNecesidadesPrimerNivel extends Articulo {
+  nombre: string;
+  descripcionCnis: string;
+  categoria: string | null;
+}
+
 export interface ArticuloCrud {
   id: number;
   clave: string | null;

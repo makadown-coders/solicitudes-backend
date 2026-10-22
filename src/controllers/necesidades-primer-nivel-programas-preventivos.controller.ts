@@ -7,9 +7,10 @@ import NecesidadesPrimerNivelProgramasPreventivosService, {
 export class NecesidadesPrimerNivelProgramasPreventivosController {
   constructor(private readonly service = new NecesidadesPrimerNivelProgramasPreventivosService()) {}
 
-  async getProgramas(_req: Request, res: Response): Promise<void> {
+  async getProgramas(req: Request, res: Response): Promise<void> {
     try {
-      res.status(200).json(await this.service.listar());
+      console.log('getProgramas called with cluesimb:', req.query.cluesimb);
+      res.status(200).json(await this.service.listar(String(req.query.cluesimb ?? '')));
     } catch (error) {
       console.error('Error consultando programas preventivos:', error);
       res.status(500).json({ ok: false, error: 'No se pudieron consultar los programas preventivos' });
@@ -18,9 +19,12 @@ export class NecesidadesPrimerNivelProgramasPreventivosController {
 
   async getPrograma(req: Request, res: Response): Promise<void> {
     try {
-      const resultado = await this.service.obtenerDetalle(String(req.params.codigo ?? ''));
+      const resultado = await this.service.obtenerDetalle(
+        String(req.params.codigo ?? ''),
+        String(req.query.cluesimb ?? '')
+      );
       if (!resultado) {
-        res.status(404).json({ ok: false, error: 'Programa preventivo no encontrado' });
+        res.status(404).json({ ok: false, error: 'Programa no disponible' });
         return;
       }
       res.status(200).json(resultado);

@@ -2,13 +2,14 @@
 import { pool } from '../db/pool';
 import {
   Articulo,
+  ArticuloNecesidadesPrimerNivel,
   ArticuloCrud,
   ArticuloCrudCreateInput,
   ArticuloCrudUpdateInput
 } from '../models/articulo.model';
 
 class ArticulosService {
-  async buscarNecesidadesPrimerNivel(query: string): Promise<{ resultados: Articulo[]; total: number }> {
+  async buscarNecesidadesPrimerNivel(query: string): Promise<{ resultados: ArticuloNecesidadesPrimerNivel[]; total: number }> {
     const terminos = [...new Set(
       String(query ?? '')
         .trim()
@@ -20,26 +21,34 @@ class ArticulosService {
     const condiciones = terminos.map((_, index) => {
       const parametro = `$${index + 1}`;
       return `(
-        COALESCE(clave, '') ILIKE '%' || ${parametro} || '%'
-        OR COALESCE(descripcion, '') ILIKE '%' || ${parametro} || '%'
-        OR COALESCE(presentacion, '') ILIKE '%' || ${parametro} || '%'
+        COALESCE(i.clave, '') ILIKE '%' || ${parametro} || '%'
+        OR COALESCE(i.nombre, '') ILIKE '%' || ${parametro} || '%'
+        OR COALESCE(i.descripcion, '') ILIKE '%' || ${parametro} || '%'
       )`;
     });
     const where = `
-      WHERE COALESCE(TRIM(clave), '') NOT LIKE '002%'
+      WHERE i.activo = true
+        AND i.cpm_elegible = true
+        AND COALESCE(TRIM(i.clave), '') NOT LIKE '002%'
       ${condiciones.length ? `AND ${condiciones.join('\nAND ')}` : ''}
     `;
 
     const sqlQuery = `
-      SELECT clave, descripcion, presentacion
-      FROM public.articulos
+      SELECT
+        i.clave,
+        COALESCE(NULLIF(TRIM(i.nombre), ''), NULLIF(TRIM(i.descripcion), ''), '') AS descripcion,
+        COALESCE(TRIM(i.nombre), '') AS nombre,
+        COALESCE(TRIM(i.descripcion), '') AS descripcion_cnis,
+        i.categoria,
+        NULL::text AS presentacion
+      FROM cnis.insumo i
       ${where}
-      ORDER BY clave ASC NULLS LAST
+      ORDER BY i.clave ASC NULLS LAST
       LIMIT 100
     `;
     const sqlCount = `
       SELECT COUNT(*)::int AS count
-      FROM public.articulos
+      FROM cnis.insumo i
       ${where}
     `;
 
@@ -53,6 +62,9 @@ class ArticulosService {
         clave: String(row.clave ?? ''),
         descripcion: String(row.descripcion ?? ''),
         presentacion: String(row.presentacion ?? ''),
+        nombre: String(row.nombre ?? ''),
+        descripcionCnis: String(row.descripcion_cnis ?? ''),
+        categoria: row.categoria == null ? null : String(row.categoria),
       })),
       total: Number(totalResult.rows[0]?.count ?? 0),
     };

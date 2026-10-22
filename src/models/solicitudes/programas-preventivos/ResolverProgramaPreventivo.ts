@@ -1,4 +1,5 @@
 export type ResolverProgramaPreventivoInput = {
+  cluesimb?: string | null;
   programa: string;
   insumos: Array<{
     clave: string;

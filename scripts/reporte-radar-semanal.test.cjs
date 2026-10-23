@@ -11,6 +11,9 @@ const row = require('./fixtures/radar-reporte.cjs');
 function fixture(rows = [row()]) {
   const out = { mode: 'radar-global-v2', window: { months: 3 }, page: 1, pageSize: 50000,
     total: rows.length, truncated: false, data: rows,
+    unidades_sin_solicitud: [{ cluesimb: 'BC002', nombre_de_unidad: 'Unidad sin solicitud',
+      jurisdiccion: 'MEXICALI', es_segundo_nivel: false, tipo_unidad: 'CENTRO DE SALUD',
+      ultima_solicitud_registrada: null }],
     summary: { criticas_cpm: rows.filter(r => r.segmento === 'CRITICA_CPM').length,
       atencion_cpm: 0, demanda_sin_cpm: 0, cpm_sin_solicitud: 0, cubiertas: 0 } };
   const evidencia = { salidas: [{ cluesimb: 'BC001', clave: '010.000.0001.00', ultima_solicitud: '2026-09-01',
@@ -39,18 +42,23 @@ test('resume por unidad, conserva origen y consulta evidencia relevante', async 
   assert.equal(calls[1][1].length, 1);
 });
 
-test('libro real contiene seis hojas, evidencia y formatos sin perder claves', async () => {
+test('libro real contiene siete hojas, evidencia y formatos sin perder claves', async () => {
   const { service } = fixture();
   const report = await service.obtenerReporte(3);
   const buffer = await leerExcel(service, report.versionDatos);
   assert.ok(Buffer.isBuffer(buffer));
   const book = XLSX.read(buffer, { type: 'buffer', cellNF: true });
-  assert.deepEqual(book.SheetNames, ['Guía y alcance', 'Resumen', 'Resumen por unidad', 'Radar', 'Detalle salidas', 'Órdenes contexto']);
+  assert.deepEqual(book.SheetNames, ['Guía y alcance', 'Resumen', 'Resumen por unidad', 'Unidades sin solicitud', 'Radar', 'Detalle salidas', 'Órdenes contexto']);
   const radar = XLSX.utils.sheet_to_json(book.Sheets.Radar);
+  const encabezadosRadar = XLSX.utils.sheet_to_json(book.Sheets.Radar, { header: 1 })[0];
+  assert.deepEqual(encabezadosRadar.slice(encabezadosRadar.indexOf('En universo CPM'),
+    encabezadosRadar.indexOf('En universo CPM') + 3),
+  ['En universo CPM', 'Solicitado en periodo', 'Solicitado en la última solicitud']);
   assert.equal(radar[0].Clave, '010.000.0001.00');
   assert.equal(radar[0]['Requiere seguimiento'], 'Sí');
   assert.equal(radar[0]['Cobertura estimada en días'], 0);
   assert.equal(radar[0]['Frecuencia de solicitud'], .5);
+  assert.equal(XLSX.utils.sheet_to_json(book.Sheets['Unidades sin solicitud'])[0].CLUES, 'BC002');
   assert.equal(XLSX.utils.sheet_to_json(book.Sheets['Detalle salidas'])[0].Cantidad, 2);
   assert.equal(XLSX.utils.sheet_to_json(book.Sheets['Órdenes contexto'])[0].Estado, 'Vencida');
   assert.ok(Object.values(book.Sheets.Radar).some(cell => cell && cell.z === '0.00%'));
@@ -85,7 +93,7 @@ test('sin datos devuelve resumen vacío, advertencia y un Excel válido', async 
   assert.deepEqual(report.tablaCorreo, []);
   assert.ok(report.advertencias.some(text => text.includes('No se encontraron registros')));
   const buffer = await leerExcel(service, report.versionDatos);
-  assert.equal(XLSX.read(buffer, { type: 'buffer' }).SheetNames.length, 6);
+  assert.equal(XLSX.read(buffer, { type: 'buffer' }).SheetNames.length, 7);
   assert.equal(calls.filter(call => call[0] === 'detalle').length, 0);
 });
 
@@ -109,7 +117,7 @@ test('contrato HTTP: JSON, XLSX binario, validación y conflicto', async () => {
     assert.equal(excel.status, 200);
     assert.match(excel.headers.get('content-type'), /spreadsheetml/);
     assert.match(excel.headers.get('content-disposition'), /radar_demanda_cobertura_/);
-    assert.equal(XLSX.read(Buffer.from(await excel.arrayBuffer()), { type: 'buffer' }).SheetNames.length, 6);
+    assert.equal(XLSX.read(Buffer.from(await excel.arrayBuffer()), { type: 'buffer' }).SheetNames.length, 7);
     out.data[0].existencia_actual++;
     assert.equal((await fetch(`${base}/reporte-excel?versionDatos=${report.versionDatos}`)).status, 409);
     out.truncated = true;
@@ -130,7 +138,7 @@ test('version estable ante evidencia reordenada con caracteres invisibles distin
   evidencia.ordenes.reverse();
   assert.equal((await service.obtenerReporte(3)).versionDatos, original.versionDatos);
   const buffer = await leerExcel(service, original.versionDatos);
-  assert.equal(XLSX.read(buffer, { type: 'buffer' }).SheetNames.length, 6);
+  assert.equal(XLSX.read(buffer, { type: 'buffer' }).SheetNames.length, 7);
   evidencia.ordenes[0].piezas_pendientes++;
   await assert.rejects(service.generarExcel(3, original.versionDatos), error => error.status === 409);
 });
@@ -257,7 +265,7 @@ test('Excel directo consulta una vez y no calcula hash ni prepara el correo JSON
   service.obtenerReporte = async () => { throw new Error('No debe consultar JSON'); };
   try {
     const book = XLSX.read(await leerExcel(service), { type: 'buffer' });
-    assert.equal(book.SheetNames.length, 6);
+    assert.equal(book.SheetNames.length, 7);
     assert.equal(XLSX.utils.sheet_to_json(book.Sheets.Radar).length, 1);
     assert.deepEqual(calls.map(call => call[0]), ['radar', 'detalle']);
   } finally { versionModule.versionReporte = versionOriginal; }
@@ -274,7 +282,7 @@ test('HTTP Excel directo funciona sin JSON previo y devuelve el nombre del archi
     assert.equal(response.headers.has('x-reporte-version'), false);
     assert.match(response.headers.get('x-reporte-nombre-archivo'), /^radar_demanda_cobertura_\d{8}\.xlsx$/);
     const book = XLSX.read(Buffer.from(await response.arrayBuffer()), { type: 'buffer' });
-    assert.equal(book.SheetNames.length, 6);
+    assert.equal(book.SheetNames.length, 7);
     assert.deepEqual(calls.map(call => call[0]), ['radar', 'detalle']);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
@@ -286,6 +294,10 @@ test('reporte fijo de tres meses consulta únicamente las vistas materializadas 
   const queries = [];
   pool.query = async sql => {
     queries.push(sql);
+    if (sql.includes('mv_reporte_radar_semanal_3m_unidades_sin_solicitud')) return { rows: [{
+      cluesimb: 'BC002', nombre_de_unidad: 'Unidad sin solicitud', jurisdiccion: 'MEXICALI',
+      es_segundo_nivel: false, tipo_unidad: 'CENTRO DE SALUD', ultima_solicitud_registrada: null
+    }] };
     if (sql.includes('GROUP BY cluesimb')) return { rows: [{ unidad: 'Unidad de prueba · BC001', claves_solicitadas: 1, sin_existencia: 1 }] };
     return { rows: [{ total: 1, criticas_cpm: 1, atencion_cpm: 0, demanda_sin_cpm: 0,
       cpm_sin_solicitud: 0, cubiertas: 0, vigente_en_proceso: 0, vigente_con_salida: 0,
@@ -317,8 +329,19 @@ test('reporte fijo de tres meses consulta únicamente las vistas materializadas 
       assert.match(result.reporte.nombreArchivo, /^radar_demanda_cobertura_\d{8}\.xlsx$/);
       const book = XLSX.read(await fs.readFile(result.archivo), { type: 'buffer' });
       assert.equal(XLSX.utils.sheet_to_json(book.Sheets.Radar).length, 1);
+      assert.equal(XLSX.utils.sheet_to_json(book.Sheets['Unidades sin solicitud'])[0].CLUES, 'BC002');
       assert.equal(XLSX.utils.sheet_to_json(book.Sheets['Detalle salidas']).length, 1);
       assert.equal(XLSX.utils.sheet_to_json(book.Sheets['Órdenes contexto']).length, 1);
     } finally { await result.limpiar(); }
   } finally { pool.query = query; pool.connect = connect; }
+});
+
+test('SQL materializado conserva el corte fijo de tres meses y refresca las cuatro vistas', async () => {
+  const sql = await fs.readFile('sql/002_reporte_radar_semanal_3m.sql', 'utf8');
+  assert.match(sql, /CURRENT_DATE - INTERVAL '3 months'/);
+  assert.match(sql, /CREATE MATERIALIZED VIEW public\.mv_reporte_radar_semanal_3m_unidades_sin_solicitud/);
+  assert.match(sql, /REFRESH MATERIALIZED VIEW public\.mv_reporte_radar_semanal_3m_unidades_sin_solicitud/);
+  assert.match(sql, /solicitado_ultima_solicitud/);
+  assert.match(sql, /existencia_azm/);
+  assert.match(sql, /BEGIN;[\s\S]*COMMIT;/);
 });

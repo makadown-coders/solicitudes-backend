@@ -4,11 +4,11 @@
 
 **Recurrence → HTTP_preparar → Do until listo → HTTP_excel → Send an email (V2)**.
 
-La descarga directa de tres meses consulta las vistas materializadas del reporte, genera las seis hojas y transmite el archivo. No requiere consultar JSON previamente, no calcula hash ni arma el HTML del correo. Mantiene la escritura incremental a disco y la limpieza del temporal.
+La descarga directa de tres meses consulta las vistas materializadas del reporte, genera las siete hojas y transmite el archivo. No requiere consultar JSON previamente, no calcula hash ni arma el HTML del correo. Mantiene la escritura incremental a disco y la limpieza del temporal.
 
 ### Preparación y actualización de datos
 
-Antes de desplegar el backend, aplicar `sql/002_reporte_radar_semanal_3m.sql` en PostgreSQL. El script crea tres vistas materializadas: Radar, detalle de salidas y contexto de órdenes. También crea sus índices y el procedimiento de actualización.
+Antes de desplegar el backend, aplicar `sql/002_reporte_radar_semanal_3m.sql` en PostgreSQL. El script crea cuatro vistas materializadas: Radar, unidades sin solicitud, detalle de salidas y contexto de órdenes. También crea sus índices y el procedimiento de actualización.
 
 Las vistas representan una fotografía de los últimos tres meses al momento del refresco. Programar esta instrucción antes del flujo de Power Automate, fuera de la petición HTTP:
 
@@ -77,12 +77,12 @@ El nombre con fecha también viene en el encabezado HTTP `X-Reporte-Nombre-Archi
 - La ruta JSON `/reporte?months=3` sigue disponible para clientes anteriores.
 - Si se envía explícitamente `versionDatos`, se conserva la comparación y el posible 409. El flujo simplificado debe omitirlo.
 - 400: parámetros inválidos. 422: universo incompleto. 503: reporte ocupado (Retry-After: 30). 500: error de generación. No se ocultan fallos ni se envían archivos parciales.
-- Se preservan las seis hojas, las reglas analíticas y el origen del piloto. No hay nuevas dependencias ni tablas; se agregan tres vistas materializadas e índices exclusivos para este reporte.
+- Se preservan las reglas analíticas y el origen del piloto; el libro contiene siete hojas, incluida “Unidades sin solicitud”. No hay nuevas dependencias ni tablas; se agregan cuatro vistas materializadas e índices exclusivos para este reporte.
 - Eliminar la consulta JSON previa evita repetir los cruces; omitir versionDatos elimina el trabajo de hash. El costo de los cruces se traslada al refresco programado y queda fuera de la petición HTTP. La escritura del archivo todavía debe medirse en el despliegue real.
 
 ## Memoria y concurrencia (instancia de 512 MB)
 
-- Las tablas del Excel se escriben fila a fila en un archivo temporal, con presión de escritura sobre el ZIP y sin tabla global de cadenas compartidas. Se conservan las seis hojas, valores, columnas y formatos porcentuales.
+- Las tablas del Excel se escriben fila a fila en un archivo temporal, con presión de escritura sobre el ZIP y sin tabla global de cadenas compartidas. Se conservan las siete hojas, valores, columnas y formatos porcentuales.
 - La respuesta HTTP transmite el archivo desde disco; no carga el XLSX completo en un Buffer. El temporal se elimina al terminar la descarga o ante errores manejados. El directorio temporal de la instancia debe permitir escritura y tener espacio suficiente. Un cierre forzado del proceso puede dejar temporales hasta que la instancia se recicle.
 - Para `months=3`, Radar, salidas y órdenes se leen desde las vistas materializadas mediante cursores PostgreSQL de 500 filas. Cada lote se escribe y se descarta antes de solicitar el siguiente; las tres colecciones no permanecen simultáneamente en memoria.
 - El XLSX de esta ruta se excluye del middleware HTTP de compresión porque el formato ya contiene datos ZIP. Esto evita trabajo adicional en la instancia de 0.1 vCPU.
@@ -106,6 +106,6 @@ Genera 50,000 filas de Radar, 50,000 salidas y 50,000 órdenes, ejecuta la desca
 
 Prueba sintética local en Windows con heap limitado a 224 MB: 50,000 filas de Radar + 50,000 salidas + 50,000 órdenes. La descarga directa completó el archivo en 16 segundos; tamaño 17,684,504 bytes, pico de heap muestreado de 172 MiB y RSS máximo de 430 MiB. Build correcto y 17 pruebas aprobadas, incluyendo una que impide calcular hash durante la descarga directa.
 
-La generación paginada equivalente completó 50,000 filas de Radar + 50,000 salidas + 50,000 órdenes en 10 segundos, con pico de heap de 105 MiB y RSS de 317 MiB. La prueba crea los registros por lotes y no conserva las 150,000 filas de entrada en arreglos globales.
+La generación paginada equivalente, ya con la séptima hoja y las columnas enriquecidas, completó 50,000 filas de Radar + 50,000 salidas + 50,000 órdenes en 12 segundos, con pico de heap de 116 MiB y RSS de 342 MiB. La prueba crea los registros por lotes y no conserva las 150,000 filas de entrada en arreglos globales.
 
 No incluye el tiempo ni la memoria de PostgreSQL o la carga del resto de la API. Debe verificarse en Koyeb antes de dar por resuelto el OOM. No se cambió NODE_OPTIONS ni se agregó una dependencia en este cambio.

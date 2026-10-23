@@ -1211,30 +1211,54 @@ export default class RadarAbastoService {
       : '';
 
     const sql = `
-      WITH ciclos AS (
+      WITH unidades_detalle AS (
+        SELECT UPPER(TRIM(vumd.cluesimb)) AS cluesimb,
+               MAX(vumd.nombre_de_unidad) AS nombre_de_unidad,
+               MAX(vumd.nombre_municipio) AS nombre_municipio,
+               BOOL_OR(COALESCE(vumd.es_segundo_nivel, false)) AS es_segundo_nivel,
+               MAX(vumd.tipo_unidad) AS tipo_unidad,
+               STRING_AGG(DISTINCT vumd.alias_sas, ' ') FILTER (WHERE NULLIF(TRIM(vumd.alias_sas), '') IS NOT NULL) AS alias_sas
+        FROM public.v_unidad_medica_detalle vumd
+        WHERE NULLIF(UPPER(TRIM(vumd.cluesimb)), '') IS NOT NULL
+        GROUP BY UPPER(TRIM(vumd.cluesimb))
+      ),
+      ciclos AS (
         SELECT UPPER(TRIM(s.cluesimb)) AS cluesimb, COUNT(DISTINCT s.id)::int AS ciclos_unidad
         FROM public.solicitud_bitacora s
         WHERE s.created_day BETWEEN CURRENT_DATE - make_interval(months => $1::int) AND CURRENT_DATE
         GROUP BY UPPER(TRIM(s.cluesimb))
       ),
-      demanda AS (
-        SELECT UPPER(TRIM(s.cluesimb)) AS cluesimb,
+      solicitudes_clave AS (
+        SELECT s.id AS solicitud_id,
+               s.created_day,
+               UPPER(TRIM(s.cluesimb)) AS cluesimb,
                UPPER(TRIM(d.clave)) AS clave,
-               COALESCE(SUM(d.cantidad), 0)::numeric AS solicitado_periodo,
-               COUNT(DISTINCT s.id)::int AS ciclos_con_clave,
-               COALESCE(SUM(d.cantidad) FILTER (
-                 WHERE s.created_day BETWEEN CURRENT_DATE - INTERVAL '14 days' AND CURRENT_DATE
-               ), 0)::numeric AS solicitado_vigente,
-               COUNT(DISTINCT s.id) FILTER (
-                 WHERE s.created_day BETWEEN CURRENT_DATE - INTERVAL '14 days' AND CURRENT_DATE
-               )::int AS ciclos_vigentes,
-               MIN(s.created_day)::date AS primera_solicitud,
-               MAX(s.created_day)::date AS ultima_solicitud
+               COALESCE(SUM(d.cantidad), 0)::numeric AS cantidad
         FROM public.solicitud_bitacora s
         JOIN public.solicitud_bitacora_detalle d ON d.solicitud_id = s.id
         WHERE s.created_day BETWEEN CURRENT_DATE - make_interval(months => $1::int) AND CURRENT_DATE
           AND NULLIF(UPPER(TRIM(d.clave)), '') IS NOT NULL
-        GROUP BY UPPER(TRIM(s.cluesimb)), UPPER(TRIM(d.clave))
+        GROUP BY s.id, s.created_day, UPPER(TRIM(s.cluesimb)), UPPER(TRIM(d.clave))
+      ),
+      demanda AS (
+        SELECT sc.cluesimb,
+               sc.clave,
+               COALESCE(SUM(sc.cantidad), 0)::numeric AS solicitado_periodo,
+               (ARRAY_AGG(
+                 sc.cantidad
+                 ORDER BY sc.created_day DESC, sc.solicitud_id DESC
+               ))[1] AS solicitado_ultima_solicitud,
+               COUNT(DISTINCT sc.solicitud_id)::int AS ciclos_con_clave,
+               COALESCE(SUM(sc.cantidad) FILTER (
+                 WHERE sc.created_day BETWEEN CURRENT_DATE - INTERVAL '14 days' AND CURRENT_DATE
+               ), 0)::numeric AS solicitado_vigente,
+               COUNT(DISTINCT sc.solicitud_id) FILTER (
+                 WHERE sc.created_day BETWEEN CURRENT_DATE - INTERVAL '14 days' AND CURRENT_DATE
+               )::int AS ciclos_vigentes,
+               MIN(sc.created_day)::date AS primera_solicitud,
+               MAX(sc.created_day)::date AS ultima_solicitud
+        FROM solicitudes_clave sc
+        GROUP BY sc.cluesimb, sc.clave
       ),
       cpm_ AS (
         SELECT UPPER(TRIM(um.cluesimb)) AS cluesimb,
@@ -1258,6 +1282,27 @@ export default class RadarAbastoService {
                MAX(t.cargado_en) AS snapshot_existencias
         FROM public.tmp_existencias t
         GROUP BY UPPER(TRIM(t.cluesimb)), UPPER(TRIM(t.clave_cnis))
+      ),
+      existencias_almacenes AS (
+        SELECT UPPER(TRIM(t.clave_cnis)) AS clave,
+               COALESCE(SUM(t.existencia) FILTER (
+                 WHERE UPPER(CONCAT_WS(' ', vumd.nombre_de_unidad, vumd.nombre_municipio, vumd.alias_sas, vumd.cluesimb))
+                   SIMILAR TO '%(MEXICALI|AZM)%'
+               ), 0)::numeric AS existencia_azm,
+               COALESCE(SUM(t.existencia) FILTER (
+                 WHERE UPPER(CONCAT_WS(' ', vumd.nombre_de_unidad, vumd.nombre_municipio, vumd.alias_sas, vumd.cluesimb))
+                   SIMILAR TO '%(TIJUANA|AZT)%'
+               ), 0)::numeric AS existencia_azt,
+               COALESCE(SUM(t.existencia) FILTER (
+                 WHERE UPPER(CONCAT_WS(' ', vumd.nombre_de_unidad, vumd.nombre_municipio, vumd.alias_sas, vumd.cluesimb))
+                   SIMILAR TO '%(ENSENADA|AZE)%'
+               ), 0)::numeric AS existencia_aze,
+               MAX(t.cargado_en) AS snapshot_almacenes
+        FROM public.tmp_existencias t
+        JOIN unidades_detalle vumd
+          ON UPPER(TRIM(vumd.cluesimb)) = UPPER(TRIM(t.cluesimb))
+        WHERE vumd.tipo_unidad = 'ALMACENES'
+        GROUP BY UPPER(TRIM(t.clave_cnis))
       ),
       aristas AS (
         SELECT UPPER(TRIM(h.clave)) AS clave,
@@ -1334,14 +1379,29 @@ export default class RadarAbastoService {
         GROUP BY UPPER(TRIM(um.cluesimb)), UPPER(TRIM(c.clave_cnis))
       ),
       base AS (
-        SELECT u.cluesimb, vumd.nombre_de_unidad, u.clave, a.descripcion,
+        SELECT u.cluesimb, vumd.nombre_de_unidad,
+               COALESCE(vumd.es_segundo_nivel, false) AS es_segundo_nivel,
+               CASE
+                 WHEN u.cluesimb = 'BCIMB000133' THEN 'MEXICALI'
+                 WHEN UPPER(TRIM(vumd.nombre_municipio)) IN ('TIJUANA', 'TECATE', 'PLAYAS DE ROSARITO') THEN 'TIJUANA'
+                 WHEN UPPER(TRIM(vumd.nombre_municipio)) IN ('MEXICALI', 'SAN FELIPE') THEN 'MEXICALI'
+                 WHEN UPPER(TRIM(vumd.nombre_municipio)) IN ('ENSENADA', 'SAN QUINTIN', 'SAN QUINTÍN') THEN 'ENSENADA'
+                 ELSE UPPER(TRIM(vumd.nombre_municipio))
+               END AS jurisdiccion,
+               u.clave, a.descripcion,
                COALESCE(c.cpm, 0)::numeric AS cpm,
                (COALESCE(c.cpm, 0) > 0) AS en_cpm,
                COALESCE(e.existencia_actual, 0)::numeric AS existencia_actual,
                e.snapshot_existencias,
+               COALESCE(ea.existencia_azm, 0)::numeric AS existencia_azm,
+               COALESCE(ea.existencia_azt, 0)::numeric AS existencia_azt,
+               COALESCE(ea.existencia_aze, 0)::numeric AS existencia_aze,
+               (COALESCE(ea.existencia_azm, 0) + COALESCE(ea.existencia_azt, 0) + COALESCE(ea.existencia_aze, 0))::numeric AS existencia_almacenes,
+               ea.snapshot_almacenes,
                CASE WHEN COALESCE(c.cpm, 0) > 0 THEN ROUND(COALESCE(e.existencia_actual, 0) / c.cpm, 2) END AS cobertura_cpm,
                CASE WHEN COALESCE(c.cpm, 0) > 0 THEN ROUND((COALESCE(e.existencia_actual, 0) / c.cpm) * 30, 1) END AS cobertura_dias,
                COALESCE(d.solicitado_periodo, 0)::numeric AS solicitado_periodo,
+               COALESCE(d.solicitado_ultima_solicitud, 0)::numeric AS solicitado_ultima_solicitud,
                COALESCE(d.ciclos_con_clave, 0)::int AS ciclos_con_clave,
                COALESCE(ci.ciclos_unidad, 0)::int AS ciclos_unidad,
                CASE WHEN COALESCE(ci.ciclos_unidad, 0) > 0
@@ -1375,10 +1435,11 @@ export default class RadarAbastoService {
         LEFT JOIN ciclos ci ON ci.cluesimb = u.cluesimb
         LEFT JOIN cpm_ c ON c.cluesimb = u.cluesimb AND c.clave = u.clave
         LEFT JOIN existencias e ON e.cluesimb = u.cluesimb AND e.clave = u.clave
+        LEFT JOIN existencias_almacenes ea ON ea.clave = u.clave
         LEFT JOIN homologos_stock hs ON hs.cluesimb = u.cluesimb AND hs.clave = u.clave
         LEFT JOIN salidas_posteriores sp ON sp.cluesimb = u.cluesimb AND sp.clave = u.clave
         LEFT JOIN ordenes o ON o.cluesimb = u.cluesimb AND o.clave = u.clave
-        LEFT JOIN public.v_unidad_medica_detalle vumd ON UPPER(TRIM(vumd.cluesimb)) = u.cluesimb
+        LEFT JOIN unidades_detalle vumd ON vumd.cluesimb = u.cluesimb
         LEFT JOIN public.articulos a ON UPPER(TRIM(a.clave)) = u.clave
       ),
       clasificado AS (
@@ -1456,12 +1517,19 @@ export default class RadarAbastoService {
       const r: any = data[index];
       data[index] = {
         cluesimb: String(r.cluesimb ?? ''), nombre_de_unidad: r.nombre_de_unidad ?? null,
+        es_segundo_nivel: Boolean(r.es_segundo_nivel),
+        jurisdiccion: r.jurisdiccion ?? null,
         clave: String(r.clave ?? ''), descripcion: r.descripcion ?? null,
         cpm: Number(r.cpm ?? 0), en_cpm: Boolean(r.en_cpm), existencia_actual: Number(r.existencia_actual ?? 0),
         snapshot_existencias: r.snapshot_existencias ? new Date(r.snapshot_existencias).toISOString() : null,
+        existencia_azm: Number(r.existencia_azm ?? 0), existencia_azt: Number(r.existencia_azt ?? 0),
+        existencia_aze: Number(r.existencia_aze ?? 0), existencia_almacenes: Number(r.existencia_almacenes ?? 0),
+        snapshot_almacenes: r.snapshot_almacenes ? new Date(r.snapshot_almacenes).toISOString() : null,
         cobertura_cpm: r.cobertura_cpm == null ? null : Number(r.cobertura_cpm),
         cobertura_dias: r.cobertura_dias == null ? null : Number(r.cobertura_dias),
-        solicitado_periodo: Number(r.solicitado_periodo ?? 0), ciclos_con_clave: Number(r.ciclos_con_clave ?? 0),
+        solicitado_periodo: Number(r.solicitado_periodo ?? 0),
+        solicitado_ultima_solicitud: Number(r.solicitado_ultima_solicitud ?? 0),
+        ciclos_con_clave: Number(r.ciclos_con_clave ?? 0),
         ciclos_unidad: Number(r.ciclos_unidad ?? 0), frecuencia_solicitud: Number(r.frecuencia_solicitud ?? 0),
         primera_solicitud: r.primera_solicitud?.toISOString?.().slice(0, 10) ?? r.primera_solicitud ?? null,
         ultima_solicitud: r.ultima_solicitud?.toISOString?.().slice(0, 10) ?? r.ultima_solicitud ?? null,
@@ -1487,6 +1555,61 @@ export default class RadarAbastoService {
       };
     }
 
+    const unidadesSinSolicitud = input.export
+      ? (await pool.query(`
+          WITH unidades AS (
+            SELECT UPPER(TRIM(um.cluesimb)) AS cluesimb,
+                   um.nombre AS nombre_de_unidad,
+                   BOOL_OR(COALESCE(vumd.es_segundo_nivel, false)) AS es_segundo_nivel,
+                   MAX(vumd.tipo_unidad) AS tipo_unidad,
+                   CASE
+                     WHEN UPPER(TRIM(um.cluesimb)) = 'BCIMB000133' THEN 'MEXICALI'
+                     WHEN UPPER(TRIM(vumd.nombre_municipio)) IN ('TIJUANA', 'TECATE', 'PLAYAS DE ROSARITO') THEN 'TIJUANA'
+                     WHEN UPPER(TRIM(vumd.nombre_municipio)) IN ('MEXICALI', 'SAN FELIPE') THEN 'MEXICALI'
+                     WHEN UPPER(TRIM(vumd.nombre_municipio)) IN ('ENSENADA', 'SAN QUINTIN', 'SAN QUINTÍN') THEN 'ENSENADA'
+                     ELSE UPPER(TRIM(vumd.nombre_municipio))
+                   END AS jurisdiccion
+            FROM public.unidad_medica um
+            LEFT JOIN public.v_unidad_medica_detalle vumd ON vumd.id = um.id
+            WHERE um.activo = true
+              AND NULLIF(UPPER(TRIM(um.cluesimb)), '') IS NOT NULL
+              AND COALESCE(UPPER(TRIM(vumd.tipo_unidad)), '') <> 'ALMACENES'
+            GROUP BY UPPER(TRIM(um.cluesimb)), um.nombre,
+                     CASE
+                       WHEN UPPER(TRIM(um.cluesimb)) = 'BCIMB000133' THEN 'MEXICALI'
+                       WHEN UPPER(TRIM(vumd.nombre_municipio)) IN ('TIJUANA', 'TECATE', 'PLAYAS DE ROSARITO') THEN 'TIJUANA'
+                       WHEN UPPER(TRIM(vumd.nombre_municipio)) IN ('MEXICALI', 'SAN FELIPE') THEN 'MEXICALI'
+                       WHEN UPPER(TRIM(vumd.nombre_municipio)) IN ('ENSENADA', 'SAN QUINTIN', 'SAN QUINTÍN') THEN 'ENSENADA'
+                       ELSE UPPER(TRIM(vumd.nombre_municipio))
+                     END
+          ),
+          solicitudes AS (
+            SELECT UPPER(TRIM(s.cluesimb)) AS cluesimb,
+                   MAX(s.created_day)::date AS ultima_solicitud_registrada,
+                   BOOL_OR(s.created_day BETWEEN CURRENT_DATE - make_interval(months => $1::int) AND CURRENT_DATE) AS solicito_en_periodo
+            FROM public.solicitud_bitacora s
+            WHERE NULLIF(UPPER(TRIM(s.cluesimb)), '') IS NOT NULL
+            GROUP BY UPPER(TRIM(s.cluesimb))
+          )
+          SELECT u.cluesimb, u.nombre_de_unidad, u.jurisdiccion,
+                 u.es_segundo_nivel, u.tipo_unidad,
+                 s.ultima_solicitud_registrada
+          FROM unidades u
+          LEFT JOIN solicitudes s ON s.cluesimb = u.cluesimb
+          WHERE COALESCE(s.solicito_en_periodo, false) = false
+            AND ($2 = '' OR u.cluesimb = $2)
+          ORDER BY u.jurisdiccion NULLS LAST, u.nombre_de_unidad, u.cluesimb
+        `, [months, clues])).rows.map(row => ({
+          cluesimb: String(row.cluesimb ?? ''),
+          nombre_de_unidad: row.nombre_de_unidad ?? null,
+          jurisdiccion: row.jurisdiccion ?? null,
+          es_segundo_nivel: Boolean(row.es_segundo_nivel),
+          tipo_unidad: row.tipo_unidad ?? null,
+          ultima_solicitud_registrada: row.ultima_solicitud_registrada?.toISOString?.().slice(0, 10)
+            ?? row.ultima_solicitud_registrada ?? null
+        }))
+      : [];
+
     return {
       mode: 'radar-global-v2', window: { months }, page, pageSize,
       total: Number(first.total_rows ?? 0),
@@ -1496,7 +1619,8 @@ export default class RadarAbastoService {
         demanda_sin_cpm: Number(first.total_sin_cpm ?? 0), cpm_sin_solicitud: Number(first.total_sin_solicitud ?? 0),
         cubiertas: Number(first.total_cubiertas ?? 0)
       },
-      data
+      data,
+      unidades_sin_solicitud: unidadesSinSolicitud
     };
   }
 

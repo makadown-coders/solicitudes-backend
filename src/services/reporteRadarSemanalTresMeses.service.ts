@@ -90,6 +90,11 @@ export default class ReporteRadarSemanalTresMesesService {
       GROUP BY cluesimb, nombre_de_unidad
       HAVING COUNT(*) FILTER (WHERE solicitado_periodo > 0) > 0
       ORDER BY COALESCE(NULLIF(TRIM(nombre_de_unidad), ''), 'UNIDAD SIN NOMBRE'), cluesimb`);
+    const unidadesSinSolicitud = await pool.query(`
+      SELECT cluesimb, nombre_de_unidad, jurisdiccion, es_segundo_nivel,
+             tipo_unidad, ultima_solicitud_registrada
+      FROM public.mv_reporte_radar_semanal_3m_unidades_sin_solicitud
+      ORDER BY jurisdiccion NULLS LAST, nombre_de_unidad, cluesimb`);
     const row = conteos.rows[0] ?? {};
     return {
       total: Number(row.total ?? 0),
@@ -105,7 +110,12 @@ export default class ReporteRadarSemanalTresMesesService {
       conOrdenesVencidas: Number(row.con_ordenes_vencidas ?? 0),
       conSalidaPosterior: Number(row.con_salida_posterior ?? 0),
       unidades: unidades.rows.map(item => ({ unidad: String(item.unidad),
-        clavesSolicitadas: Number(item.claves_solicitadas ?? 0), sinExistencia: Number(item.sin_existencia ?? 0) }))
+        clavesSolicitadas: Number(item.claves_solicitadas ?? 0), sinExistencia: Number(item.sin_existencia ?? 0) })),
+      unidadesSinSolicitud: unidadesSinSolicitud.rows.map(item => ({
+        cluesimb: String(item.cluesimb ?? ''), nombre_de_unidad: item.nombre_de_unidad ?? null,
+        jurisdiccion: item.jurisdiccion ?? null, es_segundo_nivel: Boolean(item.es_segundo_nivel),
+        tipo_unidad: item.tipo_unidad ?? null, ultima_solicitud_registrada: this.fecha(item.ultima_solicitud_registrada)
+      }))
     };
   }
 
@@ -156,12 +166,19 @@ export default class ReporteRadarSemanalTresMesesService {
 
   private mapearRadar = (row: any): RadarGlobalV2Row => ({
     cluesimb: String(row.cluesimb ?? ''), nombre_de_unidad: row.nombre_de_unidad ?? null,
+    es_segundo_nivel: Boolean(row.es_segundo_nivel),
+    jurisdiccion: row.jurisdiccion ?? null,
     clave: String(row.clave ?? ''), descripcion: row.descripcion ?? null,
     cpm: Number(row.cpm ?? 0), en_cpm: Boolean(row.en_cpm), existencia_actual: Number(row.existencia_actual ?? 0),
     snapshot_existencias: row.snapshot_existencias ? new Date(row.snapshot_existencias).toISOString() : null,
+    existencia_azm: Number(row.existencia_azm ?? 0), existencia_azt: Number(row.existencia_azt ?? 0),
+    existencia_aze: Number(row.existencia_aze ?? 0), existencia_almacenes: Number(row.existencia_almacenes ?? 0),
+    snapshot_almacenes: row.snapshot_almacenes ? new Date(row.snapshot_almacenes).toISOString() : null,
     cobertura_cpm: row.cobertura_cpm == null ? null : Number(row.cobertura_cpm),
     cobertura_dias: row.cobertura_dias == null ? null : Number(row.cobertura_dias),
-    solicitado_periodo: Number(row.solicitado_periodo ?? 0), ciclos_con_clave: Number(row.ciclos_con_clave ?? 0),
+    solicitado_periodo: Number(row.solicitado_periodo ?? 0),
+    solicitado_ultima_solicitud: Number(row.solicitado_ultima_solicitud ?? 0),
+    ciclos_con_clave: Number(row.ciclos_con_clave ?? 0),
     ciclos_unidad: Number(row.ciclos_unidad ?? 0), frecuencia_solicitud: Number(row.frecuencia_solicitud ?? 0),
     primera_solicitud: this.fecha(row.primera_solicitud), ultima_solicitud: this.fecha(row.ultima_solicitud),
     solicitado_vigente: Number(row.solicitado_vigente ?? 0), ciclos_vigentes: Number(row.ciclos_vigentes ?? 0),

@@ -58,38 +58,60 @@ export default class ConcentradoPrimerNivelService {
       solicitudes_periodo AS (
         SELECT s.id, UPPER(TRIM(s.cluesimb)) AS cluesimb, s.created_day
         FROM public.solicitud_bitacora s
+        JOIN centros ce ON ce.cluesimb = UPPER(TRIM(s.cluesimb))
         WHERE s.created_day BETWEEN CURRENT_DATE - make_interval(months => $1::int) AND CURRENT_DATE
-          AND EXISTS (
-            SELECT 1 FROM public.solicitud_primer_nivel_contexto spnc
-            WHERE spnc.solicitud_id = s.id
-          )
       ),
-      contexto AS (
+      capturas AS (
         SELECT sp.id AS solicitud_id, sp.cluesimb, sp.created_day,
                UPPER(TRIM(c.clave)) AS clave,
                c.origen_captura AS origen,
                NULLIF(UPPER(TRIM(c.referencia_captura)), '') AS referencia,
                c.cantidad_capturada::numeric AS piezas,
+               false AS es_historica
+        FROM solicitudes_periodo sp
+        JOIN public.solicitud_primer_nivel_contexto c ON c.solicitud_id = sp.id
+
+        UNION ALL
+
+        SELECT sp.id AS solicitud_id, sp.cluesimb, sp.created_day,
+               UPPER(TRIM(d.clave)) AS clave,
+               'CLAVE'::text AS origen,
+               NULL::text AS referencia,
+               d.cantidad::numeric AS piezas,
+               true AS es_historica
+        FROM solicitudes_periodo sp
+        JOIN public.solicitud_bitacora_detalle d ON d.solicitud_id = sp.id
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM public.solicitud_primer_nivel_contexto c
+          WHERE c.solicitud_id = sp.id
+        )
+      ),
+      contexto AS (
+        SELECT c.solicitud_id, c.cluesimb, c.created_day,
+               c.clave, c.origen, c.referencia, c.piezas,
                ce.unidad, ce.jurisdiccion,
                NULLIF(TRIM(i.nombre), '') AS nombre,
                NULLIF(REGEXP_REPLACE(TRIM(i.descripcion), '[[:space:]]+', ' ', 'g'), '') AS descripcion,
                COALESCE(
                  NULLIF(TRIM(am.etiqueta_usuario), ''),
                  NULLIF(TRIM(pp.nombre), ''),
-                 CASE c.origen_captura
-                   WHEN 'CLAVE' THEN 'Captura por clave CNIS'
-                   ELSE NULLIF(TRIM(c.referencia_captura), '')
+                 CASE c.origen
+                   WHEN 'CLAVE' THEN CASE
+                     WHEN c.es_historica THEN 'Captura histórica por clave'
+                     ELSE 'Captura por clave CNIS'
+                   END
+                   ELSE NULLIF(TRIM(c.referencia), '')
                  END,
                  'Referencia no disponible'
                ) AS etiqueta_referencia
-        FROM solicitudes_periodo sp
-        JOIN centros ce ON ce.cluesimb = sp.cluesimb
-        JOIN public.solicitud_primer_nivel_contexto c ON c.solicitud_id = sp.id
+        FROM capturas c
+        JOIN centros ce ON ce.cluesimb = c.cluesimb
         LEFT JOIN cnis.insumo i ON i.activo = true AND UPPER(TRIM(i.clave)) = UPPER(TRIM(c.clave))
         LEFT JOIN aps.medicamento am
-          ON c.origen_captura = 'APS' AND am.codigo = UPPER(TRIM(c.referencia_captura))
+          ON c.origen = 'APS' AND am.codigo = UPPER(TRIM(c.referencia))
         LEFT JOIN preventivos.programa pp
-          ON c.origen_captura = 'PROGRAMA_PREVENTIVO' AND pp.codigo = UPPER(TRIM(c.referencia_captura))
+          ON c.origen = 'PROGRAMA_PREVENTIVO' AND pp.codigo = UPPER(TRIM(c.referencia))
       ),
       filtrado AS (
         SELECT * FROM contexto

@@ -3,8 +3,17 @@ import { parseIntSafe } from '../helpers/helper';
 import {
   ConcentradoPrimerNivelInput,
   ConcentradoPrimerNivelRow,
+  MatrizDistribucionPrimerNivelResponse,
+  MatrizDistribucionPrimerNivelRow,
+  MatrizDistribucionPrimerNivelUnidad,
 } from '../models/solicitudes/primer-nivel/ConcentradoPrimerNivel';
 import { OrigenCapturaPrimerNivel } from '../models/solicitudes/primer-nivel/ContextoCapturaPrimerNivel';
+import {
+  JURISDICCIONES_DISTRIBUCION,
+  JurisdiccionDistribucion,
+  RUTAS_PRIMER_NIVEL_PROVISIONALES,
+  RUTA_SIN_ASIGNAR,
+} from '../config/rutas-primer-nivel.provisional';
 
 const ORIGENES: OrigenCapturaPrimerNivel[] = ['APS', 'PROGRAMA_PREVENTIVO', 'CLAVE'];
 
@@ -18,8 +27,176 @@ function fecha(value: unknown): string | null {
 }
 
 export default class ConcentradoPrimerNivelService {
+  async matrizDistribucion(monthsInput: unknown): Promise<MatrizDistribucionPrimerNivelResponse> {
+    const months = Math.min(12, Math.max(1, parseIntSafe(monthsInput, 1)));
+    const cluesConfiguradas = RUTAS_PRIMER_NIVEL_PROVISIONALES.flatMap(ruta => [...ruta.clues]);
+
+    const [agregado, catalogoUnidades] = await Promise.all([
+      pool.query(`
+        WITH unidades AS (
+          SELECT um.id,
+                 UPPER(TRIM(um.cluesimb)) AS cluesimb,
+                 MAX(um.nombre) AS unidad,
+                 MAX(vumd.tipo_unidad) AS tipo_unidad,
+                 CASE
+                   WHEN UPPER(TRIM(um.cluesimb)) = 'BCIMB000133' THEN 'MEXICALI'
+                   WHEN UPPER(TRIM(MAX(vumd.nombre_municipio))) IN ('TIJUANA', 'TECATE', 'PLAYAS DE ROSARITO') THEN 'TIJUANA'
+                   WHEN UPPER(TRIM(MAX(vumd.nombre_municipio))) IN ('MEXICALI', 'SAN FELIPE') THEN 'MEXICALI'
+                   WHEN UPPER(TRIM(MAX(vumd.nombre_municipio))) LIKE 'SAN QUINT%'
+                     OR UPPER(TRIM(MAX(vumd.nombre_municipio))) = 'ENSENADA' THEN 'ENSENADA'
+                   ELSE UPPER(TRIM(MAX(vumd.nombre_municipio)))
+                 END AS jurisdiccion
+          FROM public.unidad_medica um
+          LEFT JOIN public.v_unidad_medica_detalle vumd ON vumd.id = um.id
+          WHERE NULLIF(UPPER(TRIM(um.cluesimb)), '') IS NOT NULL
+          GROUP BY um.id, UPPER(TRIM(um.cluesimb))
+        ),
+        unidades_primer_nivel AS (
+          SELECT *
+          FROM unidades
+          WHERE jurisdiccion IN ('ENSENADA', 'MEXICALI', 'TIJUANA')
+            AND COALESCE(UPPER(TRIM(tipo_unidad)), '') NOT LIKE '%HOSPITAL%'
+            AND COALESCE(UPPER(TRIM(tipo_unidad)), '') NOT LIKE '%ALMACEN%'
+            AND COALESCE(UPPER(TRIM(tipo_unidad)), '') NOT LIKE '%OFICINA%'
+            AND COALESCE(UPPER(TRIM(tipo_unidad)), '') NOT LIKE '%ADMINISTRATIV%'
+        ),
+        solicitudes_periodo AS (
+          SELECT s.id, u.cluesimb, u.unidad, u.jurisdiccion
+          FROM public.solicitud_bitacora s
+          JOIN unidades_primer_nivel u ON u.cluesimb = UPPER(TRIM(s.cluesimb))
+          WHERE s.created_day BETWEEN CURRENT_DATE - make_interval(months => $1::int) AND CURRENT_DATE
+        ),
+        capturas AS (
+          SELECT sp.cluesimb, sp.unidad, sp.jurisdiccion,
+                 UPPER(TRIM(c.clave)) AS clave,
+                 c.cantidad_capturada::numeric AS piezas
+          FROM solicitudes_periodo sp
+          JOIN public.solicitud_primer_nivel_contexto c ON c.solicitud_id = sp.id
+
+          UNION ALL
+
+          SELECT sp.cluesimb, sp.unidad, sp.jurisdiccion,
+                 UPPER(TRIM(d.clave)) AS clave,
+                 d.cantidad::numeric AS piezas
+          FROM solicitudes_periodo sp
+          JOIN public.solicitud_bitacora_detalle d ON d.solicitud_id = sp.id
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM public.solicitud_primer_nivel_contexto c
+            WHERE c.solicitud_id = sp.id
+          )
+        ),
+        insumos AS (
+          SELECT DISTINCT ON (UPPER(TRIM(i.clave)))
+                 UPPER(TRIM(i.clave)) AS clave,
+                 NULLIF(REGEXP_REPLACE(TRIM(i.descripcion), '[[:space:]]+', ' ', 'g'), '') AS descripcion,
+                 NULLIF(REGEXP_REPLACE(TRIM(i.nombre), '[[:space:]]+', ' ', 'g'), '') AS nombre
+          FROM cnis.insumo i
+          ORDER BY UPPER(TRIM(i.clave)), i.activo DESC, i.id DESC
+        ),
+        articulos_fallback AS (
+          SELECT DISTINCT ON (UPPER(TRIM(a.clave)))
+                 UPPER(TRIM(a.clave)) AS clave,
+                 NULLIF(REGEXP_REPLACE(TRIM(a.descripcion), '[[:space:]]+', ' ', 'g'), '') AS descripcion
+          FROM public.articulos a
+          WHERE NULLIF(UPPER(TRIM(a.clave)), '') IS NOT NULL
+          ORDER BY UPPER(TRIM(a.clave)),
+                   CASE WHEN UPPER(TRIM(COALESCE(a.activo, ''))) IN ('1', 'TRUE', 'ACTIVO', 'SI', 'SÍ') THEN 0 ELSE 1 END,
+                   a.id DESC
+        )
+        SELECT c.jurisdiccion, c.cluesimb, MAX(c.unidad) AS unidad, c.clave,
+               COALESCE(MAX(i.descripcion), MAX(af.descripcion), MAX(i.nombre)) AS descripcion,
+               COALESCE(SUM(c.piezas), 0)::numeric AS piezas
+        FROM capturas c
+        LEFT JOIN insumos i ON i.clave = c.clave
+        LEFT JOIN articulos_fallback af ON af.clave = c.clave
+        GROUP BY c.jurisdiccion, c.cluesimb, c.clave
+        HAVING COALESCE(SUM(c.piezas), 0) > 0
+        ORDER BY c.jurisdiccion, c.clave, c.cluesimb
+      `, [months]),
+      pool.query(`
+        SELECT DISTINCT ON (UPPER(TRIM(um.cluesimb)))
+               UPPER(TRIM(um.cluesimb)) AS cluesimb,
+               um.nombre AS unidad
+        FROM public.unidad_medica um
+        WHERE UPPER(TRIM(um.cluesimb)) = ANY($1::text[])
+        ORDER BY UPPER(TRIM(um.cluesimb)), um.activo DESC, um.id
+      `, [cluesConfiguradas]),
+    ]);
+
+    const unidadesCatalogo = new Map<string, string>(catalogoUnidades.rows.map(row => [
+      String(row.cluesimb), String(row.unidad ?? row.cluesimb),
+    ]));
+    const asignacion = new Map<string, { jurisdiccion: JurisdiccionDistribucion; ruta: number; ordenUnidad: number }>();
+    const unidades: MatrizDistribucionPrimerNivelUnidad[] = [];
+
+    for (const ruta of RUTAS_PRIMER_NIVEL_PROVISIONALES) {
+      ruta.clues.forEach((cluesimb, ordenUnidad) => {
+        asignacion.set(cluesimb, { jurisdiccion: ruta.jurisdiccion, ruta: ruta.ruta, ordenUnidad });
+        unidades.push({
+          jurisdiccion: ruta.jurisdiccion,
+          cluesimb,
+          unidad: unidadesCatalogo.get(cluesimb) ?? cluesimb,
+          ruta: String(ruta.ruta),
+          ordenRuta: ruta.ruta,
+          ordenUnidad,
+          esRutaProvisional: true,
+        });
+      });
+    }
+
+    const data: MatrizDistribucionPrimerNivelRow[] = agregado.rows.map(row => {
+      const cluesimb = String(row.cluesimb ?? '');
+      const configurada = asignacion.get(cluesimb);
+      return {
+        jurisdiccion: configurada?.jurisdiccion ?? row.jurisdiccion,
+        cluesimb,
+        clave: String(row.clave ?? ''),
+        descripcion: row.descripcion ?? null,
+        piezas: Number(row.piezas ?? 0),
+      };
+    });
+
+    const adicionales = new Map<string, { jurisdiccion: JurisdiccionDistribucion; unidad: string }>();
+    for (const row of agregado.rows) {
+      const cluesimb = String(row.cluesimb ?? '');
+      if (!asignacion.has(cluesimb) && JURISDICCIONES_DISTRIBUCION.includes(row.jurisdiccion)) {
+        adicionales.set(cluesimb, { jurisdiccion: row.jurisdiccion, unidad: String(row.unidad ?? cluesimb) });
+      }
+    }
+    for (const jurisdiccion of JURISDICCIONES_DISTRIBUCION) {
+      [...adicionales.entries()]
+        .filter(([, item]) => item.jurisdiccion === jurisdiccion)
+        .sort((a, b) => a[1].unidad.localeCompare(b[1].unidad, 'es') || a[0].localeCompare(b[0]))
+        .forEach(([cluesimb, item], ordenUnidad) => unidades.push({
+          jurisdiccion,
+          cluesimb,
+          unidad: item.unidad,
+          ruta: RUTA_SIN_ASIGNAR,
+          ordenRuta: 999,
+          ordenUnidad,
+          esRutaProvisional: false,
+        }));
+    }
+
+    unidades.sort((a, b) =>
+      JURISDICCIONES_DISTRIBUCION.indexOf(a.jurisdiccion) - JURISDICCIONES_DISTRIBUCION.indexOf(b.jurisdiccion)
+      || a.ordenRuta - b.ordenRuta
+      || a.ordenUnidad - b.ordenUnidad
+      || a.cluesimb.localeCompare(b.cluesimb)
+    );
+
+    return {
+      mode: 'matriz-distribucion-primer-nivel',
+      window: { months },
+      generadoEn: new Date().toISOString(),
+      unidades,
+      data,
+    };
+  }
+
   async consultar(input: ConcentradoPrimerNivelInput) {
-    const months = Math.min(12, Math.max(1, parseIntSafe(input.months, 3)));
+    const months = Math.min(12, Math.max(1, parseIntSafe(input.months, 1)));
     const page = Math.max(1, parseIntSafe(input.page, 1));
     const pageSize = Math.min(input.export ? 50000 : 200, Math.max(1, parseIntSafe(input.pageSize, 25)));
     const offset = (page - 1) * pageSize;

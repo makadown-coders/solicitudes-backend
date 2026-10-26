@@ -1,4 +1,5 @@
 import { OrigenCapturaPrimerNivel } from './ContextoCapturaPrimerNivel';
+import { JurisdiccionDistribucion } from '../../../config/rutas-primer-nivel.provisional';
 
 export type ConcentradoPrimerNivelInput = {
   months?: unknown;
@@ -26,4 +27,30 @@ export type ConcentradoPrimerNivelRow = {
   piezas: number;
   primeraSolicitud: string;
   ultimaSolicitud: string;
+};
+
+export type MatrizDistribucionPrimerNivelUnidad = {
+  jurisdiccion: JurisdiccionDistribucion;
+  cluesimb: string;
+  unidad: string;
+  ruta: string;
+  ordenRuta: number;
+  ordenUnidad: number;
+  esRutaProvisional: boolean;
+};
+
+export type MatrizDistribucionPrimerNivelRow = {
+  jurisdiccion: JurisdiccionDistribucion;
+  cluesimb: string;
+  clave: string;
+  descripcion: string | null;
+  piezas: number;
+};
+
+export type MatrizDistribucionPrimerNivelResponse = {
+  mode: 'matriz-distribucion-primer-nivel';
+  window: { months: number };
+  generadoEn: string;
+  unidades: MatrizDistribucionPrimerNivelUnidad[];
+  data: MatrizDistribucionPrimerNivelRow[];
 };

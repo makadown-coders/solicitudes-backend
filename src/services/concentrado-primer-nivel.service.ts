@@ -31,7 +31,7 @@ export default class ConcentradoPrimerNivelService {
     const months = Math.min(12, Math.max(1, parseIntSafe(monthsInput, 1)));
     const cluesConfiguradas = RUTAS_PRIMER_NIVEL_PROVISIONALES.flatMap(ruta => [...ruta.clues]);
 
-    const [agregado, catalogoUnidades] = await Promise.all([
+    const [agregado, catalogoUnidades, existenciasAlmacenes] = await Promise.all([
       pool.query(`
         WITH unidades AS (
           SELECT um.id,
@@ -122,6 +122,28 @@ export default class ConcentradoPrimerNivelService {
         WHERE UPPER(TRIM(um.cluesimb)) = ANY($1::text[])
         ORDER BY UPPER(TRIM(um.cluesimb)), um.activo DESC, um.id
       `, [cluesConfiguradas]),
+      pool.query(`
+        SELECT UPPER(TRIM(t.clave_cnis)) AS clave,
+               COALESCE(SUM(t.existencia) FILTER (
+                 WHERE UPPER(CONCAT_WS(' ', vumd.nombre_de_unidad, vumd.nombre_municipio, vumd.alias_sas, vumd.cluesimb))
+                   SIMILAR TO '%(MEXICALI|AZM)%'
+               ), 0)::numeric AS existencia_azm,
+               COALESCE(SUM(t.existencia) FILTER (
+                 WHERE UPPER(CONCAT_WS(' ', vumd.nombre_de_unidad, vumd.nombre_municipio, vumd.alias_sas, vumd.cluesimb))
+                   SIMILAR TO '%(TIJUANA|AZT)%'
+               ), 0)::numeric AS existencia_azt,
+               COALESCE(SUM(t.existencia) FILTER (
+                 WHERE UPPER(CONCAT_WS(' ', vumd.nombre_de_unidad, vumd.nombre_municipio, vumd.alias_sas, vumd.cluesimb))
+                   SIMILAR TO '%(ENSENADA|AZE)%'
+               ), 0)::numeric AS existencia_aze,
+               MAX(t.cargado_en) AS snapshot_existencias
+        FROM public.tmp_existencias t
+        JOIN public.v_unidad_medica_detalle vumd
+          ON UPPER(TRIM(vumd.cluesimb)) = UPPER(TRIM(t.cluesimb))
+        WHERE vumd.tipo_unidad = 'ALMACENES'
+          AND NULLIF(UPPER(TRIM(t.clave_cnis)), '') IS NOT NULL
+        GROUP BY UPPER(TRIM(t.clave_cnis))
+      `),
     ]);
 
     const unidadesCatalogo = new Map<string, string>(catalogoUnidades.rows.map(row => [
@@ -157,6 +179,55 @@ export default class ConcentradoPrimerNivelService {
       };
     });
 
+    const existenciasPorClave = new Map(existenciasAlmacenes.rows.map(row => [String(row.clave), row]));
+    const clavesSolicitadas = [...new Set(data.map(row => row.clave))];
+    const clavesSinExistencia = clavesSolicitadas.filter(clave => {
+      const row = existenciasPorClave.get(clave);
+      return Number(row?.existencia_azm ?? 0) + Number(row?.existencia_azt ?? 0) + Number(row?.existencia_aze ?? 0) <= 0;
+    });
+    const alternativas = clavesSinExistencia.length ? await pool.query(`
+      SELECT UPPER(TRIM(h.clave)) AS clave,
+             UPPER(TRIM(h.sustituto)) AS candidato,
+             h.factor::numeric AS factor
+      FROM public.homologos h
+      WHERE UPPER(TRIM(h.clave)) = ANY($1::text[])
+        AND NULLIF(UPPER(TRIM(h.sustituto)), '') IS NOT NULL
+        AND h.factor::numeric > 0
+      UNION
+      SELECT UPPER(TRIM(h.sustituto)) AS clave,
+             UPPER(TRIM(h.clave)) AS candidato,
+             1 / NULLIF(h.factor::numeric, 0) AS factor
+      FROM public.homologos h
+      WHERE UPPER(TRIM(h.sustituto)) = ANY($1::text[])
+        AND NULLIF(UPPER(TRIM(h.clave)), '') IS NOT NULL
+        AND h.factor::numeric > 0
+    `, [clavesSinExistencia]) : { rows: [] as any[] };
+    const alternativasPorClave = new Map<string, any>();
+    for (const arista of alternativas.rows) {
+      const stock = existenciasPorClave.get(String(arista.candidato));
+      const factor = Number(arista.factor ?? 0);
+      const existenciaAzm = Number(stock?.existencia_azm ?? 0);
+      const existenciaAzt = Number(stock?.existencia_azt ?? 0);
+      const existenciaAze = Number(stock?.existencia_aze ?? 0);
+      const total = existenciaAzm + existenciaAzt + existenciaAze;
+      if (factor <= 0 || total <= 0) continue;
+      const candidata = {
+        ...arista,
+        existencia_azm: existenciaAzm,
+        existencia_azt: existenciaAzt,
+        existencia_aze: existenciaAze,
+        cobertura_equivalente: total / factor,
+      };
+      const clave = String(arista.clave);
+      const actual = alternativasPorClave.get(clave);
+      if (!actual
+        || candidata.cobertura_equivalente > actual.cobertura_equivalente
+        || (candidata.cobertura_equivalente === actual.cobertura_equivalente
+          && String(candidata.candidato).localeCompare(String(actual.candidato)) < 0)) {
+        alternativasPorClave.set(clave, candidata);
+      }
+    }
+
     const adicionales = new Map<string, { jurisdiccion: JurisdiccionDistribucion; unidad: string }>();
     for (const row of agregado.rows) {
       const cluesimb = String(row.cluesimb ?? '');
@@ -190,8 +261,30 @@ export default class ConcentradoPrimerNivelService {
       mode: 'matriz-distribucion-primer-nivel',
       window: { months },
       generadoEn: new Date().toISOString(),
+      snapshotExistencias: fecha(existenciasAlmacenes.rows.reduce<Date | null>((maximo, row) => {
+        const actual = row.snapshot_existencias ? new Date(row.snapshot_existencias) : null;
+        return actual && (!maximo || actual > maximo) ? actual : maximo;
+      }, null)),
       unidades,
       data,
+      existenciasAlmacenes: clavesSolicitadas.map(clave => {
+        const row = existenciasPorClave.get(clave);
+        const alternativa = alternativasPorClave.get(clave);
+        return {
+          clave,
+          existenciaAzm: Number(row?.existencia_azm ?? 0),
+          existenciaAzt: Number(row?.existencia_azt ?? 0),
+          existenciaAze: Number(row?.existencia_aze ?? 0),
+          alternativa: alternativa ? {
+            clave: String(alternativa.candidato),
+            factor: Number(alternativa.factor),
+            existenciaAzm: Number(alternativa.existencia_azm ?? 0),
+            existenciaAzt: Number(alternativa.existencia_azt ?? 0),
+            existenciaAze: Number(alternativa.existencia_aze ?? 0),
+            coberturaEquivalente: Number(alternativa.cobertura_equivalente ?? 0),
+          } : null,
+        };
+      }),
     };
   }
 

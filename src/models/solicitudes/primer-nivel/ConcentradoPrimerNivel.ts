@@ -51,6 +51,21 @@ export type MatrizDistribucionPrimerNivelResponse = {
   mode: 'matriz-distribucion-primer-nivel';
   window: { months: number };
   generadoEn: string;
+  snapshotExistencias: string | null;
   unidades: MatrizDistribucionPrimerNivelUnidad[];
   data: MatrizDistribucionPrimerNivelRow[];
+  existenciasAlmacenes: Array<{
+    clave: string;
+    existenciaAzm: number;
+    existenciaAzt: number;
+    existenciaAze: number;
+    alternativa: {
+      clave: string;
+      factor: number;
+      existenciaAzm: number;
+      existenciaAzt: number;
+      existenciaAze: number;
+      coberturaEquivalente: number;
+    } | null;
+  }>;
 };

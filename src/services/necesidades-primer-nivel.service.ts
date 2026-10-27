@@ -538,7 +538,11 @@ export default class NecesidadesPrimerNivelService {
     }
     return new Map([...agrupados.entries()].map(([clave, items]) => [clave, {
       origen: [...new Set(items.map(item => etiquetasOrigen[item.origenCaptura]))].join(' / '),
-      referencia: [...new Set(items.map(item => item.referenciaCaptura).filter(Boolean))].join(' / '),
+      referencia: [...new Set(items.map(item =>
+        item.origenCaptura === 'APS'
+          ? item.etiquetaCaptura || item.referenciaCaptura
+          : item.referenciaCaptura
+      ).filter(Boolean))].join(' / '),
       etiqueta: [...new Set(items.map(item => item.etiquetaCaptura).filter(Boolean))].join(' / '),
     }]));
   }

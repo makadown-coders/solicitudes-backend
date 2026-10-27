@@ -465,7 +465,10 @@ export default class NecesidadesPrimerNivelService {
     hojaAnalisis.addRow(['Jurisdicción', contexto.jurisdiccion || 'No especificada']);
     const fechaSnapshot = contexto.analisis.find(item => item.fechaSnapshot)?.fechaSnapshot;
     hojaAnalisis.addRow(['Snapshot de existencias', formatearFechaPacifico(fechaSnapshot ?? null) ?? 'No disponible']);
-    hojaAnalisis.addRow(['Nota', 'Información referencial; las existencias pueden cambiar y deben validarse antes del surtimiento.']);
+    hojaAnalisis.addRow([
+      'Nota',
+      'La información de existencias y consumo presentada en este apartado es de apoyo para el análisis operativo y corresponde a las fuentes y fechas disponibles. No confirma la disponibilidad para surtimiento ni constituye una autorización de entrega o traslado. Antes de tomar una decisión, valide la información con el área de Abasto.',
+    ]);
     hojaAnalisis.addRow([]);
     hojaAnalisis.addRow([
       'No.', 'Clave', 'Descripción', 'Presentación', 'Necesidad', 'CPM unidad',
@@ -504,7 +507,13 @@ export default class NecesidadesPrimerNivelService {
     });
 
     hojaAnalisis.mergeCells('A1:O1');
+    hojaAnalisis.mergeCells('B5:O5');
     hojaAnalisis.getRow(1).font = { bold: true, size: 14, color: { argb: 'FF006B5F' } };
+    hojaAnalisis.getRow(5).height = 48;
+    hojaAnalisis.getRow(5).alignment = { vertical: 'middle', wrapText: true };
+    hojaAnalisis.getCell('A5').font = { bold: true, color: { argb: 'FF7A4E00' } };
+    hojaAnalisis.getCell('A5').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF2CC' } };
+    hojaAnalisis.getCell('B5').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF2CC' } };
     hojaAnalisis.getRow(7).font = { bold: true, color: { argb: 'FFFFFFFF' } };
     hojaAnalisis.getRow(7).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF006B5F' } };
     hojaAnalisis.columns = [

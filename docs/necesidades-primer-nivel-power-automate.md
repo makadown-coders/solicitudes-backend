@@ -34,9 +34,14 @@ El webhook de Power Automate recibe el contrato existente:
   "unidad": "Nombre del Centro de Salud",
   "clues": "BCIMB000232",
   "periodo": "Periodo capturado",
-  "tipoMime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  "tipoMime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "correos": [
+    "destinatario.adicional@imssbienestar.gob.mx"
+  ]
 }
 ```
+
+`correos` contiene los CC adicionales resueltos por el backend a partir del contexto validado de APS y Programas Preventivos. Power Automate puede usar `join(triggerBody()?['correos'], ';')`; una lista vacÃ­a conserva el envÃ­o sin CC adicional.
 
 ## Flujo sugerido
 

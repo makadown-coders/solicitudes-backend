@@ -15,6 +15,7 @@ r.post('/primer-nivel/enviar', c.postEnviarNecesidadesPrimerNivel.bind(c));
 r.post('/primer-nivel/vista-previa-excel', c.postVistaPreviaNecesidadesPrimerNivel.bind(c));
 r.get('/primer-nivel/concentrado', concentradoPrimerNivel.consultar);
 r.get('/primer-nivel/concentrado/export', concentradoPrimerNivel.exportar);
+r.get('/primer-nivel/concentrado/matriz-distribucion', concentradoPrimerNivel.matrizDistribucion);
 r.get('/primer-nivel/aps/estructura', aps.getEstructura.bind(aps));
 r.get('/primer-nivel/aps/medicamentos', aps.getMedicamentos.bind(aps));
 r.get('/primer-nivel/aps/medicamentos/:codigo', aps.getMedicamento.bind(aps));

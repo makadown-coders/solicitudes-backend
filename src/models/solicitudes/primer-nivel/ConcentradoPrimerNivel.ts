@@ -1,4 +1,5 @@
 import { OrigenCapturaPrimerNivel } from './ContextoCapturaPrimerNivel';
+import { JurisdiccionDistribucion } from '../../../config/rutas-primer-nivel.provisional';
 
 export type ConcentradoPrimerNivelInput = {
   months?: unknown;
@@ -26,4 +27,46 @@ export type ConcentradoPrimerNivelRow = {
   piezas: number;
   primeraSolicitud: string;
   ultimaSolicitud: string;
+};
+
+export type MatrizDistribucionPrimerNivelUnidad = {
+  jurisdiccion: JurisdiccionDistribucion;
+  cluesimb: string;
+  unidad: string;
+  ruta: string;
+  ordenRuta: number;
+  ordenUnidad: number;
+  esRutaProvisional: boolean;
+};
+
+export type MatrizDistribucionPrimerNivelRow = {
+  jurisdiccion: JurisdiccionDistribucion;
+  cluesimb: string;
+  clave: string;
+  descripcion: string | null;
+  tipoInsumo: 'MED' | 'MC' | null;
+  piezas: number;
+};
+
+export type MatrizDistribucionPrimerNivelResponse = {
+  mode: 'matriz-distribucion-primer-nivel';
+  window: { months: number };
+  generadoEn: string;
+  snapshotExistencias: string | null;
+  unidades: MatrizDistribucionPrimerNivelUnidad[];
+  data: MatrizDistribucionPrimerNivelRow[];
+  existenciasAlmacenes: Array<{
+    clave: string;
+    existenciaAzm: number;
+    existenciaAzt: number;
+    existenciaAze: number;
+    alternativa: {
+      clave: string;
+      factor: number;
+      existenciaAzm: number;
+      existenciaAzt: number;
+      existenciaAze: number;
+      coberturaEquivalente: number;
+    } | null;
+  }>;
 };

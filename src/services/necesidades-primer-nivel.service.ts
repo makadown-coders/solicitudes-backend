@@ -10,6 +10,7 @@ import {
 } from '../models/solicitudes/primer-nivel/ContextoCapturaPrimerNivel';
 import HistorialesService from './historiales.service';
 import SolicitudesPrimerNivelBitacoraService from './solicitudes-primer-nivel-bitacora.service';
+import SolicitudesPrimerNivelDestinatariosService from './solicitudes-primer-nivel-destinatarios.service';
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
@@ -67,7 +68,8 @@ function formatearFechaPacifico(valor: string | Date | null): string | null {
 export default class NecesidadesPrimerNivelService {
   constructor(
     private readonly bitacoraPrimerNivel = new SolicitudesPrimerNivelBitacoraService(),
-    private readonly historiales = new HistorialesService()
+    private readonly historiales = new HistorialesService(),
+    private readonly destinatarios = new SolicitudesPrimerNivelDestinatariosService()
   ) {}
 
   async enviar(input: EnviarNecesidadesPrimerNivelInput): Promise<EnviarNecesidadesPrimerNivelResult> {
@@ -96,6 +98,7 @@ export default class NecesidadesPrimerNivelService {
       analisis,
       contextosCaptura,
     });
+    const correos = await this.resolverCorreosDestinatarios(contextosCaptura);
 
     await this.historiales.enviarWishlistASharePoint({
       nombreArchivo,
@@ -105,9 +108,20 @@ export default class NecesidadesPrimerNivelService {
       clues: cluesimb,
       periodo,
       tipoMime: XLSX_MIME,
+      correos,
     });
 
     return this.crearResultado({ folio, cluesimb, unidad: unidad.nombre_de_unidad, periodo, articulos, recibidoEn });
+  }
+
+  private async resolverCorreosDestinatarios(contextos: ContextoCapturaPrimerNivel[]): Promise<string[]> {
+    const codigos = this.destinatarios.obtenerCodigosNotificacion(contextos);
+    try {
+      return await this.destinatarios.obtenerCorreosDestinatarios(codigos);
+    } catch (error) {
+      console.error('Error resolviendo destinatarios adicionales de Primer Nivel; se enviará sin CC:', error);
+      return [];
+    }
   }
 
   async generarVistaPrevia(input: EnviarNecesidadesPrimerNivelInput): Promise<VistaPreviaNecesidadesPrimerNivel> {
@@ -524,7 +538,11 @@ export default class NecesidadesPrimerNivelService {
     }
     return new Map([...agrupados.entries()].map(([clave, items]) => [clave, {
       origen: [...new Set(items.map(item => etiquetasOrigen[item.origenCaptura]))].join(' / '),
-      referencia: [...new Set(items.map(item => item.referenciaCaptura).filter(Boolean))].join(' / '),
+      referencia: [...new Set(items.map(item =>
+        item.origenCaptura === 'APS'
+          ? item.etiquetaCaptura || item.referenciaCaptura
+          : item.referenciaCaptura
+      ).filter(Boolean))].join(' / '),
       etiqueta: [...new Set(items.map(item => item.etiquetaCaptura).filter(Boolean))].join(' / '),
     }]));
   }

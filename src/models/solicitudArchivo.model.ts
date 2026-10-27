@@ -7,3 +7,7 @@ export interface SolicitudArchivo {
   periodo: string;
   tipoMime: string; // opcional, pero lo mandamos
 }
+
+export interface SolicitudArchivoPrimerNivel extends SolicitudArchivo {
+  correos: string[];
+}

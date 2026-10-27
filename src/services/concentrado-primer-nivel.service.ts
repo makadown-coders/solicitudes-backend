@@ -68,7 +68,11 @@ export default class ConcentradoPrimerNivelService {
         ),
         capturas AS (
           SELECT sp.cluesimb, sp.unidad, sp.jurisdiccion,
-                 UPPER(TRIM(c.clave)) AS clave,
+                 CASE
+                   WHEN UPPER(TRIM(c.clave)) ~ '^311\.[0-9]{3}\.[0-9]{4}\.[0-9]{2}$'
+                     THEN REGEXP_REPLACE(UPPER(TRIM(c.clave)), '\.[0-9]{2}$', '')
+                   ELSE UPPER(TRIM(c.clave))
+                 END AS clave,
                  c.cantidad_capturada::numeric AS piezas
           FROM solicitudes_periodo sp
           JOIN public.solicitud_primer_nivel_contexto c ON c.solicitud_id = sp.id
@@ -76,7 +80,11 @@ export default class ConcentradoPrimerNivelService {
           UNION ALL
 
           SELECT sp.cluesimb, sp.unidad, sp.jurisdiccion,
-                 UPPER(TRIM(d.clave)) AS clave,
+                 CASE
+                   WHEN UPPER(TRIM(d.clave)) ~ '^311\.[0-9]{3}\.[0-9]{4}\.[0-9]{2}$'
+                     THEN REGEXP_REPLACE(UPPER(TRIM(d.clave)), '\.[0-9]{2}$', '')
+                   ELSE UPPER(TRIM(d.clave))
+                 END AS clave,
                  d.cantidad::numeric AS piezas
           FROM solicitudes_periodo sp
           JOIN public.solicitud_bitacora_detalle d ON d.solicitud_id = sp.id
@@ -87,25 +95,61 @@ export default class ConcentradoPrimerNivelService {
           )
         ),
         insumos AS (
-          SELECT DISTINCT ON (UPPER(TRIM(i.clave)))
-                 UPPER(TRIM(i.clave)) AS clave,
+          SELECT DISTINCT ON (CASE
+                   WHEN UPPER(TRIM(i.clave)) ~ '^311\.[0-9]{3}\.[0-9]{4}\.[0-9]{2}$'
+                     THEN REGEXP_REPLACE(UPPER(TRIM(i.clave)), '\.[0-9]{2}$', '')
+                   ELSE UPPER(TRIM(i.clave))
+                 END)
+                 CASE
+                   WHEN UPPER(TRIM(i.clave)) ~ '^311\.[0-9]{3}\.[0-9]{4}\.[0-9]{2}$'
+                     THEN REGEXP_REPLACE(UPPER(TRIM(i.clave)), '\.[0-9]{2}$', '')
+                   ELSE UPPER(TRIM(i.clave))
+                 END AS clave,
                  NULLIF(REGEXP_REPLACE(TRIM(i.descripcion), '[[:space:]]+', ' ', 'g'), '') AS descripcion,
-                 NULLIF(REGEXP_REPLACE(TRIM(i.nombre), '[[:space:]]+', ' ', 'g'), '') AS nombre
+                 NULLIF(REGEXP_REPLACE(TRIM(i.nombre), '[[:space:]]+', ' ', 'g'), '') AS nombre,
+                 NULLIF(TRIM(i.categoria), '') AS categoria
           FROM cnis.insumo i
-          ORDER BY UPPER(TRIM(i.clave)), i.activo DESC, i.id DESC
+          ORDER BY CASE
+                     WHEN UPPER(TRIM(i.clave)) ~ '^311\.[0-9]{3}\.[0-9]{4}\.[0-9]{2}$'
+                       THEN REGEXP_REPLACE(UPPER(TRIM(i.clave)), '\.[0-9]{2}$', '')
+                     ELSE UPPER(TRIM(i.clave))
+                   END,
+                   i.activo DESC, i.id DESC
         ),
         articulos_fallback AS (
-          SELECT DISTINCT ON (UPPER(TRIM(a.clave)))
-                 UPPER(TRIM(a.clave)) AS clave,
-                 NULLIF(REGEXP_REPLACE(TRIM(a.descripcion), '[[:space:]]+', ' ', 'g'), '') AS descripcion
+          SELECT DISTINCT ON (CASE
+                   WHEN UPPER(TRIM(a.clave)) ~ '^311\.[0-9]{3}\.[0-9]{4}\.[0-9]{2}$'
+                     THEN REGEXP_REPLACE(UPPER(TRIM(a.clave)), '\.[0-9]{2}$', '')
+                   ELSE UPPER(TRIM(a.clave))
+                 END)
+                 CASE
+                   WHEN UPPER(TRIM(a.clave)) ~ '^311\.[0-9]{3}\.[0-9]{4}\.[0-9]{2}$'
+                     THEN REGEXP_REPLACE(UPPER(TRIM(a.clave)), '\.[0-9]{2}$', '')
+                   ELSE UPPER(TRIM(a.clave))
+                 END AS clave,
+                 NULLIF(REGEXP_REPLACE(TRIM(a.descripcion), '[[:space:]]+', ' ', 'g'), '') AS descripcion,
+                 NULLIF(TRIM(a.categoria), '') AS categoria
           FROM public.articulos a
           WHERE NULLIF(UPPER(TRIM(a.clave)), '') IS NOT NULL
-          ORDER BY UPPER(TRIM(a.clave)),
+          ORDER BY CASE
+                     WHEN UPPER(TRIM(a.clave)) ~ '^311\.[0-9]{3}\.[0-9]{4}\.[0-9]{2}$'
+                       THEN REGEXP_REPLACE(UPPER(TRIM(a.clave)), '\.[0-9]{2}$', '')
+                     ELSE UPPER(TRIM(a.clave))
+                   END,
                    CASE WHEN UPPER(TRIM(COALESCE(a.activo, ''))) IN ('1', 'TRUE', 'ACTIVO', 'SI', 'SÍ') THEN 0 ELSE 1 END,
                    a.id DESC
         )
         SELECT c.jurisdiccion, c.cluesimb, MAX(c.unidad) AS unidad, c.clave,
                COALESCE(MAX(i.descripcion), MAX(af.descripcion), MAX(i.nombre)) AS descripcion,
+               CASE
+                 WHEN SPLIT_PART(c.clave, '.', 1) IN (
+                   '060', '070', '080', '160', '180', '200', '204', '254', '311', '531', '537'
+                 ) THEN 'MC'
+                 WHEN UPPER(COALESCE(MAX(i.categoria), MAX(af.categoria), '')) LIKE '%MEDICAMENTO%' THEN 'MED'
+                 WHEN UPPER(COALESCE(MAX(i.categoria), MAX(af.categoria), '')) LIKE '%MATERIAL%CURACI%' THEN 'MC'
+                 WHEN SPLIT_PART(c.clave, '.', 1) = '010' THEN 'MED'
+                 ELSE NULL
+               END AS tipo_insumo,
                COALESCE(SUM(c.piezas), 0)::numeric AS piezas
         FROM capturas c
         LEFT JOIN insumos i ON i.clave = c.clave
@@ -123,7 +167,11 @@ export default class ConcentradoPrimerNivelService {
         ORDER BY UPPER(TRIM(um.cluesimb)), um.activo DESC, um.id
       `, [cluesConfiguradas]),
       pool.query(`
-        SELECT UPPER(TRIM(t.clave_cnis)) AS clave,
+        SELECT CASE
+                 WHEN UPPER(TRIM(t.clave_cnis)) ~ '^311\.[0-9]{3}\.[0-9]{4}\.[0-9]{2}$'
+                   THEN REGEXP_REPLACE(UPPER(TRIM(t.clave_cnis)), '\.[0-9]{2}$', '')
+                 ELSE UPPER(TRIM(t.clave_cnis))
+               END AS clave,
                COALESCE(SUM(t.existencia) FILTER (
                  WHERE UPPER(CONCAT_WS(' ', vumd.nombre_de_unidad, vumd.nombre_municipio, vumd.alias_sas, vumd.cluesimb))
                    SIMILAR TO '%(MEXICALI|AZM)%'
@@ -142,7 +190,11 @@ export default class ConcentradoPrimerNivelService {
           ON UPPER(TRIM(vumd.cluesimb)) = UPPER(TRIM(t.cluesimb))
         WHERE vumd.tipo_unidad = 'ALMACENES'
           AND NULLIF(UPPER(TRIM(t.clave_cnis)), '') IS NOT NULL
-        GROUP BY UPPER(TRIM(t.clave_cnis))
+        GROUP BY CASE
+                   WHEN UPPER(TRIM(t.clave_cnis)) ~ '^311\.[0-9]{3}\.[0-9]{4}\.[0-9]{2}$'
+                     THEN REGEXP_REPLACE(UPPER(TRIM(t.clave_cnis)), '\.[0-9]{2}$', '')
+                   ELSE UPPER(TRIM(t.clave_cnis))
+                 END
       `),
     ]);
 
@@ -175,6 +227,7 @@ export default class ConcentradoPrimerNivelService {
         cluesimb,
         clave: String(row.clave ?? ''),
         descripcion: row.descripcion ?? null,
+        tipoInsumo: row.tipo_insumo === 'MED' || row.tipo_insumo === 'MC' ? row.tipo_insumo : null,
         piezas: Number(row.piezas ?? 0),
       };
     });

@@ -7,6 +7,7 @@ export type FlagKey =
   | 'CLUES_EXISTENCIAS_ALLOWLIST'
   | 'IMPORT_LIMIT_TO_KIT'
   | 'EDIT_CPMS'
+  | 'PRIMER_NIVEL_WISHLIST_ENABLED'
   ; // json list
 
 export type FlagScope = 'global' | 'nivel' | 'clues';

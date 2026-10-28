@@ -21,6 +21,8 @@ type CitasPendientesParams = PaginationParams & {
   window_days?: number;
 };
 
+export type IbOncoReporteSeccsosTipo = 'sin_vigente' | 'sin_antecedente';
+
 type PaginatedResult<T> = {
   rows: T[];
   total: number;
@@ -525,6 +527,154 @@ export default class IbOncoService {
     }));
 
     return this.paginated(rows, total, page, limit, offset);
+  }
+
+  async obtenerReporteSeccsos(tipo: IbOncoReporteSeccsosTipo, windowDays = 120) {
+    const dias = Math.min(Math.max(Number(windowDays) || 120, 1), 365);
+    const result = await pool.query(`
+      WITH catalogo AS (
+        SELECT DISTINCT ON (UPPER(TRIM(a.clave)))
+               UPPER(TRIM(a.clave)) AS clave_cnis,
+               a.descripcion
+        FROM public.articulos a
+        WHERE NULLIF(UPPER(TRIM(a.clave)), '') IS NOT NULL
+        ORDER BY UPPER(TRIM(a.clave)), a.id DESC
+      ),
+      universo AS (
+        SELECT UPPER(TRIM(v.cluesimb)) AS cluesimb,
+               MAX(v.nombre_de_unidad) AS nombre_de_unidad,
+               UPPER(TRIM(v.clave_cnis)) AS clave_cnis,
+               MAX(a.descripcion) AS descripcion,
+               COALESCE(MAX(v.cpm), 0)::numeric AS cpm,
+               COALESCE(MAX(v.existencias), 0)::numeric AS existencias
+        FROM public.v_onco_abasto_cpm v
+        LEFT JOIN catalogo a
+          ON a.clave_cnis = UPPER(TRIM(v.clave_cnis))
+        GROUP BY UPPER(TRIM(v.cluesimb)), UPPER(TRIM(v.clave_cnis))
+      ),
+      ordenes_base AS (
+        SELECT UPPER(TRIM(um.cluesimb)) AS cluesimb,
+               UPPER(TRIM(c.clave_cnis)) AS clave_cnis,
+               NULLIF(TRIM(c.orden_de_suministro), '') AS orden_de_suministro,
+               MAX(c.fecha_emision)::date AS fecha_emision,
+               MAX(c.fecha_limite_de_entrega)::date AS fecha_limite_de_entrega,
+               MAX(c.fecha_recepcion_max)::date AS fecha_recepcion,
+               COALESCE(SUM(c.no_de_piezas_emitidas), 0)::numeric AS piezas_emitidas,
+               COALESCE(SUM(c.pzas_recibidas_por_la_entidad), 0)::numeric AS piezas_recibidas,
+               GREATEST(
+                 COALESCE(SUM(c.no_de_piezas_emitidas), 0)
+                   - COALESCE(SUM(c.pzas_recibidas_por_la_entidad), 0),
+                 0
+               )::numeric AS saldo_pendiente,
+               BOOL_OR(UPPER(TRIM(COALESCE(c.estatus, ''))) = 'NO RECIBIR') AS es_no_recibir
+        FROM public.citas c
+        JOIN public.unidad_medica um
+          ON UPPER(TRIM(c.clues_destino)) IN (
+            UPPER(TRIM(um.cluesimb)),
+            UPPER(TRIM(COALESCE(um.cluessa, '')))
+          )
+        WHERE NULLIF(UPPER(TRIM(c.clave_cnis)), '') IS NOT NULL
+          AND NULLIF(TRIM(c.orden_de_suministro), '') IS NOT NULL
+        GROUP BY UPPER(TRIM(um.cluesimb)), UPPER(TRIM(c.clave_cnis)),
+                 NULLIF(TRIM(c.orden_de_suministro), '')
+      ),
+      ordenes AS (
+        SELECT ob.*,
+               (
+                 ob.saldo_pendiente > 0
+                 AND NOT ob.es_no_recibir
+                 AND (
+                   ob.fecha_limite_de_entrega >= CURRENT_DATE
+                   OR (
+                     ob.fecha_limite_de_entrega IS NULL
+                     AND ob.fecha_emision >= CURRENT_DATE - make_interval(days => $1::int)
+                   )
+                 )
+               ) AS es_vigente,
+               (
+                 ob.saldo_pendiente > 0
+                 AND NOT ob.es_no_recibir
+                 AND ob.fecha_limite_de_entrega < CURRENT_DATE
+               ) AS es_vencida_con_saldo
+        FROM ordenes_base ob
+      ),
+      evidencia AS (
+        SELECT o.cluesimb, o.clave_cnis,
+               COUNT(*)::int AS ordenes_historicas,
+               COUNT(*) FILTER (WHERE o.es_vigente)::int AS ordenes_vigentes,
+               COUNT(*) FILTER (WHERE o.es_vencida_con_saldo)::int AS ordenes_vencidas_con_saldo,
+               COALESCE(SUM(o.saldo_pendiente) FILTER (WHERE o.es_vencida_con_saldo), 0)::numeric
+                 AS piezas_vencidas_pendientes,
+               (ARRAY_AGG(o.orden_de_suministro ORDER BY o.fecha_emision DESC NULLS LAST))[1]
+                 AS ultima_orden,
+               (ARRAY_AGG(o.fecha_emision ORDER BY o.fecha_emision DESC NULLS LAST))[1]
+                 AS ultima_fecha_emision,
+               (ARRAY_AGG(o.fecha_limite_de_entrega ORDER BY o.fecha_emision DESC NULLS LAST))[1]
+                 AS ultima_fecha_limite
+        FROM ordenes o
+        GROUP BY o.cluesimb, o.clave_cnis
+      ),
+      snapshot AS (
+        SELECT MAX(t.cargado_en) AS cargado_en
+        FROM public.tmp_existencias t
+        INNER JOIN public.onco_claves_base oc
+          ON UPPER(TRIM(oc.cluesimb)) = UPPER(TRIM(t.cluesimb))
+         AND UPPER(TRIM(oc.clave_cnis)) = UPPER(TRIM(t.clave_cnis))
+      )
+      SELECT u.cluesimb, u.nombre_de_unidad, u.clave_cnis, u.descripcion,
+             u.cpm, u.existencias,
+             COALESCE(e.ordenes_historicas, 0)::int AS ordenes_historicas,
+             COALESCE(e.ordenes_vigentes, 0)::int AS ordenes_vigentes,
+             COALESCE(e.ordenes_vencidas_con_saldo, 0)::int AS ordenes_vencidas_con_saldo,
+             COALESCE(e.piezas_vencidas_pendientes, 0)::numeric AS piezas_vencidas_pendientes,
+             e.ultima_orden, e.ultima_fecha_emision, e.ultima_fecha_limite,
+             s.cargado_en AS snapshot_existencias,
+             CASE
+               WHEN COALESCE(e.ordenes_historicas, 0) = 0 THEN 'SIN ANTECEDENTE EN DATOS DISPONIBLES'
+               WHEN COALESCE(e.ordenes_vencidas_con_saldo, 0) > 0 THEN 'ORDEN VENCIDA CON SALDO'
+               ELSE 'CON ANTECEDENTE, SIN ORDEN VIGENTE'
+             END AS clasificacion
+      FROM universo u
+      LEFT JOIN evidencia e
+        ON e.cluesimb = u.cluesimb AND e.clave_cnis = u.clave_cnis
+      CROSS JOIN snapshot s
+      WHERE u.cpm > 0
+        AND u.existencias <= 0
+        AND COALESCE(e.ordenes_vigentes, 0) = 0
+        AND ($2::text = 'sin_vigente' OR COALESCE(e.ordenes_historicas, 0) = 0)
+      ORDER BY
+        CASE WHEN COALESCE(e.ordenes_vencidas_con_saldo, 0) > 0 THEN 0 ELSE 1 END,
+        u.nombre_de_unidad, u.clave_cnis
+    `, [dias, tipo]);
+
+    return {
+      mode: tipo,
+      windowDays: dias,
+      generadoEn: new Date().toISOString(),
+      criterio: tipo === 'sin_vigente'
+        ? 'Claves IB-ONCO por unidad con CPM mayor a cero, existencia en cero y sin orden vigente. Puede incluir órdenes vencidas con saldo pendiente.'
+        : 'Claves IB-ONCO por unidad con CPM mayor a cero, existencia en cero y sin ninguna orden encontrada en la información disponible.',
+      advertencia: tipo === 'sin_vigente'
+        ? 'Una orden vencida con saldo no se considera vigente y se muestra como contexto crítico.'
+        : 'Sin antecedente significa que no se encontró una orden relacionada en la información disponible; no acredita que históricamente nunca se haya adquirido el insumo.',
+      data: result.rows.map(row => ({
+        cluesimb: String(row.cluesimb ?? ''),
+        nombreUnidad: row.nombre_de_unidad ?? null,
+        claveCnis: String(row.clave_cnis ?? ''),
+        descripcion: row.descripcion ?? null,
+        cpm: Number(row.cpm ?? 0),
+        existencias: Number(row.existencias ?? 0),
+        ordenesHistoricas: Number(row.ordenes_historicas ?? 0),
+        ordenesVigentes: Number(row.ordenes_vigentes ?? 0),
+        ordenesVencidasConSaldo: Number(row.ordenes_vencidas_con_saldo ?? 0),
+        piezasVencidasPendientes: Number(row.piezas_vencidas_pendientes ?? 0),
+        ultimaOrden: row.ultima_orden ?? null,
+        ultimaFechaEmision: row.ultima_fecha_emision ?? null,
+        ultimaFechaLimite: row.ultima_fecha_limite ?? null,
+        snapshotExistencias: row.snapshot_existencias ?? null,
+        clasificacion: String(row.clasificacion ?? ''),
+      })),
+    };
   }
 
   async obtenerResumen(windowDays = 120) {

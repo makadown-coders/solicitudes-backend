@@ -9,5 +9,6 @@ router.get('/claves', controller.claves.bind(controller));
 router.get('/abasto-cpm', controller.abastoCpm.bind(controller));
 router.get('/citas-pendientes', controller.citasPendientes.bind(controller));
 router.get('/resumen', controller.resumen.bind(controller));
+router.get('/reportes/seccsos', controller.reporteSeccsos.bind(controller));
 
 export default router;

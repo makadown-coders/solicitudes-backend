@@ -11,6 +11,7 @@ const KNOWN_FLAGS: FlagKey[] = [
     'CLUES_EXISTENCIAS_ALLOWLIST',
     'IMPORT_LIMIT_TO_KIT',
     'EDIT_CPMS',
+    'PRIMER_NIVEL_WISHLIST_ENABLED',
 ];
 
 class FeatureFlagsService {

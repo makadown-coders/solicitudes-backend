@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import SolicitudesService from "../services/solicitudes.service";
-import NecesidadesPrimerNivelService from '../services/necesidades-primer-nivel.service';
+import NecesidadesPrimerNivelService, { PrimerNivelWishlistDisabledError } from '../services/necesidades-primer-nivel.service';
 
 export class SolicitudesController {
     private service: SolicitudesService;
@@ -16,6 +16,10 @@ export class SolicitudesController {
             res.status(201).json({ ok: true, ...resultado });
         } catch (err: any) {
             console.error('Error enviando necesidades de Primer Nivel:', err);
+            if (err instanceof PrimerNivelWishlistDisabledError) {
+                res.status(err.statusCode).json({ code: err.code, message: err.message });
+                return;
+            }
             const mensaje = err?.message ?? 'No se pudo enviar la lista para revisión';
             const esErrorExterno = err?.isAxiosError === true;
             res.status(esErrorExterno ? 502 : 400).json({ ok: false, error: mensaje });
@@ -48,6 +52,10 @@ export class SolicitudesController {
             res.status(200).send(resultado.buffer);
         } catch (err: any) {
             console.error('Error generando vista previa de necesidades de Primer Nivel:', err);
+            if (err instanceof PrimerNivelWishlistDisabledError) {
+                res.status(err.statusCode).json({ code: err.code, message: err.message });
+                return;
+            }
             res.status(400).json({ ok: false, error: err?.message ?? 'No se pudo generar la vista previa' });
         }
     }

@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import IbOncoService from '../services/ib-onco.service';
+import IbOncoService, { IbOncoReporteSeccsosTipo } from '../services/ib-onco.service';
 
 class IbOncoController {
   private service: IbOncoService;
@@ -102,6 +102,26 @@ class IbOncoController {
     } catch (error: any) {
       console.error('Error al obtener resumen IB-ONCO:', error);
       res.status(500).json({ ok: false, error: 'ib_onco_resumen_failed', detail: error?.message });
+    }
+  }
+
+  async reporteSeccsos(req: Request, res: Response): Promise<void> {
+    try {
+      const tipo = String(req.query.tipo ?? '').trim() as IbOncoReporteSeccsosTipo;
+      if (!['sin_vigente', 'sin_antecedente'].includes(tipo)) {
+        res.status(400).json({
+          ok: false,
+          error: 'ib_onco_reporte_seccsos_tipo_invalido',
+          detail: 'tipo debe ser sin_vigente o sin_antecedente',
+        });
+        return;
+      }
+      const windowDays = req.query.window_days ? Number(req.query.window_days) : undefined;
+      const data = await this.service.obtenerReporteSeccsos(tipo, windowDays);
+      res.json({ ok: true, count: data.data.length, ...data });
+    } catch (error: any) {
+      console.error('Error al generar reporte SECCSOS IB-ONCO:', error);
+      res.status(500).json({ ok: false, error: 'ib_onco_reporte_seccsos_failed', detail: error?.message });
     }
   }
 

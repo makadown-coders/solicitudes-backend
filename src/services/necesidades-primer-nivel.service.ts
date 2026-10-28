@@ -11,6 +11,7 @@ import {
 import HistorialesService from './historiales.service';
 import SolicitudesPrimerNivelBitacoraService from './solicitudes-primer-nivel-bitacora.service';
 import SolicitudesPrimerNivelDestinatariosService from './solicitudes-primer-nivel-destinatarios.service';
+import FeatureFlagsService from './featureFlags.service';
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
@@ -34,6 +35,16 @@ export type VistaPreviaNecesidadesPrimerNivel = EnviarNecesidadesPrimerNivelResu
   nombreArchivo: string;
   buffer: Buffer;
 };
+
+export class PrimerNivelWishlistDisabledError extends Error {
+  readonly code = 'PRIMER_NIVEL_WISHLIST_DISABLED';
+  readonly statusCode = 409;
+
+  constructor() {
+    super('La captura de solicitudes de Primer Nivel se encuentra temporalmente cerrada.');
+    this.name = 'PrimerNivelWishlistDisabledError';
+  }
+}
 
 function obtenerPeriodoActual(fecha = new Date()): string {
   const partes = new Intl.DateTimeFormat('es-MX', {
@@ -69,7 +80,8 @@ export default class NecesidadesPrimerNivelService {
   constructor(
     private readonly bitacoraPrimerNivel = new SolicitudesPrimerNivelBitacoraService(),
     private readonly historiales = new HistorialesService(),
-    private readonly destinatarios = new SolicitudesPrimerNivelDestinatariosService()
+    private readonly destinatarios = new SolicitudesPrimerNivelDestinatariosService(),
+    private readonly featureFlags = new FeatureFlagsService()
   ) {}
 
   async enviar(input: EnviarNecesidadesPrimerNivelInput): Promise<EnviarNecesidadesPrimerNivelResult> {
@@ -155,9 +167,13 @@ export default class NecesidadesPrimerNivelService {
     const responsable = String(input.responsable ?? '').trim().slice(0, 255);
     const periodoCapturado = String(input.periodo ?? '').trim().slice(0, 120);
     const periodo = periodoCapturado || obtenerPeriodoActual();
-    const articulos = this.normalizarArticulos(input.articulos);
-
     if (!cluesimb) throw new Error('cluesimb requerido');
+    const flags = await this.featureFlags.getEffectiveFlags({ cluesimb, nivel: 'PRIMER_NIVEL' });
+    if (flags.PRIMER_NIVEL_WISHLIST_ENABLED === false) {
+      throw new PrimerNivelWishlistDisabledError();
+    }
+
+    const articulos = this.normalizarArticulos(input.articulos);
     if (!articulos.length) throw new Error('La lista de necesidades está vacía');
 
     const unidad = await this.obtenerUnidadPrimerNivel(cluesimb);

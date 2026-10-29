@@ -111,13 +111,21 @@ export default class NecesidadesPrimerNivelProgramasPreventivosService {
         v.clave,
         COALESCE(NULLIF(TRIM(i.nombre), ''), 'Insumo del programa') AS nombre,
         v.descripcion,
-        v.presentacion,
+        COALESCE(NULLIF(TRIM(v.presentacion), ''), a.presentacion) AS presentacion,
         v.obligatorio,
         v.orden::integer AS orden
       FROM preventivos.v_programa_insumo v
       LEFT JOIN cnis.insumo i
         ON UPPER(TRIM(i.clave)) = UPPER(TRIM(v.clave))
        AND i.activo = true
+      LEFT JOIN LATERAL (
+        SELECT NULLIF(TRIM(art.presentacion), '') AS presentacion
+        FROM public.articulos art
+        WHERE UPPER(TRIM(art.clave)) = UPPER(TRIM(v.clave))
+          AND NULLIF(TRIM(art.presentacion), '') IS NOT NULL
+        ORDER BY art.id DESC
+        LIMIT 1
+      ) a ON true
       WHERE v.programa_codigo = $1
         AND v.activo = true
         AND NOT EXISTS (

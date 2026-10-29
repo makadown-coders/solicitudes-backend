@@ -29,6 +29,17 @@ type AnalisisOperativo = {
   existenciaAzt: number;
   existenciaAze: number;
   fechaSnapshot: string | null;
+  alternativa: {
+    clave: string;
+    descripcion: string | null;
+    presentacion: string | null;
+    factor: number;
+    cpm: number;
+    existenciaAzm: number;
+    existenciaAzt: number;
+    existenciaAze: number;
+    fechaSnapshot: string | null;
+  } | null;
 };
 
 export type VistaPreviaNecesidadesPrimerNivel = EnviarNecesidadesPrimerNivelResult & {
@@ -440,6 +451,116 @@ export default class NecesidadesPrimerNivelService {
       ORDER BY claves.clave
     `, [cluesimb, claves]);
 
+    const alternativasResult = claves.length ? await pool.query<{
+      clave: string;
+      candidato: string;
+      factor: string | number;
+      descripcion: string | null;
+      cpm: string | number | null;
+      existencia_azm: string | number | null;
+      existencia_azt: string | number | null;
+      existencia_aze: string | number | null;
+      fecha_snapshot: Date | string | null;
+    }>(`
+      WITH aristas AS (
+        SELECT UPPER(TRIM(h.clave)) AS clave,
+               UPPER(TRIM(h.sustituto)) AS candidato,
+               h.factor::numeric AS factor
+        FROM public.homologos h
+        WHERE UPPER(TRIM(h.clave)) = ANY($2::text[])
+          AND h.factor::numeric > 0
+          AND NULLIF(UPPER(TRIM(h.sustituto)), '') IS NOT NULL
+        UNION
+        SELECT UPPER(TRIM(h.sustituto)) AS clave,
+               UPPER(TRIM(h.clave)) AS candidato,
+               1 / NULLIF(h.factor::numeric, 0) AS factor
+        FROM public.homologos h
+        WHERE UPPER(TRIM(h.sustituto)) = ANY($2::text[])
+          AND h.factor::numeric > 0
+          AND NULLIF(UPPER(TRIM(h.clave)), '') IS NOT NULL
+      ),
+      permitidas AS (
+        SELECT a.*
+        FROM aristas a
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM public.v_solicitud_primer_nivel_clave_excluida ex
+          WHERE ex.clave = a.candidato
+        )
+      ),
+      existencias AS (
+        SELECT UPPER(TRIM(t.clave_cnis)) AS clave,
+               COALESCE(SUM(t.existencia) FILTER (
+                 WHERE UPPER(CONCAT_WS(' ', vumd.nombre_de_unidad, vumd.nombre_municipio, vumd.alias_sas, vumd.cluesimb))
+                   SIMILAR TO '%(MEXICALI|AZM)%'
+               ), 0)::numeric AS existencia_azm,
+               COALESCE(SUM(t.existencia) FILTER (
+                 WHERE UPPER(CONCAT_WS(' ', vumd.nombre_de_unidad, vumd.nombre_municipio, vumd.alias_sas, vumd.cluesimb))
+                   SIMILAR TO '%(TIJUANA|AZT)%'
+               ), 0)::numeric AS existencia_azt,
+               COALESCE(SUM(t.existencia) FILTER (
+                 WHERE UPPER(CONCAT_WS(' ', vumd.nombre_de_unidad, vumd.nombre_municipio, vumd.alias_sas, vumd.cluesimb))
+                   SIMILAR TO '%(ENSENADA|AZE)%'
+               ), 0)::numeric AS existencia_aze,
+               MAX(t.cargado_en) AS fecha_snapshot
+        FROM public.tmp_existencias t
+        INNER JOIN public.v_unidad_medica_detalle vumd ON vumd.cluesimb = t.cluesimb
+        WHERE vumd.tipo_unidad = 'ALMACENES'
+          AND UPPER(TRIM(t.clave_cnis)) IN (SELECT candidato FROM permitidas)
+        GROUP BY UPPER(TRIM(t.clave_cnis))
+      ),
+      cpm_unidad AS (
+        SELECT UPPER(TRIM(c.clave_cnis)) AS clave, MAX(c.cpm) AS cpm
+        FROM public.cpm c
+        INNER JOIN public.unidad_medica um ON um.id = c.unidad_medica_id
+        WHERE UPPER(TRIM(um.cluesimb)) = $1
+          AND UPPER(TRIM(c.clave_cnis)) IN (SELECT candidato FROM permitidas)
+        GROUP BY UPPER(TRIM(c.clave_cnis))
+      )
+      SELECT DISTINCT ON (p.clave)
+             p.clave,
+             p.candidato,
+             p.factor,
+             CONCAT_WS(
+               ' | ',
+               NULLIF(TRIM(i.nombre), ''),
+               NULLIF(REGEXP_REPLACE(TRIM(i.descripcion), '[[:space:]]+', ' ', 'g'), '')
+             ) AS descripcion,
+             COALESCE(c.cpm, 0) AS cpm,
+             COALESCE(e.existencia_azm, 0) AS existencia_azm,
+             COALESCE(e.existencia_azt, 0) AS existencia_azt,
+             COALESCE(e.existencia_aze, 0) AS existencia_aze,
+             e.fecha_snapshot
+      FROM permitidas p
+      JOIN existencias e ON e.clave = p.candidato
+      LEFT JOIN cpm_unidad c ON c.clave = p.candidato
+      LEFT JOIN LATERAL (
+        SELECT x.nombre, x.descripcion
+        FROM cnis.insumo x
+        WHERE UPPER(TRIM(x.clave)) = p.candidato
+        ORDER BY x.activo DESC, x.id DESC
+        LIMIT 1
+      ) i ON true
+      WHERE p.factor > 0
+        AND (e.existencia_azm + e.existencia_azt + e.existencia_aze) > 0
+      ORDER BY p.clave,
+               ((e.existencia_azm + e.existencia_azt + e.existencia_aze) / p.factor) DESC,
+               p.candidato
+    `, [cluesimb, claves]) : { rows: [] };
+    const alternativas = new Map<string, NonNullable<AnalisisOperativo['alternativa']>>(
+      alternativasResult.rows.map((row): [string, NonNullable<AnalisisOperativo['alternativa']>] => [row.clave, {
+      clave: row.candidato,
+      descripcion: row.descripcion,
+      presentacion: null,
+      factor: Number(row.factor),
+      cpm: Number(row.cpm ?? 0),
+      existenciaAzm: Number(row.existencia_azm ?? 0),
+      existenciaAzt: Number(row.existencia_azt ?? 0),
+      existenciaAze: Number(row.existencia_aze ?? 0),
+      fechaSnapshot: row.fecha_snapshot ? new Date(row.fecha_snapshot).toISOString() : null,
+      }])
+    );
+
     return rows.map(row => ({
       clave: String(row.clave),
       cpm: Number(row.cpm ?? 0),
@@ -447,6 +568,7 @@ export default class NecesidadesPrimerNivelService {
       existenciaAzt: Number(row.existencia_azt ?? 0),
       existenciaAze: Number(row.existencia_aze ?? 0),
       fechaSnapshot: row.fecha_snapshot ? new Date(row.fecha_snapshot).toISOString() : null,
+      alternativa: alternativas.get(String(row.clave)) ?? null,
     }));
   }
 
@@ -516,43 +638,146 @@ export default class NecesidadesPrimerNivelService {
     hojaAnalisis.addRow(['Snapshot de existencias', formatearFechaPacifico(fechaSnapshot ?? null) ?? 'No disponible']);
     hojaAnalisis.addRow([
       'Nota',
-      'La información de existencias y consumo presentada en este apartado es de apoyo para el análisis operativo y corresponde a las fuentes y fechas disponibles. No confirma la disponibilidad para surtimiento ni constituye una autorización de entrega o traslado. Antes de tomar una decisión, valide la información con el área de Abasto.',
+      'La información de existencias, consumo y propuestas de sustitución presentada en este apartado es de apoyo para el análisis operativo y corresponde a las fuentes, factores y fechas disponibles. Las propuestas no forman parte de la captura original. No confirma la disponibilidad para surtimiento ni constituye una autorización de entrega o traslado. Antes de tomar una decisión, valide la información con el área de Abasto.',
     ]);
     hojaAnalisis.addRow([]);
     hojaAnalisis.addRow([
       'No.', 'Clave', 'Descripción', 'Presentación', 'Necesidad', 'CPM unidad',
-      'Meses solicitados', 'AZM', 'AZT', 'AZE', 'Total almacenes', 'Faltante referencial',
+      'Meses solicitados', 'AZM', 'AZT', 'AZE', 'Total almacenes', 'Faltante local referencial',
       'Origen de captura', 'Referencia', 'Contexto',
     ]);
 
+    type FilaAnalisis = {
+      numero: number | string;
+      clave: string;
+      descripcion: string | null;
+      presentacion: string | null;
+      cantidad: number;
+      dato: AnalisisOperativo;
+      captura: { origen: string; referencia: string; etiqueta: string } | undefined;
+      fuentes: Array<{ clave: string; factor: number; faltante: number }>;
+      insertarDespuesDe: string | null;
+    };
+    const filasPorClave = new Map<string, FilaAnalisis>();
     contexto.articulos.forEach((articulo, index) => {
       const dato = analisisPorClave.get(articulo.clave);
-      const cpm = dato?.cpm ?? 0;
-      const azm = dato?.existenciaAzm ?? 0;
-      const azt = dato?.existenciaAzt ?? 0;
-      const aze = dato?.existenciaAze ?? 0;
+      if (!dato) return;
+      filasPorClave.set(articulo.clave, {
+        numero: index + 1,
+        clave: articulo.clave,
+        descripcion: articulo.descripcion,
+        presentacion: articulo.presentacion,
+        cantidad: articulo.cantidad,
+        dato,
+        captura: contextoPorClave.get(articulo.clave),
+        fuentes: [],
+        insertarDespuesDe: null,
+      });
+    });
+    const existenciaLocal = (dato: AnalisisOperativo): number => {
+      if (contexto.jurisdiccion === 'MEXICALI') return dato.existenciaAzm;
+      if (contexto.jurisdiccion === 'TIJUANA') return dato.existenciaAzt;
+      if (contexto.jurisdiccion === 'ENSENADA') return dato.existenciaAze;
+      return dato.existenciaAzm + dato.existenciaAzt + dato.existenciaAze;
+    };
+    contexto.articulos.forEach((articulo, index) => {
+      const dato = analisisPorClave.get(articulo.clave);
+      const alternativa = dato?.alternativa;
+      if (!dato || !alternativa) return;
+      const faltante = Math.max(articulo.cantidad - Math.min(articulo.cantidad, existenciaLocal(dato)), 0);
+      if (faltante <= 0) return;
+      const cantidadSustituta = Math.max(1, Math.ceil((faltante * alternativa.factor) - 1e-9));
+      let fila = filasPorClave.get(alternativa.clave);
+      if (!fila) {
+        fila = {
+          numero: `${index + 1}.1`,
+          clave: alternativa.clave,
+          descripcion: alternativa.descripcion,
+          presentacion: alternativa.presentacion,
+          cantidad: 0,
+          dato: {
+            clave: alternativa.clave,
+            cpm: alternativa.cpm,
+            existenciaAzm: alternativa.existenciaAzm,
+            existenciaAzt: alternativa.existenciaAzt,
+            existenciaAze: alternativa.existenciaAze,
+            fechaSnapshot: alternativa.fechaSnapshot,
+            alternativa: null,
+          },
+          captura: undefined,
+          fuentes: [],
+          insertarDespuesDe: articulo.clave,
+        };
+        filasPorClave.set(alternativa.clave, fila);
+      }
+      fila.insertarDespuesDe ??= articulo.clave;
+      fila.cantidad += cantidadSustituta;
+      fila.fuentes.push({ clave: articulo.clave, factor: alternativa.factor, faltante });
+    });
+    const propuestasPorOrigen = new Map<string, FilaAnalisis[]>();
+    for (const fila of filasPorClave.values()) {
+      if (!fila.insertarDespuesDe) continue;
+      propuestasPorOrigen.set(fila.insertarDespuesDe, [
+        ...(propuestasPorOrigen.get(fila.insertarDespuesDe) ?? []),
+        fila,
+      ]);
+    }
+    const filasAnalisis: FilaAnalisis[] = [];
+    const emitidas = new Set<string>();
+    const emitir = (fila: FilaAnalisis): void => {
+      if (emitidas.has(fila.clave)) return;
+      filasAnalisis.push(fila);
+      emitidas.add(fila.clave);
+      for (const propuesta of propuestasPorOrigen.get(fila.clave) ?? []) emitir(propuesta);
+    };
+    for (const articulo of contexto.articulos) {
+      const fila = filasPorClave.get(articulo.clave);
+      if (fila && !fila.insertarDespuesDe) emitir(fila);
+    }
+    for (const fila of filasPorClave.values()) emitir(fila);
+
+    filasAnalisis.forEach((item) => {
+      const cpm = item.dato.cpm;
+      const azm = item.dato.existenciaAzm;
+      const azt = item.dato.existenciaAzt;
+      const aze = item.dato.existenciaAze;
       const total = azm + azt + aze;
-      const captura = contextoPorClave.get(articulo.clave);
+      const local = existenciaLocal(item.dato);
+      const esPropuesta = item.fuentes.length > 0;
+      const origen = [item.captura?.origen, esPropuesta ? 'Propuesta de sustitución' : ''].filter(Boolean).join(' / ');
+      const referenciasPropuesta = item.fuentes.map(fuente =>
+        `Sustituta de ${fuente.clave} · factor ${fuente.factor.toLocaleString('es-MX', { maximumFractionDigits: 4 })}`
+      );
+      const contextoPropuesta = item.fuentes.map(fuente =>
+        `Faltante directo ${fuente.faltante.toLocaleString('es-MX')} piezas de ${fuente.clave}`
+      );
       const renglon = hojaAnalisis.addRow([
-        index + 1,
-        articulo.clave,
-        articulo.descripcion ?? '',
-        articulo.presentacion ?? '',
-        articulo.cantidad,
+        item.numero,
+        item.clave,
+        item.descripcion ?? '',
+        item.presentacion ?? '',
+        item.cantidad,
         cpm,
-        cpm > 0 ? articulo.cantidad / cpm : null,
+        cpm > 0 ? item.cantidad / cpm : null,
         azm,
         azt,
         aze,
         total,
-        Math.max(articulo.cantidad - total, 0),
-        captura?.origen ?? 'Por clave CNIS',
-        captura?.referencia ?? '',
-        captura?.etiqueta ?? 'Captura por clave CNIS',
+        Math.max(item.cantidad - local, 0),
+        origen || 'Por clave CNIS',
+        [item.captura?.referencia, ...referenciasPropuesta].filter(Boolean).join(' / '),
+        [item.captura?.etiqueta, ...contextoPropuesta].filter(Boolean).join(' / ') || 'Captura por clave CNIS',
       ]);
       renglon.alignment = { vertical: 'top', wrapText: true };
       if (cpm <= 0) renglon.getCell(6).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFF99' } };
-      if (total < articulo.cantidad) renglon.getCell(12).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFC7CE' } };
+      if (local < item.cantidad) renglon.getCell(12).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFC7CE' } };
+      if (esPropuesta) {
+        renglon.eachCell({ includeEmpty: true }, cell => {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF2CC' } };
+          cell.alignment = { vertical: 'top', wrapText: true };
+        });
+        renglon.getCell(13).font = { bold: true, color: { argb: 'FF7A4E00' } };
+      }
     });
 
     hojaAnalisis.mergeCells('A1:O1');
@@ -596,11 +821,7 @@ export default class NecesidadesPrimerNivelService {
     }
     return new Map([...agrupados.entries()].map(([clave, items]) => [clave, {
       origen: [...new Set(items.map(item => etiquetasOrigen[item.origenCaptura]))].join(' / '),
-      referencia: [...new Set(items.map(item =>
-        item.origenCaptura === 'APS'
-          ? item.etiquetaCaptura || item.referenciaCaptura
-          : item.referenciaCaptura
-      ).filter(Boolean))].join(' / '),
+      referencia: [...new Set(items.map(item => item.referenciaCaptura).filter(Boolean))].join(' / '),
       etiqueta: [...new Set(items.map(item => item.etiquetaCaptura).filter(Boolean))].join(' / '),
     }]));
   }

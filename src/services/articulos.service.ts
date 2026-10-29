@@ -45,8 +45,16 @@ class ArticulosService {
         COALESCE(TRIM(i.nombre), '') AS nombre,
         COALESCE(TRIM(i.descripcion), '') AS descripcion_cnis,
         i.categoria,
-        NULL::text AS presentacion
+        a.presentacion
       FROM cnis.insumo i
+      LEFT JOIN LATERAL (
+        SELECT NULLIF(TRIM(art.presentacion), '') AS presentacion
+        FROM public.articulos art
+        WHERE UPPER(TRIM(art.clave)) = UPPER(TRIM(i.clave))
+          AND NULLIF(TRIM(art.presentacion), '') IS NOT NULL
+        ORDER BY art.id DESC
+        LIMIT 1
+      ) a ON true
       ${where}
       ORDER BY i.clave ASC NULLS LAST
       LIMIT 100

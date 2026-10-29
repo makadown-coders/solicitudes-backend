@@ -387,8 +387,16 @@ export default class NecesidadesPrimerNivelService {
           NULLIF(TRIM(i.nombre), ''),
           NULLIF(REGEXP_REPLACE(TRIM(i.descripcion), '[[:space:]]+', ' ', 'g'), '')
         ) AS descripcion,
-        NULL::text AS presentacion
+        a.presentacion
       FROM cnis.insumo i
+      LEFT JOIN LATERAL (
+        SELECT NULLIF(TRIM(art.presentacion), '') AS presentacion
+        FROM public.articulos art
+        WHERE UPPER(TRIM(art.clave)) = UPPER(TRIM(i.clave))
+          AND NULLIF(TRIM(art.presentacion), '') IS NOT NULL
+        ORDER BY art.id DESC
+        LIMIT 1
+      ) a ON true
       WHERE i.activo = true
         AND UPPER(TRIM(i.clave)) = ANY($1::text[])
       ORDER BY i.clave
@@ -456,6 +464,7 @@ export default class NecesidadesPrimerNivelService {
       candidato: string;
       factor: string | number;
       descripcion: string | null;
+      presentacion: string | null;
       cpm: string | number | null;
       existencia_azm: string | number | null;
       existencia_azt: string | number | null;
@@ -526,6 +535,7 @@ export default class NecesidadesPrimerNivelService {
                NULLIF(TRIM(i.nombre), ''),
                NULLIF(REGEXP_REPLACE(TRIM(i.descripcion), '[[:space:]]+', ' ', 'g'), '')
              ) AS descripcion,
+             a.presentacion,
              COALESCE(c.cpm, 0) AS cpm,
              COALESCE(e.existencia_azm, 0) AS existencia_azm,
              COALESCE(e.existencia_azt, 0) AS existencia_azt,
@@ -541,6 +551,14 @@ export default class NecesidadesPrimerNivelService {
         ORDER BY x.activo DESC, x.id DESC
         LIMIT 1
       ) i ON true
+      LEFT JOIN LATERAL (
+        SELECT NULLIF(TRIM(art.presentacion), '') AS presentacion
+        FROM public.articulos art
+        WHERE UPPER(TRIM(art.clave)) = p.candidato
+          AND NULLIF(TRIM(art.presentacion), '') IS NOT NULL
+        ORDER BY art.id DESC
+        LIMIT 1
+      ) a ON true
       WHERE p.factor > 0
         AND (e.existencia_azm + e.existencia_azt + e.existencia_aze) > 0
       ORDER BY p.clave,
@@ -551,7 +569,7 @@ export default class NecesidadesPrimerNivelService {
       alternativasResult.rows.map((row): [string, NonNullable<AnalisisOperativo['alternativa']>] => [row.clave, {
       clave: row.candidato,
       descripcion: row.descripcion,
-      presentacion: null,
+      presentacion: row.presentacion,
       factor: Number(row.factor),
       cpm: Number(row.cpm ?? 0),
       existenciaAzm: Number(row.existencia_azm ?? 0),

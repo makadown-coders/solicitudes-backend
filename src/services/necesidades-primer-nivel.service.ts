@@ -46,6 +46,16 @@ export class PrimerNivelWishlistDisabledError extends Error {
   }
 }
 
+export class PrimerNivelClavesExcluidasError extends Error {
+  readonly code = 'PRIMER_NIVEL_CLAVES_EXCLUIDAS';
+  readonly statusCode = 409;
+
+  constructor(readonly claves: string[]) {
+    super(`Algunas claves ya no están disponibles para la captura de Primer Nivel: ${claves.slice(0, 10).join(', ')}. Actualiza tu lista antes de continuar.`);
+    this.name = 'PrimerNivelClavesExcluidasError';
+  }
+}
+
 function obtenerPeriodoActual(fecha = new Date()): string {
   const partes = new Intl.DateTimeFormat('es-MX', {
     month: 'long',
@@ -175,6 +185,7 @@ export default class NecesidadesPrimerNivelService {
 
     const articulos = this.normalizarArticulos(input.articulos);
     if (!articulos.length) throw new Error('La lista de necesidades está vacía');
+    await this.validarClavesPermitidas(articulos.map(item => item.clave));
 
     const unidad = await this.obtenerUnidadPrimerNivel(cluesimb);
     if (!unidad) throw new Error('La CLUES no corresponde a una unidad de Primer Nivel');
@@ -232,6 +243,11 @@ export default class NecesidadesPrimerNivelService {
         WHERE m.activo = true
           AND UPPER(TRIM(m.codigo)) = ANY($1::text[])
           AND UPPER(TRIM(mc.clave)) = ANY($2::text[])
+          AND NOT EXISTS (
+            SELECT 1
+            FROM public.v_solicitud_primer_nivel_clave_excluida ex
+            WHERE ex.clave = UPPER(TRIM(mc.clave))
+          )
       `, [aps.map(item => item.referenciaCaptura), aps.map(item => item.clave)]);
       const permitidos = new Set(rows.map(row => `${row.referencia}|${row.clave}`));
       rows.forEach(row => etiquetas.set(`APS|${row.referencia}|${row.clave}`, row.etiqueta));
@@ -253,6 +269,11 @@ export default class NecesidadesPrimerNivelService {
         WHERE v.activo = true
           AND UPPER(TRIM(v.programa_codigo)) = ANY($1::text[])
           AND UPPER(TRIM(v.clave)) = ANY($2::text[])
+          AND NOT EXISTS (
+            SELECT 1
+            FROM public.v_solicitud_primer_nivel_clave_excluida ex
+            WHERE ex.clave = UPPER(TRIM(v.clave))
+          )
       `, [programas.map(item => item.referenciaCaptura), programas.map(item => item.clave)]);
       const permitidos = new Set(rows.map(row => `${row.referencia}|${row.clave}`));
       rows.forEach(row => etiquetas.set(`PROGRAMA_PREVENTIVO|${row.referencia}|${row.clave}`, row.etiqueta));
@@ -272,6 +293,18 @@ export default class NecesidadesPrimerNivelService {
 
   private crearNombreArchivo(cluesimb: string, recibidoEn: string, folio: string): string {
     return `Necesidades-${cluesimb}-${recibidoEn.slice(0, 10)}-${folio.slice(0, 8)}.xlsx`;
+  }
+
+  private async validarClavesPermitidas(claves: string[]): Promise<void> {
+    if (!claves.length) return;
+    const { rows } = await pool.query<{ clave: string }>(`
+      SELECT ex.clave
+      FROM public.v_solicitud_primer_nivel_clave_excluida ex
+      WHERE ex.clave = ANY($1::text[])
+      ORDER BY ex.clave
+    `, [claves]);
+    const excluidas = [...new Set(rows.map(row => String(row.clave).trim().toUpperCase()))];
+    if (excluidas.length) throw new PrimerNivelClavesExcluidasError(excluidas);
   }
 
   private crearResultado(contexto: {

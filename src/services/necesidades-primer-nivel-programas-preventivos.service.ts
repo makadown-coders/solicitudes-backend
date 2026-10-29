@@ -57,7 +57,14 @@ export default class NecesidadesPrimerNivelProgramasPreventivosService {
         p.orden::integer AS orden,
         COUNT(pc.clave) FILTER (WHERE pc.activo = true)::integer AS total_insumos
       FROM preventivos.programa p
-      LEFT JOIN preventivos.programa_clave pc ON pc.programa_id = p.id
+      LEFT JOIN preventivos.programa_clave pc
+        ON pc.programa_id = p.id
+       AND pc.activo = true
+       AND NOT EXISTS (
+         SELECT 1
+         FROM public.v_solicitud_primer_nivel_clave_excluida ex
+         WHERE ex.clave = UPPER(TRIM(pc.clave))
+       )
       WHERE p.activo = true
         AND (
           NOT EXISTS (
@@ -76,6 +83,7 @@ export default class NecesidadesPrimerNivelProgramasPreventivosService {
           )
         )
       GROUP BY p.id, p.codigo, p.nombre, p.descripcion, p.orden
+      HAVING COUNT(pc.clave) > 0
       ORDER BY p.orden, p.nombre
     `, [unidadMedicaId]);
 
@@ -112,6 +120,11 @@ export default class NecesidadesPrimerNivelProgramasPreventivosService {
        AND i.activo = true
       WHERE v.programa_codigo = $1
         AND v.activo = true
+        AND NOT EXISTS (
+          SELECT 1
+          FROM public.v_solicitud_primer_nivel_clave_excluida ex
+          WHERE ex.clave = UPPER(TRIM(v.clave))
+        )
       ORDER BY v.orden, v.clave
     `, [codigo]);
 
@@ -153,11 +166,16 @@ export default class NecesidadesPrimerNivelProgramasPreventivosService {
 
     const claves = capturados.map(item => item.clave);
     const { rows } = await pool.query<{ clave: string }>(`
-      SELECT pc.clave
+      SELECT UPPER(TRIM(pc.clave)) AS clave
       FROM preventivos.programa_clave pc
       WHERE pc.programa_id = $1
         AND pc.activo = true
-        AND pc.clave = ANY($2::text[])
+        AND UPPER(TRIM(pc.clave)) = ANY($2::text[])
+        AND NOT EXISTS (
+          SELECT 1
+          FROM public.v_solicitud_primer_nivel_clave_excluida ex
+          WHERE ex.clave = UPPER(TRIM(pc.clave))
+        )
     `, [programa.id, claves]);
     const permitidas = new Set(rows.map(row => row.clave));
     const ajenas = claves.filter(clave => !permitidas.has(clave));
@@ -185,6 +203,17 @@ export default class NecesidadesPrimerNivelProgramasPreventivosService {
       FROM preventivos.programa p
       WHERE p.codigo = $1
         AND p.activo = true
+        AND EXISTS (
+          SELECT 1
+          FROM preventivos.programa_clave pc
+          WHERE pc.programa_id = p.id
+            AND pc.activo = true
+            AND NOT EXISTS (
+              SELECT 1
+              FROM public.v_solicitud_primer_nivel_clave_excluida ex
+              WHERE ex.clave = UPPER(TRIM(pc.clave))
+            )
+        )
         AND (
           NOT EXISTS (
             SELECT 1

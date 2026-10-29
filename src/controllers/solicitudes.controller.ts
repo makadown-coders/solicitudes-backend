@@ -1,6 +1,9 @@
 import { Request, Response } from 'express';
 import SolicitudesService from "../services/solicitudes.service";
-import NecesidadesPrimerNivelService, { PrimerNivelWishlistDisabledError } from '../services/necesidades-primer-nivel.service';
+import NecesidadesPrimerNivelService, {
+    PrimerNivelClavesExcluidasError,
+    PrimerNivelWishlistDisabledError,
+} from '../services/necesidades-primer-nivel.service';
 
 export class SolicitudesController {
     private service: SolicitudesService;
@@ -16,7 +19,7 @@ export class SolicitudesController {
             res.status(201).json({ ok: true, ...resultado });
         } catch (err: any) {
             console.error('Error enviando necesidades de Primer Nivel:', err);
-            if (err instanceof PrimerNivelWishlistDisabledError) {
+            if (err instanceof PrimerNivelWishlistDisabledError || err instanceof PrimerNivelClavesExcluidasError) {
                 res.status(err.statusCode).json({ code: err.code, message: err.message });
                 return;
             }
@@ -52,7 +55,7 @@ export class SolicitudesController {
             res.status(200).send(resultado.buffer);
         } catch (err: any) {
             console.error('Error generando vista previa de necesidades de Primer Nivel:', err);
-            if (err instanceof PrimerNivelWishlistDisabledError) {
+            if (err instanceof PrimerNivelWishlistDisabledError || err instanceof PrimerNivelClavesExcluidasError) {
                 res.status(err.statusCode).json({ code: err.code, message: err.message });
                 return;
             }

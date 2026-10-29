@@ -62,6 +62,8 @@ export type MatrizDistribucionPrimerNivelResponse = {
     existenciaAze: number;
     alternativa: {
       clave: string;
+      descripcion: string | null;
+      tipoInsumo: 'MED' | 'MC' | null;
       factor: number;
       existenciaAzm: number;
       existenciaAzt: number;

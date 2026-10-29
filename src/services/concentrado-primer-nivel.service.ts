@@ -26,6 +26,25 @@ function fecha(value: unknown): string | null {
   return (value as any)?.toISOString?.().slice(0, 10) ?? String(value).slice(0, 10);
 }
 
+function normalizarClaveMatriz(value: unknown): string {
+  const clave = String(value ?? '').trim().toUpperCase();
+  return /^311\.[0-9]{3}\.[0-9]{4}\.[0-9]{2}$/.test(clave)
+    ? clave.replace(/\.[0-9]{2}$/, '')
+    : clave;
+}
+
+function clasificarTipoInsumo(clave: string, categoria: unknown): 'MED' | 'MC' | null {
+  const prefijo = clave.split('.')[0];
+  if (['060', '070', '080', '160', '180', '200', '204', '254', '311', '531', '537'].includes(prefijo)) {
+    return 'MC';
+  }
+  const categoriaNormalizada = String(categoria ?? '').trim().toUpperCase();
+  if (categoriaNormalizada.includes('MEDICAMENTO')) return 'MED';
+  if (categoriaNormalizada.includes('MATERIAL') && categoriaNormalizada.includes('CURACI')) return 'MC';
+  if (prefijo === '010') return 'MED';
+  return null;
+}
+
 export default class ConcentradoPrimerNivelService {
   async matrizDistribucion(monthsInput: unknown): Promise<MatrizDistribucionPrimerNivelResponse> {
     const months = Math.min(12, Math.max(1, parseIntSafe(monthsInput, 1)));
@@ -76,6 +95,11 @@ export default class ConcentradoPrimerNivelService {
                  c.cantidad_capturada::numeric AS piezas
           FROM solicitudes_periodo sp
           JOIN public.solicitud_primer_nivel_contexto c ON c.solicitud_id = sp.id
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM public.v_solicitud_primer_nivel_clave_excluida ex
+            WHERE ex.clave = UPPER(TRIM(c.clave))
+          )
 
           UNION ALL
 
@@ -93,6 +117,11 @@ export default class ConcentradoPrimerNivelService {
             FROM public.solicitud_primer_nivel_contexto c
             WHERE c.solicitud_id = sp.id
           )
+            AND NOT EXISTS (
+              SELECT 1
+              FROM public.v_solicitud_primer_nivel_clave_excluida ex
+              WHERE ex.clave = UPPER(TRIM(d.clave))
+            )
         ),
         insumos AS (
           SELECT DISTINCT ON (CASE
@@ -234,11 +263,7 @@ export default class ConcentradoPrimerNivelService {
 
     const existenciasPorClave = new Map(existenciasAlmacenes.rows.map(row => [String(row.clave), row]));
     const clavesSolicitadas = [...new Set(data.map(row => row.clave))];
-    const clavesSinExistencia = clavesSolicitadas.filter(clave => {
-      const row = existenciasPorClave.get(clave);
-      return Number(row?.existencia_azm ?? 0) + Number(row?.existencia_azt ?? 0) + Number(row?.existencia_aze ?? 0) <= 0;
-    });
-    const alternativas = clavesSinExistencia.length ? await pool.query(`
+    const alternativas = clavesSolicitadas.length ? await pool.query(`
       SELECT UPPER(TRIM(h.clave)) AS clave,
              UPPER(TRIM(h.sustituto)) AS candidato,
              h.factor::numeric AS factor
@@ -246,6 +271,11 @@ export default class ConcentradoPrimerNivelService {
       WHERE UPPER(TRIM(h.clave)) = ANY($1::text[])
         AND NULLIF(UPPER(TRIM(h.sustituto)), '') IS NOT NULL
         AND h.factor::numeric > 0
+        AND NOT EXISTS (
+          SELECT 1
+          FROM public.v_solicitud_primer_nivel_clave_excluida ex
+          WHERE ex.clave = UPPER(TRIM(h.sustituto))
+        )
       UNION
       SELECT UPPER(TRIM(h.sustituto)) AS clave,
              UPPER(TRIM(h.clave)) AS candidato,
@@ -254,9 +284,19 @@ export default class ConcentradoPrimerNivelService {
       WHERE UPPER(TRIM(h.sustituto)) = ANY($1::text[])
         AND NULLIF(UPPER(TRIM(h.clave)), '') IS NOT NULL
         AND h.factor::numeric > 0
-    `, [clavesSinExistencia]) : { rows: [] as any[] };
+        AND NOT EXISTS (
+          SELECT 1
+          FROM public.v_solicitud_primer_nivel_clave_excluida ex
+          WHERE ex.clave = UPPER(TRIM(h.clave))
+        )
+    `, [clavesSolicitadas]) : { rows: [] as any[] };
     const alternativasPorClave = new Map<string, any>();
-    for (const arista of alternativas.rows) {
+    for (const aristaOriginal of alternativas.rows) {
+      const arista = {
+        ...aristaOriginal,
+        clave: normalizarClaveMatriz(aristaOriginal.clave),
+        candidato: normalizarClaveMatriz(aristaOriginal.candidato),
+      };
       const stock = existenciasPorClave.get(String(arista.candidato));
       const factor = Number(arista.factor ?? 0);
       const existenciaAzm = Number(stock?.existencia_azm ?? 0);
@@ -280,6 +320,44 @@ export default class ConcentradoPrimerNivelService {
         alternativasPorClave.set(clave, candidata);
       }
     }
+
+    const clavesAlternativas = [...new Set([...alternativasPorClave.values()]
+      .map(item => String(item.candidato)))];
+    const catalogoAlternativas = clavesAlternativas.length ? await pool.query(`
+      WITH claves AS (
+        SELECT UNNEST($1::text[]) AS clave
+      )
+      SELECT c.clave,
+             COALESCE(i.descripcion, af.descripcion, i.nombre) AS descripcion,
+             COALESCE(i.categoria, af.categoria) AS categoria
+      FROM claves c
+      LEFT JOIN LATERAL (
+        SELECT NULLIF(REGEXP_REPLACE(TRIM(x.descripcion), '[[:space:]]+', ' ', 'g'), '') AS descripcion,
+               NULLIF(REGEXP_REPLACE(TRIM(x.nombre), '[[:space:]]+', ' ', 'g'), '') AS nombre,
+               NULLIF(TRIM(x.categoria), '') AS categoria
+        FROM cnis.insumo x
+        WHERE CASE
+                WHEN UPPER(TRIM(x.clave)) ~ '^311\.[0-9]{3}\.[0-9]{4}\.[0-9]{2}$'
+                  THEN REGEXP_REPLACE(UPPER(TRIM(x.clave)), '\.[0-9]{2}$', '')
+                ELSE UPPER(TRIM(x.clave))
+              END = c.clave
+        ORDER BY x.activo DESC, x.id DESC
+        LIMIT 1
+      ) i ON true
+      LEFT JOIN LATERAL (
+        SELECT NULLIF(REGEXP_REPLACE(TRIM(x.descripcion), '[[:space:]]+', ' ', 'g'), '') AS descripcion,
+               NULLIF(TRIM(x.categoria), '') AS categoria
+        FROM public.articulos x
+        WHERE CASE
+                WHEN UPPER(TRIM(x.clave)) ~ '^311\.[0-9]{3}\.[0-9]{4}\.[0-9]{2}$'
+                  THEN REGEXP_REPLACE(UPPER(TRIM(x.clave)), '\.[0-9]{2}$', '')
+                ELSE UPPER(TRIM(x.clave))
+              END = c.clave
+        ORDER BY x.id DESC
+        LIMIT 1
+      ) af ON true
+    `, [clavesAlternativas]) : { rows: [] as any[] };
+    const catalogoAlternativasPorClave = new Map(catalogoAlternativas.rows.map(row => [String(row.clave), row]));
 
     const adicionales = new Map<string, { jurisdiccion: JurisdiccionDistribucion; unidad: string }>();
     for (const row of agregado.rows) {
@@ -330,6 +408,11 @@ export default class ConcentradoPrimerNivelService {
           existenciaAze: Number(row?.existencia_aze ?? 0),
           alternativa: alternativa ? {
             clave: String(alternativa.candidato),
+            descripcion: catalogoAlternativasPorClave.get(String(alternativa.candidato))?.descripcion ?? null,
+            tipoInsumo: clasificarTipoInsumo(
+              String(alternativa.candidato),
+              catalogoAlternativasPorClave.get(String(alternativa.candidato))?.categoria
+            ),
             factor: Number(alternativa.factor),
             existenciaAzm: Number(alternativa.existencia_azm ?? 0),
             existenciaAzt: Number(alternativa.existencia_azt ?? 0),

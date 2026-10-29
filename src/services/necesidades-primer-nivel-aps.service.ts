@@ -64,7 +64,20 @@ export default class NecesidadesPrimerNivelApsService {
         ea.nombre AS eje_nombre,
         g.numero::integer AS grupo_numero,
         g.nombre AS grupo_nombre,
-        COUNT(m.id)::integer AS total_medicamentos
+        COUNT(m.id) FILTER (
+          WHERE EXISTS (
+            SELECT 1
+            FROM aps.medicamento_clave mc
+            WHERE mc.medicamento_id = m.id
+              AND mc.activo = true
+              AND mc.tipo_relacion = 'PRINCIPAL'
+              AND NOT EXISTS (
+                SELECT 1
+                FROM public.v_solicitud_primer_nivel_clave_excluida ex
+                WHERE ex.clave = UPPER(TRIM(mc.clave))
+              )
+          )
+        )::integer AS total_medicamentos
       FROM aps.eje_atencion ea
       INNER JOIN aps.grupo g
         ON g.eje_id = ea.id
@@ -109,11 +122,30 @@ export default class NecesidadesPrimerNivelApsService {
       FROM aps.medicamento m
       INNER JOIN aps.grupo g ON g.id = m.grupo_id AND g.activo = true
       INNER JOIN aps.eje_atencion ea ON ea.id = g.eje_id AND ea.activo = true
-      LEFT JOIN aps.medicamento_clave mc ON mc.medicamento_id = m.id AND mc.activo = true
+      LEFT JOIN aps.medicamento_clave mc
+        ON mc.medicamento_id = m.id
+       AND mc.activo = true
+       AND NOT EXISTS (
+         SELECT 1
+         FROM public.v_solicitud_primer_nivel_clave_excluida ex
+         WHERE ex.clave = UPPER(TRIM(mc.clave))
+       )
       WHERE m.activo = true
         AND ($1::text = '' OR m.etiqueta_usuario ILIKE '%' || $1 || '%' OR g.nombre ILIKE '%' || $1 || '%')
         AND ($2::integer IS NULL OR g.numero = $2)
         AND ($3::text = '' OR UPPER(TRIM(ea.codigo)) = $3)
+        AND EXISTS (
+          SELECT 1
+          FROM aps.medicamento_clave principal
+          WHERE principal.medicamento_id = m.id
+            AND principal.activo = true
+            AND principal.tipo_relacion = 'PRINCIPAL'
+            AND NOT EXISTS (
+              SELECT 1
+              FROM public.v_solicitud_primer_nivel_clave_excluida ex
+              WHERE ex.clave = UPPER(TRIM(principal.clave))
+            )
+        )
     `;
     const [itemsResult, totalResult] = await Promise.all([
       pool.query<MedicamentoRow>(`
@@ -180,9 +212,26 @@ export default class NecesidadesPrimerNivelApsService {
         ON mc.medicamento_id = m.id
        AND mc.activo = true
        AND mc.tipo_relacion = 'PRINCIPAL'
+       AND NOT EXISTS (
+         SELECT 1
+         FROM public.v_solicitud_primer_nivel_clave_excluida ex
+         WHERE ex.clave = UPPER(TRIM(mc.clave))
+       )
       LEFT JOIN cnis.insumo i ON i.id = mc.insumo_id AND i.activo = true
       WHERE m.activo = true
         AND m.codigo = $1
+        AND EXISTS (
+          SELECT 1
+          FROM aps.medicamento_clave principal
+          WHERE principal.medicamento_id = m.id
+            AND principal.activo = true
+            AND principal.tipo_relacion = 'PRINCIPAL'
+            AND NOT EXISTS (
+              SELECT 1
+              FROM public.v_solicitud_primer_nivel_clave_excluida ex
+              WHERE ex.clave = UPPER(TRIM(principal.clave))
+            )
+        )
       ORDER BY mc.prioridad, mc.clave
     `, [codigo]);
     const medicamento = rows[0];
@@ -305,6 +354,18 @@ export default class NecesidadesPrimerNivelApsService {
       INNER JOIN aps.eje_atencion ea ON ea.id = g.eje_id AND ea.activo = true
       WHERE m.activo = true
         AND m.codigo = ANY($1::text[])
+        AND EXISTS (
+          SELECT 1
+          FROM aps.medicamento_clave mc
+          WHERE mc.medicamento_id = m.id
+            AND mc.activo = true
+            AND mc.tipo_relacion = 'PRINCIPAL'
+            AND NOT EXISTS (
+              SELECT 1
+              FROM public.v_solicitud_primer_nivel_clave_excluida ex
+              WHERE ex.clave = UPPER(TRIM(mc.clave))
+            )
+        )
     `, [codigos]);
     return new Map(rows.map(row => [this.normalizarCodigo(row.codigo), row]));
   }
@@ -319,11 +380,16 @@ export default class NecesidadesPrimerNivelApsService {
         nombre_catalogo,
         descripcion_catalogo,
         origen_catalogo
-      FROM aps.v_medicamento_clave
-      WHERE medicamento_id = ANY($1::bigint[])
-        AND activo = true
-        AND tipo_relacion = 'PRINCIPAL'
-      ORDER BY medicamento_id, prioridad, clave
+      FROM aps.v_medicamento_clave v
+      WHERE v.medicamento_id = ANY($1::bigint[])
+        AND v.activo = true
+        AND v.tipo_relacion = 'PRINCIPAL'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM public.v_solicitud_primer_nivel_clave_excluida ex
+          WHERE ex.clave = UPPER(TRIM(v.clave))
+        )
+      ORDER BY v.medicamento_id, v.prioridad, v.clave
     `, [medicamentoIds]);
 
     const porMedicamento = new Map<string, ApsVariante[]>();

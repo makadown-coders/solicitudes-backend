@@ -30,6 +30,11 @@ class ArticulosService {
       WHERE i.activo = true
         AND i.cpm_elegible = true
         AND COALESCE(TRIM(i.clave), '') NOT LIKE '002%'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM public.v_solicitud_primer_nivel_clave_excluida ex
+          WHERE ex.clave = UPPER(TRIM(i.clave))
+        )
       ${condiciones.length ? `AND ${condiciones.join('\nAND ')}` : ''}
     `;
 

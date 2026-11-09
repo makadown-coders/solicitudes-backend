@@ -112,8 +112,8 @@ test('contrato HTTP: JSON, XLSX binario, validación y conflicto', async () => {
     const response = await fetch(`${base}/reporte`);
     assert.equal(response.headers.get('cache-control'), 'no-store');
     const report = await response.json();
-    assert.equal(report.months, 3);
-    const excel = await fetch(`${base}/reporte-excel?months=3&versionDatos=${report.versionDatos}`);
+    assert.equal(report.months, 1);
+    const excel = await fetch(`${base}/reporte-excel?months=1&versionDatos=${report.versionDatos}`);
     assert.equal(excel.status, 200);
     assert.match(excel.headers.get('content-type'), /spreadsheetml/);
     assert.match(excel.headers.get('content-disposition'), /radar_demanda_cobertura_/);
@@ -287,19 +287,22 @@ test('HTTP Excel directo funciona sin JSON previo y devuelve el nombre del archi
   } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
-test('reporte fijo de tres meses consulta únicamente las vistas materializadas por lotes', async () => {
+test('reporte operativo fijo de un mes consulta únicamente las vistas materializadas por lotes', async () => {
   const { pool } = require('../dist/db/pool');
-  const TresMeses = require('../dist/services/reporteRadarSemanalTresMeses.service').default;
+  const UnMes = require('../dist/services/reporteRadarSemanalUnMes.service').default;
   const query = pool.query, connect = pool.connect;
   const queries = [];
   pool.query = async sql => {
     queries.push(sql);
-    if (sql.includes('mv_reporte_radar_semanal_3m_unidades_sin_solicitud')) return { rows: [{
+    if (sql.includes('SELECT DISTINCT snapshot_existencias')) {
+      return { rows: [{ snapshot: '2026-11-01T08:00:00.000Z' }] };
+    }
+    if (sql.includes('mv_reporte_radar_semanal_1m_unidades_sin_solicitud')) return { rows: [{
       cluesimb: 'BC002', nombre_de_unidad: 'Unidad sin solicitud', jurisdiccion: 'MEXICALI',
       es_segundo_nivel: false, tipo_unidad: 'CENTRO DE SALUD', ultima_solicitud_registrada: null
     }] };
     if (sql.includes('GROUP BY cluesimb')) return { rows: [{ unidad: 'Unidad de prueba · BC001', claves_solicitadas: 1, sin_existencia: 1 }] };
-    return { rows: [{ total: 1, criticas_cpm: 1, atencion_cpm: 0, demanda_sin_cpm: 0,
+    return { rows: [{ total: 1, total_universo: 4, criticas_cpm: 1, atencion_cpm: 0, demanda_sin_cpm: 0,
       cpm_sin_solicitud: 0, cubiertas: 0, vigente_en_proceso: 0, vigente_con_salida: 0,
       fuera_umbral_sin_salida: 0, historica_con_salida: 1, sin_solicitud_observada: 0,
       con_ordenes_vencidas: 1, con_salida_posterior: 1 }] };
@@ -321,10 +324,15 @@ test('reporte fijo de tres meses consulta únicamente las vistas materializadas 
     }, release() {} };
   };
   try {
-    const result = await new TresMeses().generarExcel();
+    const reporteJson = await new UnMes().obtenerReporte();
+    assert.equal(reporteJson.months, 1);
+    assert.equal(reporteJson.resumen.registrosUnidadClave, 4);
+    assert.equal(reporteJson.tablaCorreo.length, 1);
+    assert.match(reporteJson.versionDatos, /^[a-f0-9]{64}$/);
+    const result = await new UnMes().generarExcel();
     try {
       const consultasDatos = queries.filter(sql => sql.includes('SELECT') || sql.startsWith('DECLARE'));
-      assert.ok(consultasDatos.every(sql => sql.includes('mv_reporte_radar_semanal_3m')));
+      assert.ok(consultasDatos.every(sql => sql.includes('mv_reporte_radar_semanal_1m')));
       assert.ok(queries.every(sql => !sql.includes('solicitud_bitacora')));
       assert.match(result.reporte.nombreArchivo, /^radar_demanda_cobertura_\d{8}\.xlsx$/);
       const book = XLSX.read(await fs.readFile(result.archivo), { type: 'buffer' });
@@ -336,11 +344,11 @@ test('reporte fijo de tres meses consulta únicamente las vistas materializadas 
   } finally { pool.query = query; pool.connect = connect; }
 });
 
-test('SQL materializado conserva el corte fijo de tres meses y refresca las cuatro vistas', async () => {
-  const sql = await fs.readFile('sql/002_reporte_radar_semanal_3m.sql', 'utf8');
-  assert.match(sql, /CURRENT_DATE - INTERVAL '3 months'/);
-  assert.match(sql, /CREATE MATERIALIZED VIEW public\.mv_reporte_radar_semanal_3m_unidades_sin_solicitud/);
-  assert.match(sql, /REFRESH MATERIALIZED VIEW public\.mv_reporte_radar_semanal_3m_unidades_sin_solicitud/);
+test('SQL materializado conserva el corte fijo de un mes y refresca las cuatro vistas', async () => {
+  const sql = await fs.readFile('sql/003_reporte_radar_semanal_1m.sql', 'utf8');
+  assert.match(sql, /CURRENT_DATE - INTERVAL '1 month'/);
+  assert.match(sql, /CREATE MATERIALIZED VIEW public\.mv_reporte_radar_semanal_1m_unidades_sin_solicitud/);
+  assert.match(sql, /REFRESH MATERIALIZED VIEW public\.mv_reporte_radar_semanal_1m_unidades_sin_solicitud/);
   assert.match(sql, /solicitado_ultima_solicitud/);
   assert.match(sql, /existencia_azm/);
   assert.match(sql, /BEGIN;[\s\S]*COMMIT;/);

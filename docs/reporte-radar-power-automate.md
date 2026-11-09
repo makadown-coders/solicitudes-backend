@@ -4,16 +4,16 @@
 
 **Recurrence → HTTP_preparar → Do until listo → HTTP_excel → Send an email (V2)**.
 
-La descarga directa de tres meses consulta las vistas materializadas del reporte, genera las siete hojas y transmite el archivo. No requiere consultar JSON previamente, no calcula hash ni arma el HTML del correo. Mantiene la escritura incremental a disco y la limpieza del temporal.
+La descarga directa de un mes consulta las vistas materializadas del reporte, genera las siete hojas y transmite el archivo. No requiere consultar JSON previamente, no calcula hash ni arma el HTML del correo. Mantiene la escritura incremental a disco y la limpieza del temporal.
 
 ### Preparación y actualización de datos
 
-Antes de desplegar el backend, aplicar `sql/002_reporte_radar_semanal_3m.sql` en PostgreSQL. El script crea cuatro vistas materializadas: Radar, unidades sin solicitud, detalle de salidas y contexto de órdenes. También crea sus índices y el procedimiento de actualización.
+Antes de desplegar el backend, aplicar `sql/003_reporte_radar_semanal_1m.sql` en PostgreSQL. El script crea cuatro vistas materializadas: Radar, unidades sin solicitud, detalle de salidas y contexto de órdenes. También crea sus índices y el procedimiento de actualización.
 
-Las vistas representan una fotografía de los últimos tres meses al momento del refresco. Programar esta instrucción antes del flujo de Power Automate, fuera de la petición HTTP:
+Las vistas representan una fotografía del último mes al momento del refresco. Programar esta instrucción antes del flujo de Power Automate, fuera de la petición HTTP:
 
 ```sql
-CALL public.refrescar_reporte_radar_semanal_3m();
+CALL public.refrescar_reporte_radar_semanal_1m();
 ```
 
 Una frecuencia recomendada para el piloto es el lunes antes del envío. La petición HTTP sólo debe ejecutarse después de que termine el refresco. Si no se programa esta operación, el archivo seguirá disponible pero mostrará la última fotografía materializada.
@@ -39,7 +39,7 @@ Si `error` contiene texto, terminar el flujo sin enviar correo.
 5. En **HTTP_excel**, configurar método GET y pegar esta URI literal (sin expresión concat ni versionDatos):
 
 ```text
-https://minor-flossy-imssb-737587a4.koyeb.app/api/reportes-radar-semanal/reporte-excel?months=3
+https://minor-flossy-imssb-737587a4.koyeb.app/api/reportes-radar-semanal/reporte-excel?months=1
 ```
 
    Encabezado Accept: `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`.
@@ -63,7 +63,7 @@ El nombre con fecha también viene en el encabezado HTTP `X-Reporte-Nombre-Archi
   <p>Les compartimos el reporte para apoyar el seguimiento de claves por unidad médica.</p>
   <p><strong>Las solicitudes analizadas provienen de los registros asociados a LOS EXCELES GENERADOS CON LA HERRAMIENTA DE SOLICITUDES.</strong> Su generación no acredita recepción, autorización, procesamiento ni surtimiento por Abasto y/o Almacenes.</p>
   <p>La estructura ilustra cómo podría presentarse el análisis si posteriormente se integrara el registro de cada solicitud efectivamente procesada. Esa integración aún no forma parte del piloto.</p>
-  <p>El archivo considera los últimos tres meses de solicitudes. El envío semanal no limita el análisis a la última semana. Revisen las fechas disponibles: la generación del reporte no representa un corte común de todas las fuentes.</p>
+  <p>El archivo considera el último mes de solicitudes. El envío semanal no limita el análisis a la última semana. Revisen las fechas disponibles: la generación del reporte no representa un corte común de todas las fuentes.</p>
   <p>Les sugerimos comenzar por “Guía y alcance”, “Resumen por unidad” y “Radar”, especialmente las columnas “Requiere seguimiento” y “Motivos de seguimiento”.</p>
   <p>Sin solicitud observada no significa ausencia de necesidad. Las órdenes pendientes no son existencia disponible y una salida no confirma por sí sola recepción ni atención completa.</p>
   <p>Agradeceremos sus observaciones para mejorar la claridad y utilidad del reporte.</p>
@@ -73,8 +73,8 @@ El nombre con fecha también viene en el encabezado HTTP `X-Reporte-Nombre-Archi
 
 ## Compatibilidad y alcance
 
-- `months`: entero entre 1 y 12, predeterminado 3. Sin filtros adicionales y con un máximo de 50,000 filas del Radar.
-- La ruta JSON `/reporte?months=3` sigue disponible para clientes anteriores.
+- `months`: entero entre 1 y 12, predeterminado 1. El flujo operativo utiliza la vista materializada mensual y no impone el antiguo máximo arbitrario de 50,000 filas.
+- La ruta JSON `/reporte?months=1` conserva `tablaCorreo`, `correo` y el resumen para Power Automate, pero ahora los obtiene exclusivamente de agregados de la fotografía mensual; no carga el detalle unidad–clave ni queda sujeta al antiguo límite de 50,000 filas.
 - Si se envía explícitamente `versionDatos`, se conserva la comparación y el posible 409. El flujo simplificado debe omitirlo.
 - 400: parámetros inválidos. 422: universo incompleto. 503: reporte ocupado (Retry-After: 30). 500: error de generación. No se ocultan fallos ni se envían archivos parciales.
 - Se preservan las reglas analíticas y el origen del piloto; el libro contiene siete hojas, incluida “Unidades sin solicitud”. No hay nuevas dependencias ni tablas; se agregan cuatro vistas materializadas e índices exclusivos para este reporte.
@@ -84,11 +84,11 @@ El nombre con fecha también viene en el encabezado HTTP `X-Reporte-Nombre-Archi
 
 - Las tablas del Excel se escriben fila a fila en un archivo temporal, con presión de escritura sobre el ZIP y sin tabla global de cadenas compartidas. Se conservan las siete hojas, valores, columnas y formatos porcentuales.
 - La respuesta HTTP transmite el archivo desde disco; no carga el XLSX completo en un Buffer. El temporal se elimina al terminar la descarga o ante errores manejados. El directorio temporal de la instancia debe permitir escritura y tener espacio suficiente. Un cierre forzado del proceso puede dejar temporales hasta que la instancia se recicle.
-- Para `months=3`, Radar, salidas y órdenes se leen desde las vistas materializadas mediante cursores PostgreSQL de 500 filas. Cada lote se escribe y se descarta antes de solicitar el siguiente; las tres colecciones no permanecen simultáneamente en memoria.
+- Para `months=1`, Radar, salidas y órdenes se leen desde las vistas materializadas mediante cursores PostgreSQL de 500 filas. Cada lote se escribe y se descarta antes de solicitar el siguiente; las tres colecciones no permanecen simultáneamente en memoria.
 - El XLSX de esta ruta se excluye del middleware HTTP de compresión porque el formato ya contiene datos ZIP. Esto evita trabajo adicional en la instancia de 0.1 vCPU.
 - El hash usa huellas SHA-256 por elemento en lugar de clonar y serializar todo el reporte. El procesamiento cede el event loop por lotes para no bloquear health checks. Sólo se usa en la ruta JSON y cuando el cliente solicita validación explícita. La descarga directa no calcula hash.
 - Sólo se prepara un reporte semanal del Radar a la vez por proceso (JSON o Excel). Otra petición recibe HTTP 503, código `reporte_radar_ocupado` y `Retry-After: 30`. Mantener concurrencia 1 en Power Automate y reintentos para 503; nunca enviar correo si falla el adjunto. Esto no limita otros endpoints ni coordina varias réplicas.
-- El listado conserva el máximo de 50,000 filas de Radar. Los detalles respetan el límite físico de 1,048,576 filas por hoja de Excel; si lo exceden, la generación falla sin enviar un archivo parcial.
+- Las hojas densas contienen únicamente el perfil operativo; CPM sin solicitud, cubiertas y por observar permanecen agregados en el resumen. Cada hoja respeta el límite físico de 1,048,576 filas de Excel; si lo excede, la generación falla sin enviar un archivo parcial.
 - Se agregó la dependencia de producción `exceljs@4.4.0`. El flujo simplificado usa únicamente la URL de Excel, sin versionDatos. No se aumentó el heap ni se cambió NODE_OPTIONS.
 
 Prueba sintética reproducible, sin PostgreSQL ni llamadas a Koyeb:

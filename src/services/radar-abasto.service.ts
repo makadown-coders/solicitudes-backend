@@ -1209,6 +1209,7 @@ export default class RadarAbastoService {
     const estadoOperativo = estadosOperativos.includes(input.estado_operativo as RadarGlobalV2EstadoOperativo)
       ? input.estado_operativo as RadarGlobalV2EstadoOperativo
       : '';
+    const operativo = Boolean(input.operativo);
 
     const sql = `
       WITH unidades_detalle AS (
@@ -1496,6 +1497,12 @@ export default class RadarAbastoService {
             OR c.clave ILIKE '%' || $5 || '%'
             OR COALESCE(c.nombre_de_unidad, '') ILIKE '%' || $5 || '%'
             OR COALESCE(c.descripcion, '') ILIKE '%' || $5 || '%')
+          AND (
+            $6::boolean = false
+            OR c.segmento IN ('CRITICA_CPM', 'ATENCION_CPM', 'DEMANDA_SIN_CPM')
+            OR c.estado_operativo IN ('VIGENTE_EN_PROCESO', 'FUERA_UMBRAL_SIN_SALIDA')
+            OR c.ordenes_vencidas > 0
+          )
       )
       SELECT f.*,
              COUNT(*) OVER()::int AS total_rows,
@@ -1506,10 +1513,10 @@ export default class RadarAbastoService {
              COUNT(*) FILTER (WHERE segmento = 'CUBIERTA') OVER()::int AS total_cubiertas
       FROM filtrado f
       ORDER BY f.prioridad DESC, f.frecuencia_solicitud DESC, f.solicitado_periodo DESC, f.cluesimb, f.clave
-      LIMIT $6 OFFSET $7;
+      LIMIT $7 OFFSET $8;
     `;
 
-    const { rows } = await pool.query(sql, [months, clues, segmento, estadoOperativo, search, pageSize, offset]);
+    const { rows } = await pool.query(sql, [months, clues, segmento, estadoOperativo, search, operativo, pageSize, offset]);
     const first = rows?.[0] ?? {};
     // Reemplaza cada fila cruda conforme se convierte; no retiene dos arreglos completos.
     const data: RadarGlobalV2Row[] = rows ?? [];

@@ -22,4 +22,6 @@ export type RadarGlobalV2Input = {
   page?: number;
   pageSize?: number;
   export?: boolean;
+  /** Perfil reducido para Excel: conserva sólo combinaciones que requieren seguimiento operativo. */
+  operativo?: boolean;
 };

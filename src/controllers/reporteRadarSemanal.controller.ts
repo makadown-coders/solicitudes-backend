@@ -1,30 +1,30 @@
 import { Request, Response } from 'express';
 import ReporteRadarSemanalService, { ReporteRadarError } from '../services/reporteRadarSemanal.service';
-import ReporteRadarSemanalTresMesesService from '../services/reporteRadarSemanalTresMeses.service';
+import ReporteRadarSemanalUnMesService from '../services/reporteRadarSemanalUnMes.service';
 
 export default class ReporteRadarSemanalController {
   private readonly service: ReporteRadarSemanalService;
-  private readonly tresMeses?: ReporteRadarSemanalTresMesesService;
+  private readonly unMes?: ReporteRadarSemanalUnMesService;
 
-  constructor(service?: ReporteRadarSemanalService, tresMeses?: ReporteRadarSemanalTresMesesService) {
+  constructor(service?: ReporteRadarSemanalService, unMes?: ReporteRadarSemanalUnMesService) {
     this.service = service ?? new ReporteRadarSemanalService();
     // Las pruebas y consumidores que inyectan el servicio conservan la ruta anterior.
-    // El controlador productivo usa las vistas materializadas sólo para el reporte fijo de 3 meses.
-    this.tresMeses = tresMeses ?? (service ? undefined : new ReporteRadarSemanalTresMesesService());
+    // El controlador productivo usa las vistas materializadas para el reporte operativo fijo de un mes.
+    this.unMes = unMes ?? (service ? undefined : new ReporteRadarSemanalUnMesService());
   }
 
   reporte = async (req: Request, res: Response): Promise<void> => { await this.handle(req, res, false); };
   reporteExcel = async (req: Request, res: Response): Promise<void> => { await this.handle(req, res, true); };
   prepararExcel = async (_req: Request, res: Response): Promise<void> => {
     res.setHeader('Cache-Control', 'no-store');
-    if (!this.tresMeses) { res.status(503).json({ ok: false, error: 'reporte_radar_no_disponible' }); return; }
-    const estado = this.tresMeses.preparar();
+    if (!this.unMes) { res.status(503).json({ ok: false, error: 'reporte_radar_no_disponible' }); return; }
+    const estado = this.unMes.preparar();
     res.status(estado.status).json(estado);
   };
   estadoExcel = async (_req: Request, res: Response): Promise<void> => {
     res.setHeader('Cache-Control', 'no-store');
-    if (!this.tresMeses) { res.status(503).json({ ok: false, error: 'reporte_radar_no_disponible' }); return; }
-    res.json(this.tresMeses.estado());
+    if (!this.unMes) { res.status(503).json({ ok: false, error: 'reporte_radar_no_disponible' }); return; }
+    res.json(this.unMes.estado());
   };
 
   private async handle(req: Request, res: Response, excel: boolean): Promise<void> {
@@ -34,17 +34,19 @@ export default class ReporteRadarSemanalController {
       if (value !== undefined && (typeof value !== 'string' || !/^(?:[1-9]|1[0-2])$/.test(value))) {
         throw new ReporteRadarError(400, 'invalid_months', 'months debe ser un entero entre 1 y 12.');
       }
-      const months = value === undefined ? 3 : Number(value);
+      const months = value === undefined ? 1 : Number(value);
       const version = req.query.versionDatos;
       if (version !== undefined && (typeof version !== 'string' || !/^[a-f0-9]{64}$/.test(version))) {
         throw new ReporteRadarError(400, 'invalid_version_datos', 'versionDatos debe ser la versión devuelta por el reporte JSON.');
       }
       if (!excel) {
-        res.json(await this.service.obtenerReporte(months));
+        res.json(months === 1 && this.unMes
+          ? await this.unMes.obtenerReporte()
+          : await this.service.obtenerReporte(months));
         return;
       }
-      const { archivo, limpiar, reporte } = months === 3 && this.tresMeses && version === undefined
-        ? await this.tresMeses.generarExcel()
+      const { archivo, limpiar, reporte } = months === 1 && this.unMes && version === undefined
+        ? await this.unMes.generarExcel()
         : await this.service.generarExcel(months, version as string | undefined);
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename="${reporte.nombreArchivo}"`);

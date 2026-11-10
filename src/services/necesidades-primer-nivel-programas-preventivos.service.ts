@@ -1,6 +1,7 @@
 import { pool } from '../db/pool';
 import { ProgramaPreventivoDetalle } from '../models/solicitudes/programas-preventivos/ProgramaPreventivoDetalle';
 import { ProgramaPreventivoInsumo } from '../models/solicitudes/programas-preventivos/ProgramaPreventivoInsumo';
+import { ProgramaPreventivoSeccion } from '../models/solicitudes/programas-preventivos/ProgramaPreventivoSeccion';
 import {
   ProgramaPreventivoResumen,
   ProgramasPreventivosResponse,
@@ -27,6 +28,14 @@ type InsumoRow = {
   presentacion: string | null;
   obligatorio: boolean;
   orden: number;
+};
+
+type ClaveSeccionRow = {
+  seccion_codigo: string;
+  seccion_nombre: string;
+  seccion_descripcion: string | null;
+  seccion_orden: number;
+  clave: string;
 };
 
 export class ProgramaPreventivoNoEncontradoError extends Error {
@@ -136,11 +145,40 @@ export default class NecesidadesPrimerNivelProgramasPreventivosService {
       ORDER BY v.orden, v.clave
     `, [codigo]);
 
+    const { rows: rowsSecciones } = await pool.query<ClaveSeccionRow>(`
+      SELECT
+        ps.codigo AS seccion_codigo,
+        ps.nombre AS seccion_nombre,
+        ps.descripcion AS seccion_descripcion,
+        ps.orden::integer AS seccion_orden,
+        UPPER(TRIM(pc.clave)) AS clave
+      FROM preventivos.programa_seccion ps
+      INNER JOIN preventivos.programa_clave_seccion pcs
+        ON pcs.programa_id = ps.programa_id
+       AND UPPER(TRIM(pcs.seccion_codigo)) = UPPER(TRIM(ps.codigo))
+      INNER JOIN preventivos.programa_clave pc
+        ON pc.programa_id = pcs.programa_id
+       AND UPPER(TRIM(pc.clave)) = UPPER(TRIM(pcs.clave))
+       AND pc.activo = true
+      WHERE ps.programa_id = $1
+        AND ps.activo = true
+        AND NOT EXISTS (
+          SELECT 1
+          FROM public.v_solicitud_primer_nivel_clave_excluida ex
+          WHERE ex.clave = UPPER(TRIM(pc.clave))
+        )
+      ORDER BY ps.orden, ps.codigo, pc.orden, pc.clave
+    `, [programa.id]);
+
+    const insumos = rows.map(this.mapearInsumo);
+    const secciones = this.mapearSecciones(rowsSecciones, insumos);
+
     return {
       codigo: programa.codigo,
       nombre: programa.nombre,
       descripcion: programa.descripcion,
-      insumos: rows.map(this.mapearInsumo),
+      insumos,
+      ...(secciones.length ? { secciones } : {}),
     };
   }
 
@@ -266,6 +304,31 @@ export default class NecesidadesPrimerNivelProgramasPreventivosService {
       obligatorio: Boolean(row.obligatorio),
       orden: Number(row.orden),
     };
+  }
+
+  private mapearSecciones(
+    rows: ClaveSeccionRow[],
+    insumos: ProgramaPreventivoInsumo[]
+  ): ProgramaPreventivoSeccion[] {
+    const insumosPorClave = new Map(insumos.map(insumo => [insumo.clave.trim().toUpperCase(), insumo]));
+    const secciones = new Map<string, ProgramaPreventivoSeccion>();
+    for (const row of rows) {
+      const insumo = insumosPorClave.get(row.clave);
+      if (!insumo) continue;
+      let seccion = secciones.get(row.seccion_codigo);
+      if (!seccion) {
+        seccion = {
+          codigo: row.seccion_codigo,
+          nombre: row.seccion_nombre,
+          descripcion: row.seccion_descripcion,
+          orden: Number(row.seccion_orden),
+          insumos: [],
+        };
+        secciones.set(row.seccion_codigo, seccion);
+      }
+      seccion.insumos.push(insumo);
+    }
+    return [...secciones.values()];
   }
 
   private normalizarPrograma(value: unknown): string {

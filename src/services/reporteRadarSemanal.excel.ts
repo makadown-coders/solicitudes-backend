@@ -11,12 +11,17 @@ type Evidencia = Awaited<ReturnType<RadarAbastoService['exportarGlobalV2Detalles
 
 export type ResumenRadarPaginado = {
   total: number;
+  /** Universo analítico antes de reducir las hojas densas al perfil operativo. */
+  totalUniverso?: number;
   segmentos: Radar['summary'];
   estados: Record<RadarGlobalV2EstadoOperativo, number>;
   fueraUmbralSinSalida: number;
   conOrdenesVencidas: number;
   conSalidaPosterior: number;
-  unidades: Array<{ unidad: string; clavesSolicitadas: number; sinExistencia: number }>;
+  unidades: Array<{
+    unidad: string; clavesSolicitadas: number; sinExistencia: number;
+    clues?: string; nombreUnidad?: string; requiereSeguimiento?: number; fueraUmbralSinSalida?: number;
+  }>;
   unidadesSinSolicitud: Array<{
     cluesimb: string; nombre_de_unidad: string | null; jurisdiccion: string | null;
     es_segundo_nivel: boolean; tipo_unidad: string | null; ultima_solicitud_registrada: string | null;
@@ -224,13 +229,15 @@ export default class ReporteRadarSemanalExcel {
         ['Periodo analizado', `${this.months} meses`], ['Búsqueda', 'Sin filtro'], ['CLUES', 'Todas'],
         ['Segmento', 'Todos'], ['Estado operativo', 'Todos'],
         ['Origen de solicitudes', 'Registros asociados a LOS EXCELES GENERADOS CON LA HERRAMIENTA DE SOLICITUDES. Piloto de información de prueba; no acredita recepción, procesamiento ni surtimiento por Abasto y/o Almacenes.'],
-        ['Resultados encontrados', resumenDatos.total], ['Resultados exportados', resumenDatos.total],
+        ['Universo analítico', resumenDatos.totalUniverso ?? resumenDatos.total],
+        ['Resultados operativos exportados', resumenDatos.total],
         ['Unidades sin solicitud en el periodo', resumenDatos.unidadesSinSolicitud.length], [],
         ['Regla operativa', 'Una solicitud se considera vigente durante 14 días naturales a partir de su última fecha registrada.'],
         ['Evidencia principal', 'Las salidas se vinculan por unidad destino. Una salida no confirma por sí sola la recepción ni la cobertura total.'],
         ['Órdenes', 'Se muestran únicamente como contexto. Las piezas pendientes no equivalen a existencia disponible.'],
         ['Alcance', 'Información analítica de apoyo; debe validarse contra sistemas institucionales, documentos oficiales y registros de las áreas responsables.'],
         ['Precaución', 'Sin solicitud observada no significa que la unidad no necesite la clave.'],
+        ['Perfil del archivo', 'Las hojas de detalle incluyen únicamente claves con seguimiento operativo. CPM sin solicitud, cubiertas y por observar permanecen contabilizadas en el resumen.'],
         ['Hoja Unidades sin solicitud', 'Considera unidades médicas activas, excepto almacenes, sin solicitudes registradas durante el periodo fijo del reporte.'], [],
         ['Segmento', 'Significado'],
         ...this.segmentos.filter(x => x.value).map(x => [x.label, this.definicionesSegmento[x.value as RadarGlobalV2Segmento].descripcion]), [],

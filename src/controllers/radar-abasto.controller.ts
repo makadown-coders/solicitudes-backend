@@ -112,7 +112,10 @@ export default class RadarAbastoController {
         search: req.query.search?.toString(), clues: req.query.clues?.toString(),
         segmento: req.query.segmento?.toString() as any,
         estado_operativo: req.query.estado_operativo?.toString() as any,
-        months: parseIntSafe(req.query.months, 3), page: 1, pageSize: 50000, export: true
+        months: parseIntSafe(req.query.months, 3),
+        page: parseIntSafe(req.query.page, 1),
+        pageSize: parseIntSafe(req.query.pageSize, 10000),
+        export: true, operativo: true
       });
       res.json(out);
     } catch (e: any) {

@@ -43,18 +43,34 @@ export default class UniversosAbastoService {
 
   async listarClaves(unidadId: number, query: UniversoClavesQuery) {
     const offset = (query.page - 1) * query.pageSize;
-    const { rows } = await pool.query<UniversoClaveRow & { totalRegistros: number }>(`
+    const { rows } = await pool.query<Omit<UniversoClaveRow, 'cpm'> & {
+      cpm: string | number;
+      totalRegistros: number;
+    }>(`
+      WITH cpm_unidad AS (
+        SELECT
+          UPPER(TRIM(clave_cnis)) AS clave,
+          MAX(cpm) AS cpm,
+          TRUE AS registrado
+        FROM public.cpm
+        WHERE unidad_medica_id = $1
+        GROUP BY UPPER(TRIM(clave_cnis))
+      )
       SELECT
         UPPER(TRIM(u.clave_cnis)) AS clave,
         a.descripcion,
         a.presentacion,
         u.tipo_insumo AS "tipoInsumo",
+        COALESCE(c.cpm, 0) AS cpm,
+        COALESCE(c.registrado, FALSE) AS "cpmRegistrado",
         u.activo,
         (a.id IS NOT NULL) AS "correspondenciaArticulo",
         COUNT(*) OVER()::int AS "totalRegistros"
       FROM abasto.universo_hospital_2027 u
       LEFT JOIN public.articulos a
         ON UPPER(TRIM(u.clave_cnis)) = UPPER(TRIM(a.clave))
+      LEFT JOIN cpm_unidad c
+        ON c.clave = UPPER(TRIM(u.clave_cnis))
       WHERE u.unidad_medica_id = $1
         AND (
           $2::text IS NULL
@@ -76,7 +92,10 @@ export default class UniversosAbastoService {
 
     const total = rows[0]?.totalRegistros ?? 0;
     return {
-      data: rows.map(({ totalRegistros: _totalRegistros, ...row }) => row),
+      data: rows.map(({ totalRegistros: _totalRegistros, cpm, ...row }) => ({
+        ...row,
+        cpm: Number(cpm ?? 0),
+      })),
       pagination: {
         page: query.page,
         pageSize: query.pageSize,
@@ -88,7 +107,10 @@ export default class UniversosAbastoService {
 
   async buscarClavesCandidatas(unidadId: number, search: string, page: number, pageSize: number) {
     const offset = (page - 1) * pageSize;
-    const { rows } = await pool.query<CatalogoClaveCandidataRow & { totalRegistros: number }>(`
+    const { rows } = await pool.query<Omit<CatalogoClaveCandidataRow, 'cpm'> & {
+      cpm: string | number;
+      totalRegistros: number;
+    }>(`
       WITH catalogo AS (
         SELECT DISTINCT ON (UPPER(TRIM(a.clave)))
           a.clave,
@@ -113,10 +135,19 @@ export default class UniversosAbastoService {
           ON i.clave_normalizada = regexp_replace(TRIM(c.clave), '[^0-9]', '', 'g')
         GROUP BY c.clave
       )
+      , cpm_unidad AS (
+        SELECT
+          UPPER(TRIM(clave_cnis)) AS clave,
+          MAX(cpm) AS cpm
+        FROM public.cpm
+        WHERE unidad_medica_id = $1
+        GROUP BY UPPER(TRIM(clave_cnis))
+      )
       SELECT
         c.clave,
         c.descripcion,
         c.presentacion,
+        COALESCE(cpm.cpm, 0) AS cpm,
         EXISTS (
           SELECT 1
           FROM abasto.universo_hospital_2027 u
@@ -145,13 +176,17 @@ export default class UniversosAbastoService {
         COUNT(*) OVER()::int AS "totalRegistros"
       FROM catalogo c
       INNER JOIN clasificacion cl ON cl.clave = c.clave
+      LEFT JOIN cpm_unidad cpm ON cpm.clave = UPPER(TRIM(c.clave))
       ORDER BY UPPER(TRIM(c.clave))
       LIMIT $3 OFFSET $4
     `, [unidadId, search, pageSize, offset]);
 
     const total = rows[0]?.totalRegistros ?? 0;
     return {
-      data: rows.map(({ totalRegistros: _totalRegistros, ...row }) => row),
+      data: rows.map(({ totalRegistros: _totalRegistros, cpm, ...row }) => ({
+        ...row,
+        cpm: Number(cpm ?? 0),
+      })),
       pagination: { page, pageSize, total, totalPages: Math.ceil(total / pageSize) },
     };
   }

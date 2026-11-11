@@ -46,3 +46,36 @@ export type ActualizarActivoResult = {
   activo: boolean;
   actualizado: boolean;
 };
+
+export type AnalisisOperativoSolicitud = {
+  clave: string;
+  cantidad: number;
+};
+
+export type AnalisisOperativoAlternativa = {
+  clave: string;
+  descripcion: string | null;
+  presentacion: string | null;
+  factor: number;
+  cpm: number;
+  existenciaAzm: number;
+  existenciaAzt: number;
+  existenciaAze: number;
+  fechaSnapshot: string | null;
+};
+
+export type AnalisisOperativoRow = {
+  clave: string;
+  cpm: number;
+  existenciaAzm: number;
+  existenciaAzt: number;
+  existenciaAze: number;
+  fechaSnapshot: string | null;
+  alternativa: AnalisisOperativoAlternativa | null;
+};
+
+export type AnalisisOperativoResponse = {
+  jurisdiccion: 'MEXICALI' | 'TIJUANA' | 'ENSENADA' | null;
+  snapshotExistencias: string | null;
+  data: AnalisisOperativoRow[];
+};

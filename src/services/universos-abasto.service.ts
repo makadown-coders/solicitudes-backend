@@ -1,5 +1,8 @@
 import { pool } from '../db/pool';
 import {
+  AnalisisOperativoAlternativa,
+  AnalisisOperativoResponse,
+  AnalisisOperativoSolicitud,
   ActualizarActivoResult,
   CatalogoClaveCandidataRow,
   IncorporarClaveInput,
@@ -288,6 +291,207 @@ export default class UniversosAbastoService {
     return relacion.rows[0]
       ? { ...relacion.rows[0], actualizado: false }
       : null;
+  }
+
+  async obtenerAnalisisOperativo(
+    unidadId: number,
+    solicitud: AnalisisOperativoSolicitud[],
+  ): Promise<AnalisisOperativoResponse | null> {
+    const claves = solicitud.map(item => item.clave.trim().toUpperCase());
+    const unidad = await pool.query<{
+      cluesimb: string;
+      jurisdiccion: 'MEXICALI' | 'TIJUANA' | 'ENSENADA' | null;
+    }>(`
+      SELECT
+        UPPER(TRIM(um.cluesimb)) AS cluesimb,
+        CASE
+          WHEN UPPER(TRIM(um.cluesimb)) = 'BCIMB000133' THEN 'MEXICALI'
+          WHEN UPPER(COALESCE(vumd.nombre_municipio, '')) SIMILAR TO '%(TIJUANA|TECATE|PLAYAS DE ROSARITO)%' THEN 'TIJUANA'
+          WHEN UPPER(COALESCE(vumd.nombre_municipio, '')) SIMILAR TO '%(MEXICALI|SAN FELIPE)%' THEN 'MEXICALI'
+          WHEN UPPER(COALESCE(vumd.nombre_municipio, '')) SIMILAR TO '%(ENSENADA|SAN QUINTIN|SAN QUINTÍN)%' THEN 'ENSENADA'
+          ELSE NULL
+        END AS jurisdiccion
+      FROM public.unidad_medica um
+      LEFT JOIN public.v_unidad_medica_detalle vumd
+        ON UPPER(TRIM(vumd.cluesimb)) = UPPER(TRIM(um.cluesimb))
+      WHERE um.id = $1
+      LIMIT 1
+    `, [unidadId]);
+    if (!unidad.rows[0]) return null;
+
+    const pertenencia = await pool.query<{ clave: string }>(`
+      SELECT DISTINCT UPPER(TRIM(u.clave_cnis)) AS clave
+      FROM abasto.universo_hospital_2027 u
+      WHERE u.unidad_medica_id = $1
+        AND UPPER(TRIM(u.clave_cnis)) = ANY($2::text[])
+    `, [unidadId, claves]);
+    if (pertenencia.rows.length !== claves.length) return null;
+
+    const { rows } = await pool.query<{
+      clave: string;
+      cpm: string | number | null;
+      existencia_azm: string | number | null;
+      existencia_azt: string | number | null;
+      existencia_aze: string | number | null;
+      fecha_snapshot: Date | string | null;
+    }>(`
+      WITH claves AS (SELECT UNNEST($2::text[]) AS clave),
+      cpm_unidad AS (
+        SELECT UPPER(TRIM(c.clave_cnis)) AS clave, MAX(c.cpm) AS cpm
+        FROM public.cpm c
+        WHERE c.unidad_medica_id = $1
+          AND UPPER(TRIM(c.clave_cnis)) = ANY($2::text[])
+        GROUP BY UPPER(TRIM(c.clave_cnis))
+      ),
+      existencias AS (
+        SELECT
+          UPPER(TRIM(t.clave_cnis)) AS clave,
+          COALESCE(SUM(t.existencia) FILTER (
+            WHERE UPPER(CONCAT_WS(' ', vumd.nombre_de_unidad, vumd.nombre_municipio, vumd.alias_sas, vumd.cluesimb))
+              SIMILAR TO '%(MEXICALI|AZM)%'
+          ), 0)::numeric AS existencia_azm,
+          COALESCE(SUM(t.existencia) FILTER (
+            WHERE UPPER(CONCAT_WS(' ', vumd.nombre_de_unidad, vumd.nombre_municipio, vumd.alias_sas, vumd.cluesimb))
+              SIMILAR TO '%(TIJUANA|AZT)%'
+          ), 0)::numeric AS existencia_azt,
+          COALESCE(SUM(t.existencia) FILTER (
+            WHERE UPPER(CONCAT_WS(' ', vumd.nombre_de_unidad, vumd.nombre_municipio, vumd.alias_sas, vumd.cluesimb))
+              SIMILAR TO '%(ENSENADA|AZE)%'
+          ), 0)::numeric AS existencia_aze,
+          MAX(t.cargado_en) AS fecha_snapshot
+        FROM public.tmp_existencias t
+        INNER JOIN public.v_unidad_medica_detalle vumd
+          ON UPPER(TRIM(vumd.cluesimb)) = UPPER(TRIM(t.cluesimb))
+        WHERE vumd.tipo_unidad = 'ALMACENES'
+          AND UPPER(TRIM(t.clave_cnis)) = ANY($2::text[])
+        GROUP BY UPPER(TRIM(t.clave_cnis))
+      )
+      SELECT
+        k.clave,
+        COALESCE(c.cpm, 0) AS cpm,
+        COALESCE(e.existencia_azm, 0) AS existencia_azm,
+        COALESCE(e.existencia_azt, 0) AS existencia_azt,
+        COALESCE(e.existencia_aze, 0) AS existencia_aze,
+        e.fecha_snapshot
+      FROM claves k
+      LEFT JOIN cpm_unidad c ON c.clave = k.clave
+      LEFT JOIN existencias e ON e.clave = k.clave
+      ORDER BY k.clave
+    `, [unidadId, claves]);
+
+    const alternativasResult = await pool.query<{
+      clave: string;
+      candidato: string;
+      factor: string | number;
+      descripcion: string | null;
+      presentacion: string | null;
+      cpm: string | number | null;
+      existencia_azm: string | number | null;
+      existencia_azt: string | number | null;
+      existencia_aze: string | number | null;
+      fecha_snapshot: Date | string | null;
+    }>(`
+      WITH aristas AS (
+        SELECT UPPER(TRIM(h.clave)) AS clave, UPPER(TRIM(h.sustituto)) AS candidato, h.factor::numeric AS factor
+        FROM public.homologos h
+        WHERE UPPER(TRIM(h.clave)) = ANY($2::text[])
+          AND h.factor::numeric > 0
+          AND NULLIF(UPPER(TRIM(h.sustituto)), '') IS NOT NULL
+        UNION
+        SELECT UPPER(TRIM(h.sustituto)), UPPER(TRIM(h.clave)), 1 / NULLIF(h.factor::numeric, 0)
+        FROM public.homologos h
+        WHERE UPPER(TRIM(h.sustituto)) = ANY($2::text[])
+          AND h.factor::numeric > 0
+          AND NULLIF(UPPER(TRIM(h.clave)), '') IS NOT NULL
+      ),
+      permitidas AS (
+        SELECT a.* FROM aristas a
+        WHERE NOT EXISTS (
+          SELECT 1 FROM public.v_solicitud_primer_nivel_clave_excluida ex WHERE ex.clave = a.candidato
+        )
+      ),
+      existencias AS (
+        SELECT
+          UPPER(TRIM(t.clave_cnis)) AS clave,
+          COALESCE(SUM(t.existencia) FILTER (
+            WHERE UPPER(CONCAT_WS(' ', vumd.nombre_de_unidad, vumd.nombre_municipio, vumd.alias_sas, vumd.cluesimb))
+              SIMILAR TO '%(MEXICALI|AZM)%'
+          ), 0)::numeric AS existencia_azm,
+          COALESCE(SUM(t.existencia) FILTER (
+            WHERE UPPER(CONCAT_WS(' ', vumd.nombre_de_unidad, vumd.nombre_municipio, vumd.alias_sas, vumd.cluesimb))
+              SIMILAR TO '%(TIJUANA|AZT)%'
+          ), 0)::numeric AS existencia_azt,
+          COALESCE(SUM(t.existencia) FILTER (
+            WHERE UPPER(CONCAT_WS(' ', vumd.nombre_de_unidad, vumd.nombre_municipio, vumd.alias_sas, vumd.cluesimb))
+              SIMILAR TO '%(ENSENADA|AZE)%'
+          ), 0)::numeric AS existencia_aze,
+          MAX(t.cargado_en) AS fecha_snapshot
+        FROM public.tmp_existencias t
+        INNER JOIN public.v_unidad_medica_detalle vumd
+          ON UPPER(TRIM(vumd.cluesimb)) = UPPER(TRIM(t.cluesimb))
+        WHERE vumd.tipo_unidad = 'ALMACENES'
+          AND UPPER(TRIM(t.clave_cnis)) IN (SELECT candidato FROM permitidas)
+        GROUP BY UPPER(TRIM(t.clave_cnis))
+      ),
+      cpm_unidad AS (
+        SELECT UPPER(TRIM(c.clave_cnis)) AS clave, MAX(c.cpm) AS cpm
+        FROM public.cpm c
+        WHERE c.unidad_medica_id = $1
+          AND UPPER(TRIM(c.clave_cnis)) IN (SELECT candidato FROM permitidas)
+        GROUP BY UPPER(TRIM(c.clave_cnis))
+      )
+      SELECT DISTINCT ON (p.clave)
+        p.clave, p.candidato, p.factor,
+        a.descripcion, a.presentacion,
+        COALESCE(c.cpm, 0) AS cpm,
+        e.existencia_azm, e.existencia_azt, e.existencia_aze, e.fecha_snapshot
+      FROM permitidas p
+      INNER JOIN existencias e ON e.clave = p.candidato
+      LEFT JOIN cpm_unidad c ON c.clave = p.candidato
+      LEFT JOIN LATERAL (
+        SELECT art.descripcion, art.presentacion
+        FROM public.articulos art
+        WHERE UPPER(TRIM(art.clave)) = p.candidato
+        ORDER BY art.id DESC
+        LIMIT 1
+      ) a ON TRUE
+      WHERE p.factor > 0
+        AND (e.existencia_azm + e.existencia_azt + e.existencia_aze) > 0
+      ORDER BY p.clave,
+        ((e.existencia_azm + e.existencia_azt + e.existencia_aze) / p.factor) DESC,
+        p.candidato
+    `, [unidadId, claves]);
+
+    const alternativas = new Map<string, AnalisisOperativoAlternativa>(
+      alternativasResult.rows.map(row => [row.clave, {
+        clave: row.candidato,
+        descripcion: row.descripcion,
+        presentacion: row.presentacion,
+        factor: Number(row.factor),
+        cpm: Number(row.cpm ?? 0),
+        existenciaAzm: Number(row.existencia_azm ?? 0),
+        existenciaAzt: Number(row.existencia_azt ?? 0),
+        existenciaAze: Number(row.existencia_aze ?? 0),
+        fechaSnapshot: row.fecha_snapshot ? new Date(row.fecha_snapshot).toISOString() : null,
+      }]),
+    );
+    const data = rows.map(row => ({
+      clave: row.clave,
+      cpm: Number(row.cpm ?? 0),
+      existenciaAzm: Number(row.existencia_azm ?? 0),
+      existenciaAzt: Number(row.existencia_azt ?? 0),
+      existenciaAze: Number(row.existencia_aze ?? 0),
+      fechaSnapshot: row.fecha_snapshot ? new Date(row.fecha_snapshot).toISOString() : null,
+      alternativa: alternativas.get(row.clave) ?? null,
+    }));
+    const snapshots = data.flatMap(item => [item.fechaSnapshot, item.alternativa?.fechaSnapshot ?? null])
+      .filter((value): value is string => Boolean(value));
+
+    return {
+      jurisdiccion: unidad.rows[0].jurisdiccion,
+      snapshotExistencias: snapshots.sort().at(-1) ?? null,
+      data,
+    };
   }
 
   private async rollbackResult(client: { query: (sql: string) => Promise<unknown> }, reason: string) {

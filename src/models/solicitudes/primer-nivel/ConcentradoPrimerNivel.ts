@@ -20,6 +20,7 @@ export type ConcentradoPrimerNivelRow = {
   clave: string;
   nombre: string | null;
   descripcion: string | null;
+  tipoInsumo: 'MED' | 'MC' | null;
   origen: OrigenCapturaPrimerNivel;
   referencia: string | null;
   etiquetaReferencia: string;

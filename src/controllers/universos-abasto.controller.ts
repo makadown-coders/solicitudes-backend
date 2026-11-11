@@ -138,6 +138,46 @@ export default class UniversosAbastoController {
     }
   };
 
+  obtenerAnalisisOperativo = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const unidadId = this.parsePositiveInt(req.params.unidadId);
+      const articulos = req.body?.articulos;
+      if (!Array.isArray(articulos) || articulos.length === 0 || articulos.length > 1100) {
+        res.status(400).json({ error: 'La solicitud debe incluir entre 1 y 1100 claves' });
+        return;
+      }
+
+      const claves = new Set<string>();
+      const solicitud = articulos.map((item: unknown) => {
+        if (!item || typeof item !== 'object') throw new Error('Solicitud inválida');
+        const valor = item as { clave?: unknown; cantidad?: unknown };
+        const clave = this.parseText(valor.clave);
+        if (!clave || typeof valor.cantidad !== 'number' || !Number.isFinite(valor.cantidad)
+          || !Number.isInteger(valor.cantidad) || valor.cantidad <= 0 || valor.cantidad > 99999) {
+          throw new Error('Solicitud inválida');
+        }
+        const normalizada = clave.toUpperCase();
+        if (claves.has(normalizada)) throw new Error('Solicitud inválida');
+        claves.add(normalizada);
+        return { clave, cantidad: valor.cantidad };
+      });
+
+      const result = await this.service.obtenerAnalisisOperativo(unidadId, solicitud);
+      if (!result) {
+        res.status(404).json({ error: 'La unidad médica o alguna clave del universo no existe' });
+        return;
+      }
+      res.json(result);
+    } catch (error) {
+      if (error instanceof Error && ['Parámetro inválido', 'Solicitud inválida'].includes(error.message)) {
+        res.status(400).json({ error: error.message });
+        return;
+      }
+      console.error('Error al preparar el análisis operativo:', error);
+      res.status(500).json({ error: 'No fue posible preparar el análisis operativo' });
+    }
+  };
+
   private parsePositiveInt(value: unknown): number {
     const parsed = Number(value);
     if (!Number.isInteger(parsed) || parsed <= 0) throw new Error('Parámetro inválido');

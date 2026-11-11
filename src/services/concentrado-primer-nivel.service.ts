@@ -499,6 +499,7 @@ export default class ConcentradoPrimerNivelService {
                ce.unidad, ce.jurisdiccion,
                NULLIF(TRIM(i.nombre), '') AS nombre,
                NULLIF(REGEXP_REPLACE(TRIM(i.descripcion), '[[:space:]]+', ' ', 'g'), '') AS descripcion,
+               NULLIF(TRIM(i.categoria), '') AS categoria,
                COALESCE(
                  NULLIF(TRIM(am.etiqueta_usuario), ''),
                  NULLIF(TRIM(pp.nombre), ''),
@@ -532,7 +533,7 @@ export default class ConcentradoPrimerNivelService {
             OR etiqueta_referencia ILIKE '%' || $6 || '%')
       ),
       detalle AS (
-        SELECT cluesimb, unidad, jurisdiccion, clave, nombre, descripcion,
+        SELECT cluesimb, unidad, jurisdiccion, clave, nombre, descripcion, MAX(categoria) AS categoria,
                origen, referencia, etiqueta_referencia,
                COUNT(DISTINCT solicitud_id)::int AS solicitudes,
                COALESCE(SUM(piezas), 0)::numeric AS piezas,
@@ -594,6 +595,7 @@ export default class ConcentradoPrimerNivelService {
       cluesimb: String(row.cluesimb ?? ''), unidad: String(row.unidad ?? ''),
       jurisdiccion: row.jurisdiccion ?? null, clave: String(row.clave ?? ''),
       nombre: row.nombre ?? null, descripcion: row.descripcion ?? null,
+      tipoInsumo: clasificarTipoInsumo(String(row.clave ?? ''), row.categoria),
       origen: row.origen, referencia: row.referencia ?? null,
       etiquetaReferencia: String(row.etiqueta_referencia ?? ''),
       solicitudes: Number(row.solicitudes ?? 0), piezas: Number(row.piezas ?? 0),

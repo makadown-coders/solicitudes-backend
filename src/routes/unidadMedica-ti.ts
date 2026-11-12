@@ -2,7 +2,7 @@
 import { Router } from 'express';
 import UnidadMedicaTIController from '../controllers/unidadMedica-ti.controller';
 import { requireAuth } from '../auth/requireAuth';
-import { requireRole } from '../auth/requireRole';
+import { requireTiAdminGlobal } from '../auth/requireRole';
 
 const router = Router();
 const c = new UnidadMedicaTIController();
@@ -13,7 +13,7 @@ const c = new UnidadMedicaTIController();
  * Seguridad: cuando decidas, descomenta requireAuth/requireRole
  */
 router.get('/',
-  requireAuth, requireRole('ADMIN_TIC','OPER_TIC','CONSULTA_TIC'),
+  requireAuth, requireTiAdminGlobal(),
   c.search.bind(c)
 );
 

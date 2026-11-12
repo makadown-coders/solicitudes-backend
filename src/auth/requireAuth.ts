@@ -93,6 +93,9 @@ function loadLocalJwkSetCached(pubPath: string): JwksCacheEntry {
     if (!kid) {
       throw new JwtAuthError('JWT_KEY_IMPORT_ERROR', 'Public JWK entry is missing kid');
     }
+    if (keysByKid.has(kid)) {
+      throw new JwtAuthError('JWT_KEY_IMPORT_ERROR', 'Duplicate kid in JWKS_PUBLIC_PATH');
+    }
     if (jwk.kty !== 'RSA' || typeof jwk.n !== 'string' || !jwk.n || typeof jwk.e !== 'string' || !jwk.e) {
       throw new JwtAuthError('JWT_KEY_IMPORT_ERROR', 'Invalid RSA public JWK parameters');
     }

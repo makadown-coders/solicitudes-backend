@@ -109,14 +109,42 @@ function loadPrivateConfigLazy(): PrivateKeyCache {
   }
 
   const rawJson = readJsonFileSafe(privPath, 'JWKS_PRIVATE_PATH');
-  const candidate = Array.isArray((rawJson as { keys?: unknown[] })?.keys)
-    ? ((rawJson as { keys: unknown[] }).keys.find(
-        (k: any) => k && typeof k === 'object' && k.kid === kid
-      ) ?? (rawJson as { keys: unknown[] }).keys[0])
-    : rawJson;
+  let candidate: unknown;
+  if (Array.isArray((rawJson as { keys?: unknown[] })?.keys)) {
+    const keysList = (rawJson as { keys: unknown[] }).keys;
+    if (keysList.length === 0) {
+      throw new JwtAuthError('JWT_KEY_IMPORT_ERROR', 'Empty JWKSet in JWKS_PRIVATE_PATH');
+    }
+    const seenKids = new Set<string>();
+    let matched: unknown = undefined;
+    for (const item of keysList) {
+      const validatedItem = validateRsaJwkStructure(item, true, 'JWKS_PRIVATE_PATH');
+      const itemKid = typeof validatedItem.kid === 'string' ? validatedItem.kid.trim() : '';
+      if (!itemKid) {
+        throw new JwtAuthError('JWT_KEY_IMPORT_ERROR', 'Private JWK in JWKS_PRIVATE_PATH is missing kid');
+      }
+      if (seenKids.has(itemKid)) {
+        throw new JwtAuthError('JWT_KEY_IMPORT_ERROR', 'Duplicate kid in JWKS_PRIVATE_PATH');
+      }
+      seenKids.add(itemKid);
+      if (itemKid === kid) {
+        matched = validatedItem;
+      }
+    }
+    if (!matched) {
+      throw new JwtAuthError('JWT_KEY_IMPORT_ERROR', 'Active kid not found in JWKS_PRIVATE_PATH');
+    }
+    candidate = matched;
+  } else {
+    candidate = rawJson;
+  }
 
   const privJwk = validateRsaJwkStructure(candidate, true, 'JWKS_PRIVATE_PATH');
-  if (typeof privJwk.kid === 'string' && privJwk.kid.trim() && privJwk.kid.trim() !== kid) {
+  const privKid = typeof privJwk.kid === 'string' ? privJwk.kid.trim() : '';
+  if (!privKid) {
+    throw new JwtAuthError('JWT_KEY_IMPORT_ERROR', 'Private JWK in JWKS_PRIVATE_PATH is missing kid');
+  }
+  if (privKid !== kid) {
     throw new JwtAuthError('JWT_KEY_IMPORT_ERROR', 'Private JWK kid does not match ACTIVE_KID_FILE');
   }
 
@@ -148,6 +176,9 @@ function loadPublicConfigLazy(): PublicJwkCache {
     const itemKid = typeof validated.kid === 'string' ? validated.kid.trim() : '';
     if (!itemKid) {
       throw new JwtAuthError('JWT_KEY_IMPORT_ERROR', 'Public JWK in JWKS_PUBLIC_PATH is missing kid');
+    }
+    if (keysByKid.has(itemKid)) {
+      throw new JwtAuthError('JWT_KEY_IMPORT_ERROR', 'Duplicate kid in JWKS_PUBLIC_PATH');
     }
     if (!firstValid) firstValid = validated;
     keysByKid.set(itemKid, validated);

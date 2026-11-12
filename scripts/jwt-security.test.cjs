@@ -650,3 +650,145 @@ test('20. Fallo de signAccessToken() por configuración JWK faltante ejecuta ROL
   assert.equal(clientQueries.at(-1), 'ROLLBACK', 'Debe haberse ejecutado ROLLBACK antes de liberar el cliente');
   assert.ok(!clientQueries.includes('COMMIT'), 'Nunca debe ejecutarse COMMIT si signAccessToken falla');
 });
+
+test('21 (6.2C). Selección estricta de llave privada: acepta JWKSet con kid activo coincidente y rechaza JWKSet sin coincidencia o privada sin kid', async () => {
+  const pair1 = generateEphemeralRsaJwkPair('kid_priv_1');
+  const pair2 = generateEphemeralRsaJwkPair('kid_priv_2');
+
+  // Caso A: JWKSet privado donde la segunda llave coincide con ACTIVE_KID ('kid_priv_2')
+  const filesValidSet = writeTempAuthFiles({
+    privContent: { keys: [pair1.privJwk, pair2.privJwk] },
+    pubContent: { keys: [pair1.pubJwk, pair2.pubJwk] },
+    kidContent: 'kid_priv_2',
+  });
+
+  resetTestEnv({
+    JWKS_PRIVATE_PATH: filesValidSet.privPath,
+    JWKS_PUBLIC_PATH: filesValidSet.pubPath,
+    ACTIVE_KID_FILE: filesValidSet.kidPath,
+    JWT_ISSUER: 'https://sso.imssb.gob.mx',
+    JWT_AUDIENCE: 'solicitudes-app',
+  });
+
+  const tokenFromSet = await signAccessToken({ sub: 'user-set-2' });
+  const outSet = await runRequireAuth(tokenFromSet);
+  assert.equal(outSet.nextCalled, true);
+  assert.equal(outSet.req.user.sub, 'user-set-2');
+
+  // Caso B: JWKSet privado donde NINGUNA llave coincide con ACTIVE_KID ('kid_missing_in_set') -> NO debe hacer fallback a keys[0]
+  const filesNoMatch = writeTempAuthFiles({
+    privContent: { keys: [pair1.privJwk, pair2.privJwk] },
+    pubContent: { keys: [pair1.pubJwk, pair2.pubJwk] },
+    kidContent: 'kid_missing_in_set',
+  });
+
+  resetTestEnv({
+    JWKS_PRIVATE_PATH: filesNoMatch.privPath,
+    JWKS_PUBLIC_PATH: filesNoMatch.pubPath,
+    ACTIVE_KID_FILE: filesNoMatch.kidPath,
+    JWT_ISSUER: 'https://sso.imssb.gob.mx',
+    JWT_AUDIENCE: 'solicitudes-app',
+  });
+
+  await assert.rejects(
+    () => signAccessToken({ sub: 'user-no-match' }),
+    (err) => {
+      assert.ok(err instanceof JwtAuthError);
+      assert.equal(err.code, 'JWT_KEY_IMPORT_ERROR');
+      assert.match(err.message, /Active kid not found in JWKS_PRIVATE_PATH/);
+      return true;
+    }
+  );
+
+  // Caso C: Llave privada individual SIN propiedad `kid` -> debe rechazarse aunque ACTIVE_KID exista
+  const privWithoutKid = { ...pair1.privJwk };
+  delete privWithoutKid.kid;
+
+  const filesMissingKidOnPriv = writeTempAuthFiles({
+    privContent: privWithoutKid,
+    pubContent: pair1.pubJwk,
+    kidContent: pair1.kid,
+  });
+
+  resetTestEnv({
+    JWKS_PRIVATE_PATH: filesMissingKidOnPriv.privPath,
+    JWKS_PUBLIC_PATH: filesMissingKidOnPriv.pubPath,
+    ACTIVE_KID_FILE: filesMissingKidOnPriv.kidPath,
+    JWT_ISSUER: 'https://sso.imssb.gob.mx',
+    JWT_AUDIENCE: 'solicitudes-app',
+  });
+
+  await assert.rejects(
+    () => signAccessToken({ sub: 'user-priv-no-kid' }),
+    (err) => {
+      assert.ok(err instanceof JwtAuthError);
+      assert.equal(err.code, 'JWT_KEY_IMPORT_ERROR');
+      assert.match(err.message, /Private JWK in JWKS_PRIVATE_PATH is missing kid/);
+      return true;
+    }
+  );
+});
+
+test('22 (6.2C). Rechaza JWKSet público con kid duplicado tanto en requireAuth como en verifyLocalAccess/getPublicJwk', async () => {
+  const pairA = generateEphemeralRsaJwkPair('kid_dup_1');
+  const pairB = generateEphemeralRsaJwkPair('kid_dup_1'); // Distinto par RSA pero declarando el MISMO kid
+
+  // Primero firmamos un token válido con pairA
+  const validFiles = writeTempAuthFiles({
+    privContent: pairA.privJwk,
+    pubContent: pairA.pubJwk,
+    kidContent: 'kid_dup_1',
+  });
+
+  resetTestEnv({
+    JWKS_PRIVATE_PATH: validFiles.privPath,
+    JWKS_PUBLIC_PATH: validFiles.pubPath,
+    ACTIVE_KID_FILE: validFiles.kidPath,
+    JWT_ISSUER: 'https://sso.imssb.gob.mx',
+    JWT_AUDIENCE: 'solicitudes-app',
+  });
+
+  const token = await signAccessToken({ sub: 'user-dup-test' });
+
+  // Ahora configuramos JWKS_PUBLIC_PATH con dos llaves distintas que declaran el mismo `kid_dup_1`
+  const dupPubFiles = writeTempAuthFiles({
+    privContent: pairA.privJwk,
+    pubContent: { keys: [pairA.pubJwk, pairB.pubJwk] },
+    kidContent: 'kid_dup_1',
+  });
+
+  resetTestEnv({
+    JWKS_PRIVATE_PATH: dupPubFiles.privPath,
+    JWKS_PUBLIC_PATH: dupPubFiles.pubPath,
+    ACTIVE_KID_FILE: dupPubFiles.kidPath,
+    JWT_ISSUER: 'https://sso.imssb.gob.mx',
+    JWT_AUDIENCE: 'solicitudes-app',
+  });
+
+  // 1) En jwt.ts: getPublicJwk() y verifyLocalAccess() deben rechazar el JWKSet completo
+  assert.throws(
+    () => getPublicJwk(),
+    (err) => {
+      assert.ok(err instanceof JwtAuthError);
+      assert.equal(err.code, 'JWT_KEY_IMPORT_ERROR');
+      assert.match(err.message, /Duplicate kid in JWKS_PUBLIC_PATH/);
+      return true;
+    }
+  );
+
+  await assert.rejects(
+    () => verifyLocalAccess(token),
+    (err) => {
+      assert.ok(err instanceof JwtAuthError);
+      assert.equal(err.code, 'JWT_KEY_IMPORT_ERROR');
+      assert.match(err.message, /Duplicate kid in JWKS_PUBLIC_PATH/);
+      return true;
+    }
+  );
+
+  // 2) En requireAuth.ts: debe rechazar con 401 sin aceptar el token
+  const outRequireAuth = await runRequireAuth(token);
+  assert.equal(outRequireAuth.nextCalled, false);
+  assert.equal(outRequireAuth.res.statusCode, 401);
+  assert.deepEqual(outRequireAuth.res.body, { error: 'Invalid/expired token' });
+});

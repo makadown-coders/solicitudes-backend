@@ -5,3 +5,8 @@ dist/
 .idea/
 # Temporary files (Claude Code)
 tmpclaude-*.cwd
+
+# Cryptographic key materials (never track in Git)
+keys/
+*.jwk.json
+*.private.jwk

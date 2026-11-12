@@ -1,11 +1,18 @@
 -- =============================================================================
--- MICROINTERVENCIÓN 6.4B-2B.2 — SCRIPT DE REVERSIÓN (DOWN)
+-- MICROINTERVENCIÓN 6.4B-2B.2 / 6.4B-2B.2A — SCRIPT DE REVERSIÓN (DOWN)
 -- Archivo: sql/identity-6.4b-2b2/001_protect_app_users_persona_link.down.sql
 -- Objetivo:
 --   Restaurar exactamente la función public.auto_link_persona_for_app_user()
 --   y los triggers t_app_users_autolink_persona_ins y
 --   t_app_users_autolink_persona_upd_email a su definición original documentada
---   en dump-postgres-202611111225.sql (líneas 1026-1066 y 17400-17408).
+--   en dump-postgres-202611111225.sql (líneas 1026-1066 y 17400-17408), sin
+--   modificar ninguna fila existente en las tablas.
+--
+-- ADVERTENCIA IMPORTANTE SOBRE DATOS POST-DESPLIEGUE:
+--   Este script restaura exclusivamente las definiciones de catálogo (función
+--   y triggers). Revertir la función NO revierte automáticamente los cambios
+--   de datos (altas de usuarios, personas o cambios de correo) que pudieran
+--   haberse confirmado en las tablas después del despliegue de la migración UP.
 -- =============================================================================
 
 BEGIN;

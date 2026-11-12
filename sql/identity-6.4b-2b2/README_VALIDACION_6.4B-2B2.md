@@ -1,4 +1,4 @@
-# Microintervención 6.4B-2B.2 — Instrucciones de Validación Previa, Aplicación, Verificación Posterior y Reversión
+# Microintervención 6.4B-2B.2 / 6.4B-2B.2A — Instrucciones de Validación Previa, Aplicación, Verificación Posterior y Reversión
 
 > **ADVERTENCIA**: No ejecutar ninguno de estos scripts en la base de datos compartida o productiva sin autorización expresa. Las pruebas dinámicas (`001_protect_app_users_persona_link.test.sql`) están diseñadas exclusivamente para un entorno PostgreSQL aislado de pruebas.
 
@@ -6,9 +6,9 @@
 
 ## 1. Archivos incluidos en esta carpeta
 
-- `001_protect_app_users_persona_link.up.sql`: Script de migración propuesta (función `public.auto_link_persona_for_app_user()` y trigger `t_app_users_autolink_persona_upd_email`).
+- `001_protect_app_users_persona_link.up.sql`: Script de migración propuesta endurecida (función `public.auto_link_persona_for_app_user()` y trigger `t_app_users_autolink_persona_upd_email`).
 - `001_protect_app_users_persona_link.down.sql`: Script de reversión exacta al estado original del dump (`dump-postgres-202611111225.sql`).
-- `001_protect_app_users_persona_link.test.sql`: Suite de pruebas SQL transaccional (escenarios 1 a 13) para ejecutar únicamente en una base PostgreSQL aislada.
+- `001_protect_app_users_persona_link.test.sql`: Suite de pruebas SQL transaccional (21 escenarios: 13 originales + 8 de endurecimiento 6.4B-2B.2A) para ejecutar únicamente en una base PostgreSQL aislada.
 
 ---
 
@@ -60,17 +60,51 @@ WHERE NOT t.tgisinternal
 
 ## 3. Ejecución de pruebas en base PostgreSQL aislada
 
+### 3.1 Suite transaccional de una sesión (Escenarios 1 a 21)
 En una instancia local/efímera de PostgreSQL cargada con el esquema de pruebas:
 
 ```bash
 psql -v ON_ERROR_STOP=1 -d <db_aislada_pruebas> -f sql/identity-6.4b-2b2/001_protect_app_users_persona_link.test.sql
 ```
 
-Si los 13 escenarios pasan sin error, el script finaliza con `ROLLBACK` dejando la base aislada sin cambios.
+Si los 21 escenarios pasan sin error, el script finaliza con `ROLLBACK` dejando la base aislada sin cambios.
+
+### 3.2 Prueba multisesión de contención real por `pg_advisory_xact_lock` (INSERT vs UPDATE y UPDATE vs UPDATE)
+En la misma base PostgreSQL aislada (con la migración `UP` cargada), abrir dos terminales `psql` simultáneas (`Sesión A` y `Sesión B`):
+
+1. **Caso Dos UPDATE simultáneos hacia el mismo correo normalizado**:
+   - **Sesión A**:
+     ```sql
+     BEGIN;
+     UPDATE public.app_users SET email = '  Colision.Concurrente@test.local ' WHERE id = '<uuid_cuenta_1>';
+     -- No hacer COMMIT todavía; mantiene el pg_advisory_xact_lock sobre 'colision.concurrente@test.local'
+     ```
+   - **Sesión B**:
+     ```sql
+     BEGIN;
+     UPDATE public.app_users SET email = 'colision.concurrente@TEST.local' WHERE id = '<uuid_cuenta_2>';
+     -- La Sesión B queda en espera del advisory lock hasta que Sesión A termine.
+     ```
+   - **Sesión A**: Ejecutar `COMMIT;`. Inmediatamente la **Sesión B** despierta, evalúa `EXISTS (SELECT 1 FROM public.app_users ...)` viendo la fila confirmada de la Sesión A, y aborta con `ERROR: Ya existe otra cuenta en app_users con el correo normalizado (colision.concurrente@test.local)` (`SQLSTATE 23505`), conservando intacto el `persona_id` de `<uuid_cuenta_2>`.
+   - Ejecutar `ROLLBACK;` en Sesión B y revertir los datos de prueba.
+
+2. **Caso INSERT concurrente con UPDATE hacia el mismo correo normalizado**:
+   - Repetir el mismo patrón: mientras la **Sesión A** tiene un `UPDATE` (o `INSERT`) abierto sin confirmar hacia `'mismo.correo@test.local'`, la **Sesión B** ejecuta un `INSERT` (o `UPDATE`) hacia `'  MISMO.CORREO@TEST.LOCAL  '`. Ambas adquieren exactamente la misma llave `pg_advisory_xact_lock(hashtext('app_users_autolink_email'), hashtext(v_email))`, serializando la ejecución e impidiendo duplicados.
 
 ---
 
-## 4. Aplicación de la migración (cuando sea autorizada)
+## 4. Limitaciones conocidas de los `advisory locks`
+
+1. **Alcance ligado al disparo del trigger**:
+   - El bloqueo `pg_advisory_xact_lock` se adquiere dentro de `public.auto_link_persona_for_app_user()`. Si una sesión con privilegios de propietario/superusuario deshabilita los triggers (`ALTER TABLE public.app_users DISABLE TRIGGER ALL` o `SET session_replication_role = 'replica'`), el trigger no se ejecutará y solo actuará la restricción `app_users_email_key UNIQUE (email)` (sensible a mayúsculas/espacios).
+2. **Espacio de hash de 32 bits (`hashtext`)**:
+   - `pg_advisory_xact_lock(int4, int4)` utiliza dos enteros de 32 bits; una colisión de hash entre dos correos distintos solo provocaría espera transaccional momentánea (falso positivo de serialización), nunca un falso negativo de seguridad.
+3. **Defensa definitiva en esquema**:
+   - La garantía física absoluta en PostgreSQL independiente de triggers es un índice único funcional `CREATE UNIQUE INDEX ON public.app_users (LOWER(TRIM(email)))`, el cual queda reservado para una microintervención posterior cuando sea explícitamente autorizado.
+
+---
+
+## 5. Aplicación de la migración (cuando sea autorizada)
 
 ```bash
 psql -v ON_ERROR_STOP=1 -d <db_objetivo> -f sql/identity-6.4b-2b2/001_protect_app_users_persona_link.up.sql
@@ -78,7 +112,7 @@ psql -v ON_ERROR_STOP=1 -d <db_objetivo> -f sql/identity-6.4b-2b2/001_protect_ap
 
 ---
 
-## 5. Validación posterior (Solo lectura, inmediatamente después de aplicar)
+## 6. Validación posterior (Solo lectura, inmediatamente después de aplicar)
 
 Repetir las consultas de la **Sección 2** y verificar que:
 
@@ -89,10 +123,12 @@ Repetir las consultas de la **Sección 2** y verificar que:
 
 ---
 
-## 6. Procedimiento de reversión (Rollback inmediato)
+## 7. Procedimiento de reversión (Rollback del catálogo)
 
-En caso de requerir restaurar exactamente el comportamiento previo:
+En caso de requerir restaurar exactamente las definiciones anteriores de la función y los triggers:
 
 ```bash
 psql -v ON_ERROR_STOP=1 -d <db_objetivo> -f sql/identity-6.4b-2b2/001_protect_app_users_persona_link.down.sql
 ```
+
+> **Advertencia sobre reversión (`DOWN`)**: El script `001_protect_app_users_persona_link.down.sql` restaura exclusivamente las definiciones originales de la función `public.auto_link_persona_for_app_user()` y de los triggers sin modificar filas existentes. **Revertir la función no revierte automáticamente los cambios de datos** (nuevas cuentas, nuevas personas o actualizaciones de correo) que pudieran haberse producido después del despliegue.

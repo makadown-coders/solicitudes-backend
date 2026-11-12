@@ -19,6 +19,37 @@ export interface LocalAuthDeps {
   signToken?: typeof signAccessToken;
 }
 
+export class AuthUnauthorizedError extends Error {
+  readonly statusCode = 401;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'AuthUnauthorizedError';
+    Object.setPrototypeOf(this, AuthUnauthorizedError.prototype);
+  }
+}
+
+export function isAuthUnauthorizedError(err: unknown): err is AuthUnauthorizedError {
+  return (
+    err instanceof AuthUnauthorizedError ||
+    (typeof err === 'object' &&
+      err !== null &&
+      ((err as { name?: unknown }).name === 'AuthUnauthorizedError' ||
+        (err as { statusCode?: unknown }).statusCode === 401))
+  );
+}
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function parseRefreshToken(refreshToken: string): { jti: string; raw: string } | null {
+  if (typeof refreshToken !== 'string' || !refreshToken) return null;
+  const parts = refreshToken.split('.');
+  if (parts.length !== 2) return null;
+  const [jti, raw] = parts;
+  if (!jti || !raw || !UUID_REGEX.test(jti)) return null;
+  return { jti, raw };
+}
+
 export default class LocalAuthService {
   private readonly db: AuthDbPool;
   private readonly signToken: typeof signAccessToken;
@@ -36,11 +67,22 @@ export default class LocalAuthService {
    * @throws {Error} - Si el usuario no existe o las credenciales son inválidas.
    */
   async login(email: string, password: string) {
-    const u = await this.db.query('SELECT id, email, password_hash, name FROM public.app_users WHERE email=$1', [email]);
+    const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+    if (!normalizedEmail || typeof password !== 'string' || !password) {
+      throw new AuthUnauthorizedError('Invalid credentials');
+    }
+
+    const u = await this.db.query(
+      'SELECT id, email, password_hash, name, status FROM public.app_users WHERE LOWER(TRIM(email)) = $1',
+      [normalizedEmail]
+    );
     const user = u.rows[0];
-    if (!user) throw new Error('Invalid credentials');
+    if (!user) throw new AuthUnauthorizedError('Invalid credentials');
     const ok = await argon2.verify(user.password_hash, password);
-    if (!ok) throw new Error('Invalid credentials');
+    if (!ok) throw new AuthUnauthorizedError('Invalid credentials');
+    if (user.status !== 'ACTIVE') {
+      throw new AuthUnauthorizedError('Invalid credentials');
+    }
 
     const { roles } = await this.getUserWithRoles(user.id);
 
@@ -62,17 +104,26 @@ export default class LocalAuthService {
 
   /**
    * Refresca un token de acceso con un nuevo refresh token.
+   *
+   * Nota sobre fallos de transporte post-commit:
+   * La firma del access_token ocurre ANTES de `COMMIT` para garantizar que un fallo de firma
+   * revierta la rotación del refresh_token. Si ocurre un corte de red posterior al `COMMIT`,
+   * el token anterior ya habrá sido rotado en base de datos; ese escenario corresponde a la capa
+   * de transporte y no debe resolverse mediante reintentos indiscriminados de refresh.
+   *
    * @param {string} refresh_token - JWT refresh token to invalidate
    * @returns {Promise<{access_token: string, refresh_token: string}>} - { access_token, refresh_token } if successful
    * @throws {Error} - if refresh_token is invalid, expired or already used
    */
   async refresh(refresh_token: string) {
-    if (!refresh_token) throw new Error('refresh_token required');
-    const [jti, raw] = refresh_token.split('.');
-    if (!jti || !raw) throw new Error('invalid refresh');
+    if (!refresh_token) throw new AuthUnauthorizedError('refresh_token required');
+    const parsed = parseRefreshToken(refresh_token);
+    if (!parsed) throw new AuthUnauthorizedError('invalid refresh');
+    const { jti, raw } = parsed;
 
     const client = await this.db.connect();
     let inTransaction = false;
+    let releaseError: boolean | Error | undefined;
     try {
       await client.query('BEGIN');
       inTransaction = true;
@@ -83,12 +134,12 @@ export default class LocalAuthService {
         [jti]
       );
       const rec = recRes.rows[0];
-      if (!rec) throw new Error('invalid refresh');
+      if (!rec) throw new AuthUnauthorizedError('invalid refresh');
       if (rec.revoked_at || (rec.expires_at && new Date(rec.expires_at) < new Date())) {
-        throw new Error('expired refresh');
+        throw new AuthUnauthorizedError('expired refresh');
       }
       const ok = await argon2.verify(rec.hashed_token, raw);
-      if (!ok) throw new Error('invalid refresh');
+      if (!ok) throw new AuthUnauthorizedError('invalid refresh');
 
       // 2) Inserta PRIMERO el nuevo refresh
       const newJti = randomUUID();
@@ -108,21 +159,22 @@ export default class LocalAuthService {
         'UPDATE public.app_refresh_tokens SET revoked_at=now(), replaced_by=$1 WHERE jti=$2 AND revoked_at IS NULL',
         [newJti, jti]
       );
-      if (upd.rowCount !== 1) throw new Error('refresh already used');
+      if (upd.rowCount !== 1) throw new AuthUnauthorizedError('refresh already used');
 
-      // 4) Obtiene usuario y roles con el mismo cliente dentro de la transacción
+      // 4) Obtiene usuario y roles con el mismo cliente dentro de la transacción (valida status === 'ACTIVE')
       const { user, roles } = await this.getUserWithRoles(rec.user_id, client);
 
-      await client.query('COMMIT');
-      inTransaction = false;
-
-      // 5) Emite nuevo access **con roles**
+      // 5) Firma el nuevo access JWT ANTES del COMMIT (si falla, se ejecuta ROLLBACK)
       const access_token = await this.signToken({
         sub: user.id,
         email: user.email,
         name: user.name,
         roles, // 👈 vuelve a viajar en el JWT
       });
+
+      // 6) Confirma la transacción antes de devolver los tokens
+      await client.query('COMMIT');
+      inTransaction = false;
 
       return {
         access_token, refresh_token: `${newJti}.${newRaw}`,
@@ -132,14 +184,18 @@ export default class LocalAuthService {
       if (inTransaction) {
         try {
           await client.query('ROLLBACK');
-        } catch {
-          // Si falla el ROLLBACK, el cliente se libera de forma segura en finally
+        } catch (rollbackErr) {
+          releaseError = rollbackErr instanceof Error ? rollbackErr : new Error(String(rollbackErr));
         }
         inTransaction = false;
       }
       throw e;
     } finally {
-      client.release();
+      if (releaseError !== undefined) {
+        client.release(releaseError);
+      } else {
+        client.release();
+      }
     }
   }
 
@@ -148,11 +204,11 @@ export default class LocalAuthService {
    * Devuelve el perfil de un usuario.
    * @param {string} user_id - Id del usuario.
    * @returns {Promise<{profile: {id: string, email: string, name: string, status: string}>}
-   * @throws {Error} - Si el usuario no existe.
+   * @throws {Error} - Si el usuario no existe o no está activo.
    */
   async me(user_id: string) {
     const { user, roles } = await this.getUserWithRoles(user_id);
-    if (!user) throw new Error('not found');
+    if (!user) throw new AuthUnauthorizedError('not found');
     // TODO: puedes enriquecer con roles y scopes
     return {
       profile: {
@@ -171,13 +227,13 @@ export default class LocalAuthService {
    * @returns {Promise<{ok: boolean}>} - { ok: true } if successful
    */
   async logout(refresh_token: string) {
-    if (!refresh_token) return { ok: true };
-
-    const [jti, raw] = refresh_token.split('.');
-    if (!jti || !raw) return { ok: true };
+    const parsed = parseRefreshToken(refresh_token);
+    if (!parsed) return { ok: true };
+    const { jti, raw } = parsed;
 
     const client = await this.db.connect();
     let inTransaction = false;
+    let releaseError: boolean | Error | undefined;
     try {
       await client.query('BEGIN');
       inTransaction = true;
@@ -218,26 +274,40 @@ export default class LocalAuthService {
       if (inTransaction) {
         try {
           await client.query('ROLLBACK');
-        } catch {
-          // Ignore rollback secondary error before releasing client
+        } catch (rollbackErr) {
+          releaseError = rollbackErr instanceof Error ? rollbackErr : new Error(String(rollbackErr));
         }
         inTransaction = false;
       }
       throw e;
     } finally {
-      client.release();
+      if (releaseError !== undefined) {
+        client.release(releaseError);
+      } else {
+        client.release();
+      }
     }
   }
 
   async logoutAll(user_id: string) {
-    await this.db.query('UPDATE public.app_refresh_tokens SET revoked_at=now() WHERE user_id=$1', [user_id]);
+    if (!user_id) throw new AuthUnauthorizedError('Unauthorized');
+    await this.db.query(
+      'UPDATE public.app_refresh_tokens SET revoked_at = COALESCE(revoked_at, now()) WHERE user_id=$1 AND revoked_at IS NULL',
+      [user_id]
+    );
     return { ok: true };
   }
 
   async getUserWithRoles(userId: string, queryable: Pick<AuthPoolClient, 'query'> = this.db) {
-    const u = await queryable.query('SELECT id, email, name FROM public.app_users WHERE id=$1', [userId]);
+    const u = await queryable.query(
+      'SELECT id, email, name, status FROM public.app_users WHERE id=$1',
+      [userId]
+    );
     const user = u.rows[0];
-    if (!user) throw new Error('user not found');
+    if (!user) throw new AuthUnauthorizedError('user not found');
+    if (user.status !== 'ACTIVE') {
+      throw new AuthUnauthorizedError('user inactive');
+    }
 
     const rolesRes = await queryable.query(
       `SELECT r.code, ur.scope_type, ur.scope_id

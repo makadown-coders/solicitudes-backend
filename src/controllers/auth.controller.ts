@@ -1,8 +1,13 @@
 import type { Request, Response } from 'express';
 import AuthService from '../services/auth.service';
+import { isAuthUnauthorizedError } from '../services/localAuth.service';
 
 export default class AuthController {
-  private auth = new AuthService();
+  private auth: AuthService;
+
+  constructor(deps?: { auth?: AuthService }) {
+    this.auth = deps?.auth ?? new AuthService();
+  }
 
   login = async (req: Request, res: Response): Promise<void> => {
     const { email, password } = req.body || {};
@@ -14,7 +19,11 @@ export default class AuthController {
       const out = await this.auth.login(email, password);
       res.json(out);
     } catch (e: any) {
-      res.status(401).json({ error: e.message });
+      if (isAuthUnauthorizedError(e)) {
+        res.status(401).json({ error: e.message });
+        return;
+      }
+      res.status(500).json({ error: 'Internal server error' });
     }
   };
 
@@ -28,7 +37,11 @@ export default class AuthController {
       const out = await this.auth.refresh(refresh_token);
       res.json(out);
     } catch (e: any) {
-      res.status(401).json({ error: e.message });
+      if (isAuthUnauthorizedError(e)) {
+        res.status(401).json({ error: e.message });
+        return;
+      }
+      res.status(500).json({ error: 'Internal server error' });
     }
   };
 
@@ -41,7 +54,11 @@ export default class AuthController {
       const out = await this.auth.me(req.user.sub);
       res.json({ auth_user_id: req.user.sub, email: req.user.email, ...out });
     } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      if (isAuthUnauthorizedError(e)) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+      res.status(500).json({ error: e?.message || 'Internal server error' });
     }
   };
 
@@ -56,10 +73,18 @@ export default class AuthController {
   };
 
   logoutAll = async (req: Request, res: Response): Promise<void> => {
+    if (!req.user?.sub) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
     try {
       const out = await this.auth.logoutAll(req.user.sub);
       res.json(out);
     } catch (e: any) {
+      if (isAuthUnauthorizedError(e)) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
       res.status(400).json({ error: e?.message || 'logout failed' });
     }
   }

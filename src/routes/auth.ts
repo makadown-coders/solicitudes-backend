@@ -28,8 +28,8 @@ router.get('/me', requireAuth, controller.me.bind(controller));
 router.post('/logout', controller.logout.bind(controller));
 
 /**
- * POST /api/auth/logout-all
+ * POST /api/auth/logout-all (protegido con Bearer token)
  */
-router.post('/logout-all', controller.logoutAll.bind(controller));
+router.post('/logout-all', requireAuth, controller.logoutAll.bind(controller));
 
 export default router;

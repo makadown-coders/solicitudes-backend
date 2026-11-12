@@ -53,7 +53,7 @@ export default class PersonasService {
          p.nombre_completo,
          p.unidad_medica_id,
          um.nombre AS unidad_medica,
-         COALESCE(p.correo_principal, pe.email_principal) AS email_principal,
+         COALESCE(NULLIF(TRIM(p.correo_principal), ''), NULLIF(TRIM(pe.email_principal), '')) AS email_principal,
          COALESCE(pec.n_correos, 0) AS n_correos,
          COUNT(*) OVER() AS total
     FROM persona p
@@ -61,8 +61,11 @@ export default class PersonasService {
     LEFT JOIN LATERAL (
       SELECT pc.correo AS email_principal
         FROM persona_correo pc
-       WHERE pc.persona_id = p.id AND pc.activo = TRUE
-       ORDER BY pc.es_principal DESC, pc.id DESC
+       WHERE pc.persona_id = p.id
+         AND pc.activo = TRUE
+         AND pc.es_principal = TRUE
+         AND NULLIF(TRIM(pc.correo), '') IS NOT NULL
+       ORDER BY pc.id DESC
        LIMIT 1
     ) pe ON TRUE   
     LEFT JOIN LATERAL (
@@ -90,9 +93,23 @@ export default class PersonasService {
 
   async byId(id: number) {
     const p = await pool.query(`
-    SELECT p.id, p.nombre_completo, p.unidad_medica_id, um.nombre AS unidad_medica
+    SELECT p.id,
+           p.nombre_completo,
+           p.unidad_medica_id,
+           um.nombre AS unidad_medica,
+           COALESCE(NULLIF(TRIM(p.correo_principal), ''), NULLIF(TRIM(pe.email_principal), '')) AS correo
       FROM persona p
       LEFT JOIN unidad_medica um ON um.id = p.unidad_medica_id
+      LEFT JOIN LATERAL (
+        SELECT pc.correo AS email_principal
+          FROM persona_correo pc
+         WHERE pc.persona_id = p.id
+           AND pc.activo = TRUE
+           AND pc.es_principal = TRUE
+           AND NULLIF(TRIM(pc.correo), '') IS NOT NULL
+         ORDER BY pc.id DESC
+         LIMIT 1
+      ) pe ON TRUE
      WHERE p.id = $1 AND p.activo = TRUE
   `, [id]);
 
@@ -105,7 +122,10 @@ export default class PersonasService {
      ORDER BY es_principal DESC, id DESC
   `, [id]);
 
-    return { ...p.rows[0], correos: correos.rows };
+    const row = p.rows[0];
+    const correoPrincipal = row.correo ?? null;
+
+    return { ...row, correo: correoPrincipal, email_principal: correoPrincipal, correos: correos.rows };
   }
 
   // =============== CREATE ===============
@@ -119,7 +139,7 @@ export default class PersonasService {
       await client.query('BEGIN');
 
       const { rows } = await client.query(
-        `INSERT INTO persona (nombre_completo, unidad_medica_id, activo, created_at, updated_at)
+        `INSERT INTO persona (nombre_completo, unidad_medica_id, activo, creado_en, actualizado_en)
          VALUES ($1, $2, TRUE, NOW(), NOW())
          RETURNING id`,
         [payload.nombre_completo, payload.unidad_medica_id ?? null]
@@ -170,14 +190,22 @@ export default class PersonasService {
       if (!chk.rowCount) throw new Error('Persona no encontrada o inactiva.');
 
       // Actualiza datos básicos si vienen
+      // Nota sobre unidad_medica_id: si no se envía (undefined), se preserva el valor almacenado en BD.
+      // (En PersonasController.update, null y undefined se colapsan con `?? undefined`; esa ambigüedad
+      // se documenta sin modificar el controlador en esta microintervención).
       if (payload.nombre_completo != null || payload.unidad_medica_id !== undefined) {
         await client.query(
           `UPDATE persona
               SET nombre_completo = COALESCE($2, nombre_completo),
-                  unidad_medica_id = $3,
-                  updated_at = NOW()
+                  unidad_medica_id = CASE WHEN $4::boolean THEN $3::integer ELSE unidad_medica_id END,
+                  actualizado_en = NOW()
             WHERE id = $1`,
-          [id, payload.nombre_completo ?? null, payload.unidad_medica_id ?? null]
+          [
+            id,
+            payload.nombre_completo ?? null,
+            payload.unidad_medica_id ?? null,
+            payload.unidad_medica_id !== undefined
+          ]
         );
       }
 
@@ -266,7 +294,7 @@ export default class PersonasService {
             SET activo = FALSE,
                 fecha_baja = NOW(),
                 correo_principal = NULL,
-                updated_at = NOW()
+                actualizado_en = NOW()
           WHERE id = $1`,
         [id]
       );

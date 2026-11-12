@@ -12,10 +12,16 @@ import HistorialesService from './historiales.service';
 import SolicitudesPrimerNivelBitacoraService from './solicitudes-primer-nivel-bitacora.service';
 import SolicitudesPrimerNivelDestinatariosService from './solicitudes-primer-nivel-destinatarios.service';
 import FeatureFlagsService from './featureFlags.service';
+import { clasificarTipoInsumo } from '../helpers/clasificar-tipo-insumo';
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
-type ArticuloCatalogo = { clave: string; descripcion: string | null; presentacion: string | null };
+type ArticuloCatalogo = {
+  clave: string;
+  descripcion: string | null;
+  presentacion: string | null;
+  categoria: string | null;
+};
 type UnidadPrimerNivel = {
   cluesimb: string;
   nombre_de_unidad: string;
@@ -144,7 +150,16 @@ export default class NecesidadesPrimerNivelService {
       correos,
     });
 
-    return this.crearResultado({ folio, cluesimb, unidad: unidad.nombre_de_unidad, periodo, articulos, recibidoEn });
+    return this.crearResultado({
+      folio,
+      cluesimb,
+      unidad: unidad.nombre_de_unidad,
+      periodo,
+      articulos,
+      recibidoEn,
+      catalogoPorClave,
+      contextosCaptura,
+    });
   }
 
   private async resolverCorreosDestinatarios(contextos: ContextoCapturaPrimerNivel[]): Promise<string[]> {
@@ -177,7 +192,16 @@ export default class NecesidadesPrimerNivelService {
     });
 
     return {
-      ...this.crearResultado({ folio, cluesimb, unidad: unidad.nombre_de_unidad, periodo, articulos, recibidoEn }),
+      ...this.crearResultado({
+        folio,
+        cluesimb,
+        unidad: unidad.nombre_de_unidad,
+        periodo,
+        articulos,
+        recibidoEn,
+        catalogoPorClave,
+        contextosCaptura,
+      }),
       nombreArchivo,
       buffer,
     };
@@ -325,6 +349,8 @@ export default class NecesidadesPrimerNivelService {
     periodo: string;
     articulos: Array<{ clave: string; cantidad: number }>;
     recibidoEn: string;
+    catalogoPorClave: Map<string, ArticuloCatalogo>;
+    contextosCaptura: ContextoCapturaPrimerNivel[];
   }): EnviarNecesidadesPrimerNivelResult {
     return {
       solicitudId: contexto.folio,
@@ -335,6 +361,58 @@ export default class NecesidadesPrimerNivelService {
       totalInsumos: contexto.articulos.length,
       totalPiezas: contexto.articulos.reduce((total, item) => total + item.cantidad, 0),
       recibidoEn: contexto.recibidoEn,
+      desglose: this.crearDesgloseEnvio(contexto.articulos, contexto.catalogoPorClave, contexto.contextosCaptura),
+    };
+  }
+
+  private crearDesgloseEnvio(
+    articulos: Array<{ clave: string; cantidad: number }>,
+    catalogoPorClave: Map<string, ArticuloCatalogo>,
+    contextosCaptura: ContextoCapturaPrimerNivel[]
+  ): NonNullable<EnviarNecesidadesPrimerNivelResult['desglose']> {
+    let medicamentos = 0;
+    let materialesConsumo = 0;
+    let sinClasificar = 0;
+    for (const articulo of articulos) {
+      const tipo = clasificarTipoInsumo(articulo.clave, catalogoPorClave.get(articulo.clave)?.categoria);
+      if (tipo === 'MED') medicamentos += 1;
+      else if (tipo === 'MC') materialesConsumo += 1;
+      else sinClasificar += 1;
+    }
+
+    const clavesAps = new Set<string>();
+    const clavesDirectas = new Set<string>();
+    const programas = new Map<string, {
+      codigo: string;
+      nombre: string;
+      claves: Set<string>;
+    }>();
+    for (const item of contextosCaptura) {
+      if (item.origenCaptura === 'APS') clavesAps.add(item.clave);
+      if (item.origenCaptura === 'CLAVE') clavesDirectas.add(item.clave);
+      if (item.origenCaptura !== 'PROGRAMA_PREVENTIVO' || !item.referenciaCaptura) continue;
+      const actual = programas.get(item.referenciaCaptura);
+      if (actual) actual.claves.add(item.clave);
+      else programas.set(item.referenciaCaptura, {
+        codigo: item.referenciaCaptura,
+        nombre: item.etiquetaCaptura || item.referenciaCaptura,
+        claves: new Set([item.clave]),
+      });
+    }
+
+    return {
+      medicamentos,
+      materialesConsumo,
+      sinClasificar,
+      porAps: clavesAps.size,
+      porClaveCnis: clavesDirectas.size,
+      porPrograma: [...programas.values()]
+        .map(programa => ({
+          codigo: programa.codigo,
+          nombre: programa.nombre,
+          totalInsumos: programa.claves.size,
+        }))
+        .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es')),
     };
   }
 
@@ -387,7 +465,8 @@ export default class NecesidadesPrimerNivelService {
           NULLIF(TRIM(i.nombre), ''),
           NULLIF(REGEXP_REPLACE(TRIM(i.descripcion), '[[:space:]]+', ' ', 'g'), '')
         ) AS descripcion,
-        a.presentacion
+        a.presentacion,
+        NULLIF(TRIM(i.categoria), '') AS categoria
       FROM cnis.insumo i
       LEFT JOIN LATERAL (
         SELECT NULLIF(TRIM(art.presentacion), '') AS presentacion

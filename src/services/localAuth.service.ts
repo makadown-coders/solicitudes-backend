@@ -1,9 +1,32 @@
 import * as argon2 from 'argon2';
 import { randomUUID, randomBytes } from 'crypto';
+import { PoolClient } from 'pg';
 import { signAccessToken } from '../auth/jwt';
 import { pool } from '../db/pool';
 
+export interface AuthPoolClient {
+  query: PoolClient['query'];
+  release: (err?: boolean | Error) => void;
+}
+
+export interface AuthDbPool {
+  query: typeof pool.query;
+  connect: () => Promise<AuthPoolClient>;
+}
+
+export interface LocalAuthDeps {
+  db?: AuthDbPool;
+  signToken?: typeof signAccessToken;
+}
+
 export default class LocalAuthService {
+  private readonly db: AuthDbPool;
+  private readonly signToken: typeof signAccessToken;
+
+  constructor(deps?: LocalAuthDeps) {
+    this.db = deps?.db ?? pool;
+    this.signToken = deps?.signToken ?? signAccessToken;
+  }
 
   /**
    * Loguea un usuario con email y password.
@@ -13,7 +36,7 @@ export default class LocalAuthService {
    * @throws {Error} - Si el usuario no existe o las credenciales son inválidas.
    */
   async login(email: string, password: string) {
-    const u = await pool.query('SELECT id, email, password_hash, name FROM public.app_users WHERE email=$1', [email]);
+    const u = await this.db.query('SELECT id, email, password_hash, name FROM public.app_users WHERE email=$1', [email]);
     const user = u.rows[0];
     if (!user) throw new Error('Invalid credentials');
     const ok = await argon2.verify(user.password_hash, password);
@@ -21,14 +44,14 @@ export default class LocalAuthService {
 
     const { roles } = await this.getUserWithRoles(user.id);
 
-    const access_token = await signAccessToken({ sub: user.id, email: user.email, name: user.name, roles });
+    const access_token = await this.signToken({ sub: user.id, email: user.email, name: user.name, roles });
 
     // refresh opaco guardado con hash
     const jti = randomUUID();
     const raw = randomBytes(32).toString('base64url');
     const hashed = await argon2.hash(raw);
     const days = Number(process.env.REFRESH_TTL_DAYS || 14);
-    await pool.query(
+    await this.db.query(
       `INSERT INTO public.app_refresh_tokens(jti, user_id, hashed_token, user_agent, ip, expires_at)
        VALUES($1,$2,$3,$4,$5, now() + ($6 || ' days')::interval)`,
       [jti, user.id, hashed, null, null, String(days)]
@@ -46,10 +69,16 @@ export default class LocalAuthService {
   async refresh(refresh_token: string) {
     if (!refresh_token) throw new Error('refresh_token required');
     const [jti, raw] = refresh_token.split('.');
-    await pool.query('BEGIN');
+    if (!jti || !raw) throw new Error('invalid refresh');
+
+    const client = await this.db.connect();
+    let inTransaction = false;
     try {
+      await client.query('BEGIN');
+      inTransaction = true;
+
       // 1) Lee y bloquea el refresh viejo
-      const recRes = await pool.query(
+      const recRes = await client.query(
         'SELECT * FROM public.app_refresh_tokens WHERE jti=$1 FOR UPDATE',
         [jti]
       );
@@ -67,7 +96,7 @@ export default class LocalAuthService {
       const newHash = await argon2.hash(newRaw);
       const days = Number(process.env.REFRESH_TTL_DAYS || 14);
 
-      await pool.query(
+      await client.query(
         `INSERT INTO public.app_refresh_tokens
         (jti, user_id, hashed_token, user_agent, ip, expires_at)
        VALUES ($1,$2,$3,$4,$5, now() + ($6 || ' days')::interval)`,
@@ -75,18 +104,20 @@ export default class LocalAuthService {
       );
 
       // 3) Ahora sí, marca el viejo como revocado y enlázalo al nuevo
-      const upd = await pool.query(
+      const upd = await client.query(
         'UPDATE public.app_refresh_tokens SET revoked_at=now(), replaced_by=$1 WHERE jti=$2 AND revoked_at IS NULL',
         [newJti, jti]
       );
       if (upd.rowCount !== 1) throw new Error('refresh already used');
 
-      await pool.query('COMMIT');
+      // 4) Obtiene usuario y roles con el mismo cliente dentro de la transacción
+      const { user, roles } = await this.getUserWithRoles(rec.user_id, client);
 
-      // 4) Emite nuevo access **con roles**
-      const { user, roles } = await this.getUserWithRoles(rec.user_id);
+      await client.query('COMMIT');
+      inTransaction = false;
 
-      const access_token = await signAccessToken({
+      // 5) Emite nuevo access **con roles**
+      const access_token = await this.signToken({
         sub: user.id,
         email: user.email,
         name: user.name,
@@ -98,8 +129,17 @@ export default class LocalAuthService {
         user: { id: user.id, email: user.email, name: user.name, roles }
       };
     } catch (e) {
-      await pool.query('ROLLBACK');
+      if (inTransaction) {
+        try {
+          await client.query('ROLLBACK');
+        } catch {
+          // Si falla el ROLLBACK, el cliente se libera de forma segura en finally
+        }
+        inTransaction = false;
+      }
       throw e;
+    } finally {
+      client.release();
     }
   }
 
@@ -134,45 +174,72 @@ export default class LocalAuthService {
     if (!refresh_token) return { ok: true };
 
     const [jti, raw] = refresh_token.split('.');
-    await pool.query('BEGIN');
+    if (!jti || !raw) return { ok: true };
+
+    const client = await this.db.connect();
+    let inTransaction = false;
     try {
+      await client.query('BEGIN');
+      inTransaction = true;
+
       // Find the refresh token and lock it
-      const recRes = await pool.query(
+      const recRes = await client.query(
         'SELECT * FROM public.app_refresh_tokens WHERE jti=$1 FOR UPDATE',
         [jti]
       );
-      if (!recRes.rowCount) { await pool.query('ROLLBACK'); return { ok: true }; }
+      if (!recRes.rowCount) {
+        await client.query('ROLLBACK');
+        inTransaction = false;
+        return { ok: true };
+      }
       const rec = recRes.rows[0];
 
       // Verify the refresh token
       const ok = await argon2.verify(rec.hashed_token, raw);
-      if (!ok) { await pool.query('ROLLBACK'); return { ok: true }; }
+      if (!ok) {
+        await client.query('ROLLBACK');
+        inTransaction = false;
+        return { ok: true };
+      }
 
-      // Invalidate the refresh token
-      await pool.query('UPDATE public.app_refresh_tokens SET revoked_at=now() WHERE jti=$1', [jti]);
+      // Invalidate the refresh token (idempotent if already revoked)
+      await client.query(
+        'UPDATE public.app_refresh_tokens SET revoked_at = COALESCE(revoked_at, now()) WHERE jti=$1',
+        [jti]
+      );
 
       // Commit changes
-      await pool.query('COMMIT');
+      await client.query('COMMIT');
+      inTransaction = false;
 
       return { ok: true };
     } catch (e) {
       // Rollback changes in case of an error
-      await pool.query('ROLLBACK');
+      if (inTransaction) {
+        try {
+          await client.query('ROLLBACK');
+        } catch {
+          // Ignore rollback secondary error before releasing client
+        }
+        inTransaction = false;
+      }
       throw e;
+    } finally {
+      client.release();
     }
   }
 
   async logoutAll(user_id: string) {
-    await pool.query('UPDATE public.app_refresh_tokens SET revoked_at=now() WHERE user_id=$1', [user_id]);
+    await this.db.query('UPDATE public.app_refresh_tokens SET revoked_at=now() WHERE user_id=$1', [user_id]);
     return { ok: true };
   }
 
-  async getUserWithRoles(userId: string) {
-    const u = await pool.query('SELECT id, email, name FROM public.app_users WHERE id=$1', [userId]);
+  async getUserWithRoles(userId: string, queryable: Pick<AuthPoolClient, 'query'> = this.db) {
+    const u = await queryable.query('SELECT id, email, name FROM public.app_users WHERE id=$1', [userId]);
     const user = u.rows[0];
     if (!user) throw new Error('user not found');
 
-    const rolesRes = await pool.query(
+    const rolesRes = await queryable.query(
       `SELECT r.code, ur.scope_type, ur.scope_id
        FROM public.app_user_roles ur
        JOIN public.app_roles r ON r.id = ur.role_id

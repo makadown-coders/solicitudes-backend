@@ -1,44 +1,139 @@
 import type { RequestHandler } from 'express';
 import { readFileSync } from 'fs';
+import { JwtAuthError } from './jwt';
 
 type LocalJwk = Record<string, unknown>;
 
-const LOCAL_ISS = process.env.JWT_ISSUER!;
-const LOCAL_AUD = process.env.JWT_AUDIENCE;
-const LOCAL_JWKS_PATH = process.env.JWKS_PUBLIC_PATH!;
+interface JwksCacheEntry {
+  pubPath: string;
+  keysByKid: Map<string, LocalJwk>;
+  importedByKid: Map<string, unknown>;
+}
 
-const ISS_ALLOWLIST = (process.env.JWT_ISSUER_ALLOWLIST || process.env.JWT_ISSUER || '')
-  .split(',')
-  .map(s => s.trim())
-  .filter(Boolean);
+let jwksCache: JwksCacheEntry | null = null;
 
 /**
- * Reads a local JWKS file and returns the parsed content.
- * If the file contains an array of JWKs, it is returned as is.
- * If the file contains a single JWK, it is wrapped in an array.
- * @returns An object with a single property "keys" containing an array of JWKs.
+ * Limpia la caché en memoria del JWKSet utilizado por `requireAuth`.
+ * Nota operativa: Si el contenido del archivo `JWKS_PUBLIC_PATH` se actualiza en disco
+ * manteniendo la misma ruta, se requiere reiniciar el proceso o invocar explícitamente
+ * `clearRequireAuthCache()`.
  */
-function loadLocalJwkSet(): { keys: LocalJwk[] } {
-  const raw = readFileSync(LOCAL_JWKS_PATH, 'utf-8');
-  const json = JSON.parse(raw);
-  return Array.isArray(json?.keys) ? json : { keys: [json] };
+export function clearRequireAuthCache(): void {
+  jwksCache = null;
+}
+
+function resolveVerifierConfig(): {
+  pubPath: string;
+  allowlist: string[];
+  audience: string;
+} {
+  const pubPath = typeof process.env.JWKS_PUBLIC_PATH === 'string' ? process.env.JWKS_PUBLIC_PATH.trim() : '';
+  if (!pubPath) {
+    throw new JwtAuthError('JWT_CONFIG_INCOMPLETE', 'Missing JWKS_PUBLIC_PATH');
+  }
+
+  const rawIss = typeof process.env.JWT_ISSUER === 'string' ? process.env.JWT_ISSUER.trim() : '';
+  const rawAllowlist =
+    typeof process.env.JWT_ISSUER_ALLOWLIST === 'string' ? process.env.JWT_ISSUER_ALLOWLIST.trim() : '';
+
+  const sourceList = rawAllowlist || rawIss;
+  const allowlist = sourceList
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  if (allowlist.length === 0) {
+    throw new JwtAuthError('JWT_CONFIG_INCOMPLETE', 'Missing JWT_ISSUER or JWT_ISSUER_ALLOWLIST');
+  }
+
+  // Si ambos están definidos, JWT_ISSUER debe pertenecer a JWT_ISSUER_ALLOWLIST para evitar configuración inconsistente
+  if (rawIss && rawAllowlist && !allowlist.includes(rawIss)) {
+    throw new JwtAuthError('JWT_CONFIG_INCOMPLETE', 'JWT_ISSUER is not included in JWT_ISSUER_ALLOWLIST');
+  }
+
+  const audience = typeof process.env.JWT_AUDIENCE === 'string' ? process.env.JWT_AUDIENCE.trim() : '';
+  if (!audience) {
+    throw new JwtAuthError('JWT_CONFIG_INCOMPLETE', 'Missing JWT_AUDIENCE');
+  }
+
+  return { pubPath, allowlist, audience };
+}
+
+function loadLocalJwkSetCached(pubPath: string): JwksCacheEntry {
+  if (jwksCache && jwksCache.pubPath === pubPath) {
+    return jwksCache;
+  }
+
+  let raw: string;
+  try {
+    raw = readFileSync(pubPath, 'utf-8');
+  } catch {
+    throw new JwtAuthError('JWT_FILE_READ_ERROR', 'Unable to read JWKS_PUBLIC_PATH');
+  }
+
+  let json: any;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    throw new JwtAuthError('JWT_KEY_IMPORT_ERROR', 'Invalid JSON in JWKS_PUBLIC_PATH');
+  }
+
+  const list: unknown[] = Array.isArray(json?.keys) ? json.keys : [json];
+  if (list.length === 0) {
+    throw new JwtAuthError('JWT_KEY_IMPORT_ERROR', 'Empty JWKSet in JWKS_PUBLIC_PATH');
+  }
+
+  const keysByKid = new Map<string, LocalJwk>();
+  for (const item of list) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new JwtAuthError('JWT_KEY_IMPORT_ERROR', 'Invalid JWK entry in JWKS_PUBLIC_PATH');
+    }
+    const jwk = item as LocalJwk;
+    const kid = typeof jwk.kid === 'string' ? jwk.kid.trim() : '';
+    if (!kid) {
+      throw new JwtAuthError('JWT_KEY_IMPORT_ERROR', 'Public JWK entry is missing kid');
+    }
+    if (jwk.kty !== 'RSA' || typeof jwk.n !== 'string' || !jwk.n || typeof jwk.e !== 'string' || !jwk.e) {
+      throw new JwtAuthError('JWT_KEY_IMPORT_ERROR', 'Invalid RSA public JWK parameters');
+    }
+    if (jwk.alg !== undefined && jwk.alg !== 'RS256') {
+      throw new JwtAuthError('JWT_KEY_IMPORT_ERROR', 'Unsupported public JWK algorithm');
+    }
+    keysByKid.set(kid, jwk);
+  }
+
+  jwksCache = {
+    pubPath,
+    keysByKid,
+    importedByKid: new Map<string, unknown>(),
+  };
+  return jwksCache;
 }
 
 /**
- * Loads a local JWK given its `kid` and `alg`.
- * If `kid` is not provided, it will return the first JWK in the set.
- * If `alg` is not provided, it will use the `alg` of the JWK.
- * @param {string} [kid] - The `kid` of the JWK to load.
- * @param {string} [alg] - The `alg` of the JWK to load.
- * @returns {Promise<unknown>} - A promise that resolves to the JWK.
- * @throws {Error} - If no local JWK is found.
+ * Loads an authorized public JWK strictly matching `kid` with algorithm `RS256`.
+ * Does NOT fall back to `keys[0]` when `kid` is missing or unknown.
  */
-async function getLocalKey(kid?: string, alg?: string): Promise<unknown> {
+async function getLocalKeyStrict(pubPath: string, kid: string): Promise<unknown> {
+  const cache = loadLocalJwkSetCached(pubPath);
+  const jwk = cache.keysByKid.get(kid);
+  if (!jwk) {
+    throw new JwtAuthError('JWT_VERIFY_FAILED', 'Unknown token kid');
+  }
+
+  const cachedImported = cache.importedByKid.get(kid);
+  if (cachedImported) {
+    return cachedImported;
+  }
+
   const { importJWK } = await import('jose');
-  const { keys } = loadLocalJwkSet();
-  const jwk = (kid ? keys.find((k: any) => k.kid === kid) : keys[0]) || keys[0];
-  if (!jwk) throw new Error('No local JWK found');
-  return await importJWK(jwk as any, alg || (jwk as any).alg || 'RS256');
+  try {
+    const imported = await importJWK(jwk as any, 'RS256');
+    cache.importedByKid.set(kid, imported);
+    return imported;
+  } catch {
+    throw new JwtAuthError('JWT_KEY_IMPORT_ERROR', 'Failed to import public JWK');
+  }
 }
 
 declare global {
@@ -50,43 +145,80 @@ declare global {
 
 /**
  * Verifica que el request tenga un token de acceso valido y que coincida
- * con el issuer/audience configurados. Si el token es valido, asigna
- * el payload deserializado a `req.user` y el token a `req.accessToken`.
- * Lanza un error 401 con un JSON con la propiedad `error` si el token
- * no es valido o no coincide con el issuer/audience configurados.
- *
- * @returns {Promise<void>} - Una promesa que se resuelve con void
- * @throws {Error} - Si el token no es valido o no coincide con el
- * issuer/audience configurados.
+ * con el algoritmo RS256, kid autorizado, issuer/audience configurados, exp y sub.
+ * Si el token es valido, asigna el payload deserializado a `req.user`
+ * y el token a `req.accessToken`.
+ * Devuelve HTTP 401 sin exponer rutas internas, secretos ni trazas de `jose`.
  */
 export const requireAuth: RequestHandler = async (req, res, next): Promise<void> => {
   const hdr = req.get('Authorization') || '';
-  const token = hdr.startsWith('Bearer ') ? hdr.slice(7) : undefined;
+  const token = hdr.startsWith('Bearer ') ? hdr.slice(7).trim() : undefined;
   if (!token) {
     res.status(401).json({ error: 'Missing Bearer token' });
-    return; // <-- IMPORTANTÍSIMO: devolvemos void, no el Response
+    return;
+  }
+
+  // Un JWS compacto válido debe tener exactamente 3 partes no vacías (header.payload.signature)
+  const segments = token.split('.');
+  if (segments.length !== 3 || !segments[0] || !segments[1] || !segments[2]) {
+    res.status(401).json({ error: 'Invalid/expired token' });
+    return;
   }
 
   try {
+    const { pubPath, allowlist, audience } = resolveVerifierConfig();
     const { decodeJwt, decodeProtectedHeader, jwtVerify } = await import('jose');
-    const { iss } = decodeJwt(token);
-    const { kid, alg } = decodeProtectedHeader(token);
-    // Verificamos que el iss sea uno de los permitidos
-    if (!iss || !ISS_ALLOWLIST.includes(iss)) {
-      res.status(401).json({ error: 'Invalid token issuer' }); return;
+
+    let header: { alg?: string; kid?: string };
+    let unverifiedClaims: { iss?: unknown };
+    try {
+      header = decodeProtectedHeader(token);
+      unverifiedClaims = decodeJwt(token);
+    } catch {
+      res.status(401).json({ error: 'Invalid/expired token' });
+      return;
     }
 
-    const key = await getLocalKey(kid, alg);
-    const opts: any = { issuer: LOCAL_ISS };
-    if (LOCAL_AUD) opts.audience = LOCAL_AUD;
-    const { payload } = await jwtVerify(token, key as any, opts);
+    if (header.alg !== 'RS256') {
+      res.status(401).json({ error: 'Invalid/expired token' });
+      return;
+    }
+
+    const kid = typeof header.kid === 'string' ? header.kid.trim() : '';
+    if (!kid) {
+      res.status(401).json({ error: 'Invalid/expired token' });
+      return;
+    }
+
+    const iss = typeof unverifiedClaims.iss === 'string' ? unverifiedClaims.iss.trim() : '';
+    if (!iss || !allowlist.includes(iss)) {
+      res.status(401).json({ error: 'Invalid token issuer' });
+      return;
+    }
+
+    const key = await getLocalKeyStrict(pubPath, kid);
+    const { payload } = await jwtVerify(token, key as any, {
+      algorithms: ['RS256'],
+      issuer: allowlist,
+      audience,
+    });
+
+    if (typeof payload.exp !== 'number' || !Number.isFinite(payload.exp)) {
+      res.status(401).json({ error: 'Invalid/expired token' });
+      return;
+    }
+
+    if (typeof payload.sub !== 'string' || !payload.sub.trim()) {
+      res.status(401).json({ error: 'Invalid/expired token' });
+      return;
+    }
 
     req.user = payload as any;
     req.accessToken = token;
-    next(); // ok
+    next();
     return;
-  } catch (e: any) {
-    res.status(401).json({ error: 'Invalid/expired token', detail: e?.message || String(e) });
+  } catch {
+    res.status(401).json({ error: 'Invalid/expired token' });
     return;
   }
 };

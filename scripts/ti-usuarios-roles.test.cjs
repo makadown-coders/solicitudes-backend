@@ -307,6 +307,17 @@ pool.connect = async () => {
         };
       }
 
+      if (/^SELECT id FROM public\.app_roles WHERE UPPER\(TRIM\(code\)\) = \$1 LIMIT 1$/i.test(normalizedSql)) {
+        const found = MOCK_ROLES_DB.find((r) => r.code.trim().toUpperCase() === params[0]);
+        return found ? { rows: [{ id: found.id }], rowCount: 1 } : { rows: [], rowCount: 0 };
+      }
+
+      if (/^INSERT INTO public\.app_roles \(code, description\) VALUES \(\$1, \$2\) RETURNING id, code, description$/i.test(normalizedSql)) {
+        const [code, description] = params;
+        const newRole = { id: 'aaaa1111-0000-0000-0000-000000000099', code, description };
+        return { rows: [newRole], rowCount: 1 };
+      }
+
       throw new Error(`Consulta TX SQL no esperada en mock: ${normalizedSql}`);
     },
     release() {
@@ -460,7 +471,7 @@ test('4. Acceso rechazado con ADMIN_TIC no global (CLUES, DEPTO o id distinto de
   const validToken = await issueTokenForRoles([{ code: 'ADMIN_TIC', scope: 'GLOBAL', id: null }]);
   for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
     for (const endpoint of ['/api/ti/roles', '/api/ti/usuarios']) {
-      if (method === 'POST' && endpoint === '/api/ti/usuarios') continue;
+      if (method === 'POST' && (endpoint === '/api/ti/usuarios' || endpoint === '/api/ti/roles')) continue;
       const res = await requestJson(method, endpoint, { token: validToken, body: {} });
       assert.equal(res.status, 404, `${method} ${endpoint} no debe estar habilitado`);
     }
@@ -797,6 +808,88 @@ test('15 (TI-2D.3D). POST /api/ti/usuarios habilitado con requireAuth + requireT
   simulateInsertUniqueViolation = false;
 });
 
+test('16 (TI-2F.1). POST /api/ti/roles crea rol con ADMIN_TIC GLOBAL, normaliza code, valida duplicados/400/401/403 y no toca app_user_roles', async () => {
+  const adminToken = await issueTokenForRoles([{ code: 'ADMIN_TIC', scope: 'GLOBAL', id: null }]);
+  const rhToken = await issueTokenForRoles([{ code: 'RECURSOS_HUMANOS', scope: 'GLOBAL', id: null }]);
+
+  // Sin autenticación (401)
+  const res401 = await requestJson('POST', '/api/ti/roles', {
+    body: { code: 'IB_ONCO', description: 'Operación IB-ONCO' },
+  });
+  assert.equal(res401.status, 401);
+
+  // Sin autorización (403)
+  const res403 = await requestJson('POST', '/api/ti/roles', {
+    token: rhToken,
+    body: { code: 'IB_ONCO', description: 'Operación IB-ONCO' },
+  });
+  assert.equal(res403.status, 403);
+
+  // Alta válida con normalización de code (201) y sin tocar app_user_roles
+  txEvents = [];
+  const res201 = await requestJson('POST', '/api/ti/roles', {
+    token: adminToken,
+    body: { code: '  ib_onco  ', description: '  Operación del módulo IB-ONCO  ' },
+  });
+  assert.equal(res201.status, 201);
+  assert.deepEqual(res201.body, {
+    id: 'aaaa1111-0000-0000-0000-000000000099',
+    code: 'IB_ONCO',
+    description: 'Operación del módulo IB-ONCO',
+  });
+  assert.equal(txEvents.some((e) => e.sql.includes('app_user_roles')), false);
+
+  // Duplicado / ADMIN_TIC reservado (409)
+  const resDup = await requestJson('POST', '/api/ti/roles', {
+    token: adminToken,
+    body: { code: 'admin_tic', description: 'Variante reservada' },
+  });
+  assert.equal(resDup.status, 409);
+
+  // Código inválido (400), descripción vacía (400) y propiedades adicionales / id (400)
+  assert.equal(
+    (await requestJson('POST', '/api/ti/roles', { token: adminToken, body: { code: 'bad-code!', description: 'Desc' } })).status,
+    400
+  );
+  assert.equal(
+    (await requestJson('POST', '/api/ti/roles', { token: adminToken, body: { code: 'WISHLIST', description: '   ' } })).status,
+    400
+  );
+  assert.equal(
+    (await requestJson('POST', '/api/ti/roles', { token: adminToken, body: { id: 'x', code: 'WISHLIST', description: 'Desc' } })).status,
+    400
+  );
+});
+
+test('17 (TI-2F.3). Roles reutilizables: múltiples roles y múltiples CLUES por usuario, y rechazo de ADMIN_TIC CLUES', async () => {
+  const adminToken = await issueTokenForRoles([{ code: 'ADMIN_TIC', scope: 'GLOBAL', id: null }]);
+  const userId = '22222222-2222-4222-8222-222222222222';
+  mockTxUsers = new Map([[userId, { id: userId, status: 'ACTIVE' }]]);
+  mockActiveGlobalAdminIds = [];
+  mockTxUserRoles = new Map();
+
+  // Rechazo de ADMIN_TIC CLUES (400)
+  const resAdminClues = await requestJson('PUT', `/api/ti/usuarios/${userId}/roles`, {
+    token: adminToken,
+    body: { roles: [{ code: 'ADMIN_TIC', scope_type: 'CLUES', scope_id: 'BCIMB00001' }] },
+  });
+  assert.equal(resAdminClues.status, 400);
+
+  // Mismo rol con múltiples CLUES + otro rol GLOBAL simultáneo
+  const resReuse = await requestJson('PUT', `/api/ti/usuarios/${userId}/roles`, {
+    token: adminToken,
+    body: {
+      roles: [
+        { code: 'RECURSOS_HUMANOS', scope_type: 'GLOBAL', scope_id: '*' },
+        { code: 'CONSULTA_TIC', scope_type: 'CLUES', scope_id: 'BCIMB00001' },
+        { code: 'CONSULTA_TIC', scope_type: 'CLUES', scope_id: 'BCIMB00002' },
+      ],
+    },
+  });
+  assert.equal(resReuse.status, 200);
+  assert.equal(resReuse.body.roles.length, 3);
+});
+
 test('12 (TI-2D.2A.1). Protección del último ADMIN_TIC GLOBAL usa scope_id = \'*\' y nunca scope_id IS NULL', async () => {
   const token = await issueTokenForRoles([{ code: 'ADMIN_TIC', scope: 'GLOBAL', id: null }]);
   const admin1 = '11111111-1111-4111-8111-111111111111';
@@ -909,7 +1002,7 @@ test('13 (TI-2D.2B). PUT /api/ti/usuarios/:id/roles asigna roles válidos, persi
     body: {
       roles: [
         { code: 'RECURSOS_HUMANOS', scope_type: 'CLUES', scope_id: 'bcimb00002' },
-        { code: 'ADMIN_TIC', scope_type: 'CLUES', scope_id: 'BCIMB00001' },
+        { code: 'RECURSOS_HUMANOS', scope_type: 'CLUES', scope_id: 'BCIMB00001' },
       ],
     },
   });
@@ -918,7 +1011,7 @@ test('13 (TI-2D.2B). PUT /api/ti/usuarios/:id/roles asigna roles válidos, persi
     ok: true,
     id: normalId,
     roles: [
-      { code: 'ADMIN_TIC', scope_type: 'CLUES', scope_id: 'BCIMB00001' },
+      { code: 'RECURSOS_HUMANOS', scope_type: 'CLUES', scope_id: 'BCIMB00001' },
       { code: 'RECURSOS_HUMANOS', scope_type: 'CLUES', scope_id: 'BCIMB00002' },
     ],
   });
@@ -1095,4 +1188,86 @@ test('15 (TI-2D.3D). POST /api/ti/usuarios habilitado con requireAuth + requireT
   assert.equal(resConcurrent.status, 409);
   assert.ok(txEvents.some((e) => e.sql === 'ROLLBACK'));
   simulateInsertUniqueViolation = false;
+});
+
+test('16 (TI-2F.1). POST /api/ti/roles crea rol con ADMIN_TIC GLOBAL, normaliza code, valida duplicados/400/401/403 y no toca app_user_roles', async () => {
+  const adminToken = await issueTokenForRoles([{ code: 'ADMIN_TIC', scope: 'GLOBAL', id: null }]);
+  const rhToken = await issueTokenForRoles([{ code: 'RECURSOS_HUMANOS', scope: 'GLOBAL', id: null }]);
+
+  // Sin autenticación (401)
+  const res401 = await requestJson('POST', '/api/ti/roles', {
+    body: { code: 'IB_ONCO', description: 'Operación IB-ONCO' },
+  });
+  assert.equal(res401.status, 401);
+
+  // Sin autorización (403)
+  const res403 = await requestJson('POST', '/api/ti/roles', {
+    token: rhToken,
+    body: { code: 'IB_ONCO', description: 'Operación IB-ONCO' },
+  });
+  assert.equal(res403.status, 403);
+
+  // Alta válida con normalización de code (201) y sin tocar app_user_roles
+  txEvents = [];
+  const res201 = await requestJson('POST', '/api/ti/roles', {
+    token: adminToken,
+    body: { code: '  ib_onco  ', description: '  Operación del módulo IB-ONCO  ' },
+  });
+  assert.equal(res201.status, 201);
+  assert.deepEqual(res201.body, {
+    id: 'aaaa1111-0000-0000-0000-000000000099',
+    code: 'IB_ONCO',
+    description: 'Operación del módulo IB-ONCO',
+  });
+  assert.equal(txEvents.some((e) => e.sql.includes('app_user_roles')), false);
+
+  // Duplicado / ADMIN_TIC reservado (409)
+  const resDup = await requestJson('POST', '/api/ti/roles', {
+    token: adminToken,
+    body: { code: 'admin_tic', description: 'Variante reservada' },
+  });
+  assert.equal(resDup.status, 409);
+
+  // Código inválido (400), descripción vacía (400) y propiedades adicionales / id (400)
+  assert.equal(
+    (await requestJson('POST', '/api/ti/roles', { token: adminToken, body: { code: 'bad-code!', description: 'Desc' } })).status,
+    400
+  );
+  assert.equal(
+    (await requestJson('POST', '/api/ti/roles', { token: adminToken, body: { code: 'WISHLIST', description: '   ' } })).status,
+    400
+  );
+  assert.equal(
+    (await requestJson('POST', '/api/ti/roles', { token: adminToken, body: { id: 'x', code: 'WISHLIST', description: 'Desc' } })).status,
+    400
+  );
+});
+
+test('17 (TI-2F.3). Roles reutilizables: múltiples roles y múltiples CLUES por usuario, y rechazo de ADMIN_TIC CLUES', async () => {
+  const adminToken = await issueTokenForRoles([{ code: 'ADMIN_TIC', scope: 'GLOBAL', id: null }]);
+  const userId = '22222222-2222-4222-8222-222222222222';
+  mockTxUsers = new Map([[userId, { id: userId, status: 'ACTIVE' }]]);
+  mockActiveGlobalAdminIds = [];
+  mockTxUserRoles = new Map();
+
+  // Rechazo de ADMIN_TIC CLUES (400)
+  const resAdminClues = await requestJson('PUT', `/api/ti/usuarios/${userId}/roles`, {
+    token: adminToken,
+    body: { roles: [{ code: 'ADMIN_TIC', scope_type: 'CLUES', scope_id: 'BCIMB00001' }] },
+  });
+  assert.equal(resAdminClues.status, 400);
+
+  // Mismo rol con múltiples CLUES + otro rol GLOBAL simultáneo
+  const resReuse = await requestJson('PUT', `/api/ti/usuarios/${userId}/roles`, {
+    token: adminToken,
+    body: {
+      roles: [
+        { code: 'RECURSOS_HUMANOS', scope_type: 'GLOBAL', scope_id: '*' },
+        { code: 'CONSULTA_TIC', scope_type: 'CLUES', scope_id: 'BCIMB00001' },
+        { code: 'CONSULTA_TIC', scope_type: 'CLUES', scope_id: 'BCIMB00002' },
+      ],
+    },
+  });
+  assert.equal(resReuse.status, 200);
+  assert.equal(resReuse.body.roles.length, 3);
 });

@@ -7,8 +7,9 @@ import { requireTiAdminGlobal } from '../auth/requireRole';
 const router = Router();
 const c = new TiUsuariosController();
 
-// Consulta de roles disponibles en el sistema (solo lectura, exclusivamente ADMIN_TIC GLOBAL)
+// Consulta y alta de roles disponibles en el sistema (exclusivamente ADMIN_TIC GLOBAL)
 router.get('/roles', requireAuth, requireTiAdminGlobal(), c.listRoles.bind(c));
+router.post('/roles', requireAuth, requireTiAdminGlobal(), c.createRole.bind(c));
 
 // Consulta paginada y alta de cuentas SSO con persona y roles vinculados (exclusivamente ADMIN_TIC GLOBAL)
 router.get('/usuarios', requireAuth, requireTiAdminGlobal(), c.listUsuarios.bind(c));

@@ -4,6 +4,11 @@ export interface TiRoleItem {
   description: string | null;
 }
 
+export interface TiRoleCreateInput {
+  code: string;
+  description: string;
+}
+
 export interface TiUsuarioRoleAssignment {
   code: string;
   scope_type: string;

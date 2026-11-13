@@ -2,6 +2,7 @@ import * as argon2 from 'argon2';
 import { PoolClient } from 'pg';
 import { pool } from '../db/pool';
 import {
+  TiRoleCreateInput,
   TiRoleItem,
   TiUsuarioItem,
   TiUsuarioCreateInput,
@@ -381,6 +382,12 @@ export default class TiUsuariosService {
           'El alcance DEPTO no cuenta con un catálogo verificable en el backend para validar asignaciones'
         );
       }
+      if (code === 'ADMIN_TIC' && scopeType !== 'GLOBAL') {
+        throw new TiUsuarioHttpError(
+          400,
+          'El rol administrativo ADMIN_TIC solo admite alcance GLOBAL'
+        );
+      }
 
       let scopeId: string;
       if (scopeType === 'GLOBAL') {
@@ -614,6 +621,75 @@ export default class TiUsuariosService {
         name: String(insertedRow.name),
         status: insertedRow.status,
         persona_id: Number(insertedRow.persona_id),
+      };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Crea un nuevo rol en `public.app_roles` sin asignarlo a ningún usuario.
+   */
+  async createRole(input: TiRoleCreateInput): Promise<TiRoleItem> {
+    if (typeof input.code !== 'string') {
+      throw new TiUsuarioHttpError(400, 'El código de rol es obligatorio');
+    }
+    const code = input.code.trim().toUpperCase();
+    if (!code || !/^[A-Z0-9_]{2,64}$/.test(code)) {
+      throw new TiUsuarioHttpError(
+        400,
+        'El código de rol debe tener entre 2 y 64 caracteres (solo letras A-Z, números 0-9 y guion bajo _)'
+      );
+    }
+
+    if (typeof input.description !== 'string' || !input.description.trim()) {
+      throw new TiUsuarioHttpError(400, 'La descripción del rol es obligatoria');
+    }
+    const description = input.description.trim();
+    if (description.length > 255) {
+      throw new TiUsuarioHttpError(400, 'La descripción del rol no puede exceder 255 caracteres');
+    }
+
+    if (code === 'ADMIN_TIC') {
+      throw new TiUsuarioHttpError(409, 'El rol administrativo ADMIN_TIC ya existe y está reservado');
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const existing = await client.query(
+        `SELECT id FROM public.app_roles WHERE UPPER(TRIM(code)) = $1 LIMIT 1`,
+        [code]
+      );
+      if (existing.rowCount && existing.rowCount > 0) {
+        throw new TiUsuarioHttpError(409, `El rol "${code}" ya existe en el catálogo`);
+      }
+
+      let inserted: { id: string; code: string; description: string | null };
+      try {
+        const res = await client.query(
+          `INSERT INTO public.app_roles (code, description)
+           VALUES ($1, $2)
+           RETURNING id, code, description`,
+          [code, description]
+        );
+        inserted = res.rows[0];
+      } catch (insertErr: unknown) {
+        if (insertErr && typeof insertErr === 'object' && (insertErr as { code?: string }).code === '23505') {
+          throw new TiUsuarioHttpError(409, `El rol "${code}" ya existe en el catálogo`);
+        }
+        throw insertErr;
+      }
+
+      await client.query('COMMIT');
+      return {
+        id: String(inserted.id),
+        code: String(inserted.code),
+        description: inserted.description != null ? String(inserted.description) : null,
       };
     } catch (err) {
       await client.query('ROLLBACK');

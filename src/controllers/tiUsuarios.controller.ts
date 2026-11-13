@@ -191,4 +191,34 @@ export default class TiUsuariosController {
       res.status(500).json({ ok: false, error: 'Error al crear la cuenta SSO' });
     }
   };
+
+  createRole = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const body = req.body;
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        res.status(400).json({ ok: false, error: 'Payload inválido' });
+        return;
+      }
+
+      const ALLOWED_KEYS = new Set(['code', 'description']);
+      for (const key of Object.keys(body)) {
+        if (!ALLOWED_KEYS.has(key)) {
+          res.status(400).json({ ok: false, error: `Propiedad no permitida: ${key}` });
+          return;
+        }
+      }
+
+      const out = await this.svc.createRole({
+        code: body.code,
+        description: body.description,
+      });
+      res.status(201).json(out);
+    } catch (err: unknown) {
+      if (err instanceof TiUsuarioHttpError) {
+        res.status(err.status).json({ ok: false, error: err.message });
+        return;
+      }
+      res.status(500).json({ ok: false, error: 'Error al crear el rol' });
+    }
+  };
 }

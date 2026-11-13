@@ -1,0 +1,16 @@
+// src/routes/tiUsuarios.ts
+import { Router } from 'express';
+import TiUsuariosController from '../controllers/tiUsuarios.controller';
+import { requireAuth } from '../auth/requireAuth';
+import { requireTiAdminGlobal } from '../auth/requireRole';
+
+const router = Router();
+const c = new TiUsuariosController();
+
+// Consulta de roles disponibles en el sistema (solo lectura, exclusivamente ADMIN_TIC GLOBAL)
+router.get('/roles', requireAuth, requireTiAdminGlobal(), c.listRoles.bind(c));
+
+// Consulta paginada de cuentas SSO con persona y roles vinculados (solo lectura, exclusivamente ADMIN_TIC GLOBAL)
+router.get('/usuarios', requireAuth, requireTiAdminGlobal(), c.listUsuarios.bind(c));
+
+export default router;

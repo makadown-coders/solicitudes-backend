@@ -158,4 +158,37 @@ export default class TiUsuariosController {
       res.status(500).json({ ok: false, error: 'Error al actualizar los roles de la cuenta' });
     }
   };
+
+  createUsuario = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const body = req.body;
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        res.status(400).json({ ok: false, error: 'Payload inválido' });
+        return;
+      }
+
+      const ALLOWED_KEYS = new Set(['persona_id', 'email', 'name', 'password', 'status']);
+      for (const key of Object.keys(body)) {
+        if (!ALLOWED_KEYS.has(key)) {
+          res.status(400).json({ ok: false, error: `Propiedad no permitida: ${key}` });
+          return;
+        }
+      }
+
+      const out = await this.svc.createUsuario({
+        persona_id: body.persona_id,
+        email: body.email,
+        name: body.name,
+        password: body.password,
+        status: body.status,
+      });
+      res.status(201).json(out);
+    } catch (err: unknown) {
+      if (err instanceof TiUsuarioHttpError) {
+        res.status(err.status).json({ ok: false, error: err.message });
+        return;
+      }
+      res.status(500).json({ ok: false, error: 'Error al crear la cuenta SSO' });
+    }
+  };
 }

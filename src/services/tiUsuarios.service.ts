@@ -4,6 +4,8 @@ import { pool } from '../db/pool';
 import {
   TiRoleItem,
   TiUsuarioItem,
+  TiUsuarioCreateInput,
+  TiUsuarioCreateResult,
   TiUsuarioPasswordResetResult,
   TiUsuarioRoleAssignment,
   TiUsuarioRolesUpdateResult,
@@ -501,6 +503,117 @@ export default class TiUsuariosService {
         ok: true,
         id: userId,
         roles: persistedRoles,
+      };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Crea una nueva cuenta SSO vinculada explícitamente a una persona existente y activa.
+   * - Bloquea la fila de `public.persona` con `FOR UPDATE` antes de validar vinculación.
+   * - No crea personas ni asigna roles.
+   * - Convierte conflictos de unicidad (23505) en HTTP 409 sin exponer detalles SQL.
+   */
+  async createUsuario(input: TiUsuarioCreateInput): Promise<TiUsuarioCreateResult> {
+    if (typeof input.persona_id !== 'number' || !Number.isInteger(input.persona_id) || input.persona_id <= 0) {
+      throw new TiUsuarioHttpError(400, 'Identificador de persona inválido');
+    }
+
+    if (typeof input.email !== 'string') {
+      throw new TiUsuarioHttpError(400, 'El correo electrónico es obligatorio');
+    }
+    const email = input.email.trim().toLowerCase();
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      throw new TiUsuarioHttpError(400, 'El formato del correo electrónico es inválido');
+    }
+
+    if (typeof input.password !== 'string' || input.password.trim().length < 8) {
+      throw new TiUsuarioHttpError(400, 'La contraseña debe tener al menos 8 caracteres válidos');
+    }
+
+    let status: TiUsuarioStatus = 'ACTIVE';
+    if (input.status !== undefined) {
+      if (typeof input.status !== 'string') {
+        throw new TiUsuarioHttpError(400, 'Estado de cuenta inválido');
+      }
+      const normalizedStatus = input.status.trim().toUpperCase();
+      if (!ALLOWED_STATUSES.has(normalizedStatus)) {
+        throw new TiUsuarioHttpError(400, 'Estado de cuenta inválido. Valores permitidos: ACTIVE, SUSPENDED, INACTIVE');
+      }
+      status = normalizedStatus as TiUsuarioStatus;
+    }
+
+    let providedName = '';
+    if (input.name !== undefined) {
+      if (typeof input.name !== 'string') {
+        throw new TiUsuarioHttpError(400, 'El nombre debe ser una cadena de texto');
+      }
+      providedName = input.name.trim();
+    }
+
+    const passwordHash = await argon2.hash(input.password);
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const personaRes = await client.query(
+        `SELECT id, nombre_completo, activo FROM public.persona WHERE id = $1 FOR UPDATE`,
+        [input.persona_id]
+      );
+      if (!personaRes.rowCount) {
+        throw new TiUsuarioHttpError(404, 'Persona no encontrada');
+      }
+      const personaRow = personaRes.rows[0] as { id: number; nombre_completo: string | null; activo: boolean };
+      if (personaRow.activo !== true) {
+        throw new TiUsuarioHttpError(404, 'La persona se encuentra inactiva');
+      }
+
+      const existingLinkRes = await client.query(
+        `SELECT id FROM public.app_users WHERE persona_id = $1 LIMIT 1`,
+        [input.persona_id]
+      );
+      if (existingLinkRes.rowCount && existingLinkRes.rowCount > 0) {
+        throw new TiUsuarioHttpError(409, 'La persona ya cuenta con una cuenta SSO vinculada');
+      }
+
+      const existingEmailRes = await client.query(
+        `SELECT id FROM public.app_users WHERE LOWER(TRIM(email)) = $1 LIMIT 1`,
+        [email]
+      );
+      if (existingEmailRes.rowCount && existingEmailRes.rowCount > 0) {
+        throw new TiUsuarioHttpError(409, 'Ya existe una cuenta SSO con ese correo electrónico');
+      }
+
+      const finalName = providedName || String(personaRow.nombre_completo ?? '').trim() || email;
+
+      let insertedRow: { id: string; email: string; name: string; status: TiUsuarioStatus; persona_id: number };
+      try {
+        const insertRes = await client.query(
+          `INSERT INTO public.app_users (email, name, password_hash, status, persona_id)
+           VALUES ($1, $2, $3, $4, $5)
+           RETURNING id, email, name, status, persona_id`,
+          [email, finalName, passwordHash, status, input.persona_id]
+        );
+        insertedRow = insertRes.rows[0];
+      } catch (insertErr: unknown) {
+        if (insertErr && typeof insertErr === 'object' && (insertErr as { code?: string }).code === '23505') {
+          throw new TiUsuarioHttpError(409, 'Conflicto de unicidad al crear la cuenta SSO');
+        }
+        throw insertErr;
+      }
+
+      await client.query('COMMIT');
+      return {
+        id: String(insertedRow.id),
+        email: String(insertedRow.email),
+        name: String(insertedRow.name),
+        status: insertedRow.status,
+        persona_id: Number(insertedRow.persona_id),
       };
     } catch (err) {
       await client.query('ROLLBACK');

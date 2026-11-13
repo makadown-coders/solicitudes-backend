@@ -183,6 +183,9 @@ let lastUpdatedPasswordHash = null;
 let txEvents = [];
 let mockTxUserRoles = new Map();
 const MOCK_VALID_CLUES = new Set(['BCIMB00001', 'BCIMB00002']);
+let mockTxPersonas = new Map();
+let lastInsertedAppUser = null;
+let simulateInsertUniqueViolation = false;
 
 pool.connect = async () => {
   return {
@@ -269,6 +272,39 @@ pool.connect = async () => {
           );
         });
         return { rows: list, rowCount: list.length };
+      }
+
+      if (/^SELECT id, nombre_completo, activo FROM public\.persona WHERE id = \$1 FOR UPDATE$/i.test(normalizedSql)) {
+        const p = mockTxPersonas.get(params[0]);
+        return p ? { rows: [{ ...p }], rowCount: 1 } : { rows: [], rowCount: 0 };
+      }
+
+      if (/^SELECT id FROM public\.app_users WHERE persona_id = \$1 LIMIT 1$/i.test(normalizedSql)) {
+        const found = Array.from(mockTxUsers.values()).find((u) => u.persona_id === params[0]);
+        return found ? { rows: [{ id: found.id }], rowCount: 1 } : { rows: [], rowCount: 0 };
+      }
+
+      if (/^SELECT id FROM public\.app_users WHERE LOWER\(TRIM\(email\)\) = \$1 LIMIT 1$/i.test(normalizedSql)) {
+        const found = Array.from(mockTxUsers.values()).find(
+          (u) => u.email && u.email.trim().toLowerCase() === params[0]
+        );
+        return found ? { rows: [{ id: found.id }], rowCount: 1 } : { rows: [], rowCount: 0 };
+      }
+
+      if (/^INSERT INTO public\.app_users \(email, name, password_hash, status, persona_id\)/i.test(normalizedSql)) {
+        if (simulateInsertUniqueViolation) {
+          const err = new Error('duplicate key value violates unique constraint');
+          err.code = '23505';
+          throw err;
+        }
+        const [email, name, passwordHash, status, personaId] = params;
+        const newId = '55555555-5555-4555-8555-555555555555';
+        lastInsertedAppUser = { id: newId, email, name, password_hash: passwordHash, status, persona_id: personaId };
+        mockTxUsers.set(newId, { ...lastInsertedAppUser });
+        return {
+          rows: [{ id: newId, email, name, status, persona_id: personaId }],
+          rowCount: 1,
+        };
       }
 
       throw new Error(`Consulta TX SQL no esperada en mock: ${normalizedSql}`);
@@ -680,6 +716,94 @@ test('11 (TI-2D.2A). PUT /api/ti/usuarios/:id/password genera hash argon2 compat
   failOnTxSqlMatch = null;
 });
 
+test('15 (TI-2D.3B). POST /api/ti/usuarios NO está registrado en Express y el controlador/servicio crea cuentas SSO válidas', async () => {
+  const adminToken = await issueTokenForRoles([{ code: 'ADMIN_TIC', scope: 'GLOBAL', id: null }]);
+
+  // 18. Confirmar que POST /api/ti/usuarios NO está registrado en las rutas de Express (404)
+  const resRouteNotMounted = await requestJson('POST', '/api/ti/usuarios', {
+    token: adminToken,
+    body: { persona_id: 101, email: 'nuevo@ejemplo.gob.mx', password: 'ClaveSeguraTI#2026' },
+  });
+  assert.equal(resRouteNotMounted.status, 404);
+
+  // Invocar el controlador directamente en aislamiento
+  const TiUsuariosController = require('../dist/controllers/tiUsuarios.controller').default;
+  const controller = new TiUsuariosController();
+  const invokeCreate = async (body) => {
+    let statusCode = 200;
+    let jsonBody = null;
+    const req = { body };
+    const res = {
+      status(code) {
+        statusCode = code;
+        return this;
+      },
+      json(payload) {
+        jsonBody = payload;
+        return this;
+      },
+    };
+    await controller.createUsuario(req, res);
+    return { status: statusCode, body: jsonBody };
+  };
+
+  mockTxPersonas = new Map([
+    [101, { id: 101, nombre_completo: 'María Pérez', activo: true }],
+    [102, { id: 102, nombre_completo: 'Juan Inactivo', activo: false }],
+  ]);
+  mockTxUsers = new Map();
+  lastInsertedAppUser = null;
+  simulateInsertUniqueViolation = false;
+  txEvents = [];
+
+  // 1, 8, 9, 10, 12, 13, 14, 17: Alta correcta con nombre derivado y status ACTIVE por defecto
+  const pass = 'ClaveSeguraTI#2026';
+  const resOk = await invokeCreate({
+    persona_id: 101,
+    email: '  Maria.Perez@Ejemplo.GOB.MX  ',
+    password: pass,
+  });
+  assert.equal(resOk.status, 201);
+  assert.deepEqual(resOk.body, {
+    id: '55555555-5555-4555-8555-555555555555',
+    email: 'maria.perez@ejemplo.gob.mx',
+    name: 'María Pérez',
+    status: 'ACTIVE',
+    persona_id: 101,
+  });
+  assert.equal('password' in resOk.body, false);
+  assert.equal('password_hash' in resOk.body, false);
+  assert.ok(lastInsertedAppUser);
+  assert.equal(await argon2.verify(lastInsertedAppUser.password_hash, pass), true);
+  assert.equal(txEvents.some((e) => e.sql.includes('INSERT INTO public.persona')), false);
+  assert.equal(txEvents.some((e) => e.sql.includes('app_user_roles')), false);
+  assert.ok(txEvents.some((e) => e.sql === 'COMMIT'));
+
+  // 2. Persona inexistente (404)
+  assert.equal((await invokeCreate({ persona_id: 999, email: 'a@b.mx', password: pass })).status, 404);
+  // 3. Persona inactiva (404)
+  assert.equal((await invokeCreate({ persona_id: 102, email: 'a@b.mx', password: pass })).status, 404);
+  // 4. Persona con cuenta SSO existente (409)
+  assert.equal((await invokeCreate({ persona_id: 101, email: 'otro@b.mx', password: pass })).status, 409);
+  // 5. Correo duplicado (409)
+  mockTxPersonas.set(103, { id: 103, nombre_completo: 'Otra Persona', activo: true });
+  assert.equal((await invokeCreate({ persona_id: 103, email: 'MARIA.PEREZ@ejemplo.gob.mx', password: pass })).status, 409);
+  // 6. Correo inválido (400)
+  assert.equal((await invokeCreate({ persona_id: 103, email: 'correo-invalido', password: pass })).status, 400);
+  // 7. Contraseña inválida (400)
+  assert.equal((await invokeCreate({ persona_id: 103, email: 'ok@b.mx', password: '123' })).status, 400);
+  // 11. Rechazo de propiedades adicionales (400)
+  assert.equal((await invokeCreate({ persona_id: 103, email: 'ok@b.mx', password: pass, roles: [] })).status, 400);
+
+  // 16. Conflicto de unicidad concurrente (23505 -> 409) y ROLLBACK
+  simulateInsertUniqueViolation = true;
+  txEvents = [];
+  const resConcurrent = await invokeCreate({ persona_id: 103, email: 'ok@b.mx', password: pass });
+  assert.equal(resConcurrent.status, 409);
+  assert.ok(txEvents.some((e) => e.sql === 'ROLLBACK'));
+  simulateInsertUniqueViolation = false;
+});
+
 test('12 (TI-2D.2A.1). Protección del último ADMIN_TIC GLOBAL usa scope_id = \'*\' y nunca scope_id IS NULL', async () => {
   const token = await issueTokenForRoles([{ code: 'ADMIN_TIC', scope: 'GLOBAL', id: null }]);
   const admin1 = '11111111-1111-4111-8111-111111111111';
@@ -898,4 +1022,92 @@ test('14 (TI-2D.2B). PUT /api/ti/usuarios/:id/roles rechaza CLUES/rol inexistent
   assert.equal(resDbErr.status, 500);
   assert.ok(txEvents.some((e) => e.sql === 'ROLLBACK'));
   failOnTxSqlMatch = null;
+});
+
+test('15 (TI-2D.3B). POST /api/ti/usuarios NO está registrado en Express y el controlador/servicio crea cuentas SSO válidas', async () => {
+  const adminToken = await issueTokenForRoles([{ code: 'ADMIN_TIC', scope: 'GLOBAL', id: null }]);
+
+  // 18. Confirmar que POST /api/ti/usuarios NO está registrado en las rutas de Express (404)
+  const resRouteNotMounted = await requestJson('POST', '/api/ti/usuarios', {
+    token: adminToken,
+    body: { persona_id: 101, email: 'nuevo@ejemplo.gob.mx', password: 'ClaveSeguraTI#2026' },
+  });
+  assert.equal(resRouteNotMounted.status, 404);
+
+  // Invocar el controlador directamente en aislamiento
+  const TiUsuariosController = require('../dist/controllers/tiUsuarios.controller').default;
+  const controller = new TiUsuariosController();
+  const invokeCreate = async (body) => {
+    let statusCode = 200;
+    let jsonBody = null;
+    const req = { body };
+    const res = {
+      status(code) {
+        statusCode = code;
+        return this;
+      },
+      json(payload) {
+        jsonBody = payload;
+        return this;
+      },
+    };
+    await controller.createUsuario(req, res);
+    return { status: statusCode, body: jsonBody };
+  };
+
+  mockTxPersonas = new Map([
+    [101, { id: 101, nombre_completo: 'María Pérez', activo: true }],
+    [102, { id: 102, nombre_completo: 'Juan Inactivo', activo: false }],
+  ]);
+  mockTxUsers = new Map();
+  lastInsertedAppUser = null;
+  simulateInsertUniqueViolation = false;
+  txEvents = [];
+
+  // 1, 8, 9, 10, 12, 13, 14, 17: Alta correcta con nombre derivado y status ACTIVE por defecto
+  const pass = 'ClaveSeguraTI#2026';
+  const resOk = await invokeCreate({
+    persona_id: 101,
+    email: '  Maria.Perez@Ejemplo.GOB.MX  ',
+    password: pass,
+  });
+  assert.equal(resOk.status, 201);
+  assert.deepEqual(resOk.body, {
+    id: '55555555-5555-4555-8555-555555555555',
+    email: 'maria.perez@ejemplo.gob.mx',
+    name: 'María Pérez',
+    status: 'ACTIVE',
+    persona_id: 101,
+  });
+  assert.equal('password' in resOk.body, false);
+  assert.equal('password_hash' in resOk.body, false);
+  assert.ok(lastInsertedAppUser);
+  assert.equal(await argon2.verify(lastInsertedAppUser.password_hash, pass), true);
+  assert.equal(txEvents.some((e) => e.sql.includes('INSERT INTO public.persona')), false);
+  assert.equal(txEvents.some((e) => e.sql.includes('app_user_roles')), false);
+  assert.ok(txEvents.some((e) => e.sql === 'COMMIT'));
+
+  // 2. Persona inexistente (404)
+  assert.equal((await invokeCreate({ persona_id: 999, email: 'a@b.mx', password: pass })).status, 404);
+  // 3. Persona inactiva (404)
+  assert.equal((await invokeCreate({ persona_id: 102, email: 'a@b.mx', password: pass })).status, 404);
+  // 4. Persona con cuenta SSO existente (409)
+  assert.equal((await invokeCreate({ persona_id: 101, email: 'otro@b.mx', password: pass })).status, 409);
+  // 5. Correo duplicado (409)
+  mockTxPersonas.set(103, { id: 103, nombre_completo: 'Otra Persona', activo: true });
+  assert.equal((await invokeCreate({ persona_id: 103, email: 'MARIA.PEREZ@ejemplo.gob.mx', password: pass })).status, 409);
+  // 6. Correo inválido (400)
+  assert.equal((await invokeCreate({ persona_id: 103, email: 'correo-invalido', password: pass })).status, 400);
+  // 7. Contraseña inválida (400)
+  assert.equal((await invokeCreate({ persona_id: 103, email: 'ok@b.mx', password: '123' })).status, 400);
+  // 11. Rechazo de propiedades adicionales (400)
+  assert.equal((await invokeCreate({ persona_id: 103, email: 'ok@b.mx', password: pass, roles: [] })).status, 400);
+
+  // 16. Conflicto de unicidad concurrente (23505 -> 409) y ROLLBACK
+  simulateInsertUniqueViolation = true;
+  txEvents = [];
+  const resConcurrent = await invokeCreate({ persona_id: 103, email: 'ok@b.mx', password: pass });
+  assert.equal(resConcurrent.status, 409);
+  assert.ok(txEvents.some((e) => e.sql === 'ROLLBACK'));
+  simulateInsertUniqueViolation = false;
 });

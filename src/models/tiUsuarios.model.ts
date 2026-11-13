@@ -56,3 +56,19 @@ export interface TiUsuarioRolesUpdateResult {
   id: string;
   roles: TiUsuarioRoleAssignment[];
 }
+
+export interface TiUsuarioCreateInput {
+  persona_id: number;
+  email: string;
+  name?: string;
+  password: string;
+  status?: TiUsuarioStatus;
+}
+
+export interface TiUsuarioCreateResult {
+  id: string;
+  email: string;
+  name: string;
+  status: TiUsuarioStatus;
+  persona_id: number;
+}

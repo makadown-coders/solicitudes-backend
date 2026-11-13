@@ -47,6 +47,7 @@ import cnisGruposTerapeuticosRoutes from './routes/cnis-grupos-terapeuticos';
 import reporteCpmSemanalRoutes from './routes/reporteCpmSemanal';
 import reporteRadarSemanalRoutes from './routes/reporteRadarSemanal';
 import universosAbastoRoutes from './routes/universos-abasto';
+import rhRoutes from './routes/rh';
 
 import compression from 'compression';
 import { fetch, Headers } from 'undici';
@@ -119,6 +120,7 @@ app.use('/api/cnis/grupos-terapeuticos', cnisGruposTerapeuticosRoutes);
 app.use('/api/reportes-cpm-semanal', reporteCpmSemanalRoutes);
 app.use('/api/reportes-radar-semanal', reporteRadarSemanalRoutes);
 app.use('/api/abasto/universos', universosAbastoRoutes);
+app.use('/api/rh', rhRoutes);
 
 
 app.use('/api', asignacionesRoutes);

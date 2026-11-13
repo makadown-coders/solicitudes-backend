@@ -133,4 +133,29 @@ export default class TiUsuariosController {
       res.status(500).json({ ok: false, error: 'Error al restablecer la contraseña' });
     }
   };
+
+  updateRoles = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const body = req.body;
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        res.status(400).json({ ok: false, error: 'Payload inválido' });
+        return;
+      }
+
+      const keys = Object.keys(body);
+      if (keys.length !== 1 || keys[0] !== 'roles' || !Array.isArray(body.roles)) {
+        res.status(400).json({ ok: false, error: 'Solo se admite la propiedad "roles" como arreglo válido' });
+        return;
+      }
+
+      const out = await this.svc.updateUsuarioRoles(String(req.params.id ?? ''), body.roles);
+      res.json(out);
+    } catch (err: unknown) {
+      if (err instanceof TiUsuarioHttpError) {
+        res.status(err.status).json({ ok: false, error: err.message });
+        return;
+      }
+      res.status(500).json({ ok: false, error: 'Error al actualizar los roles de la cuenta' });
+    }
+  };
 }

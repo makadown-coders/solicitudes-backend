@@ -50,3 +50,9 @@ export interface TiUsuarioPasswordResetResult {
   id: string;
   revoked_sessions: number;
 }
+
+export interface TiUsuarioRolesUpdateResult {
+  ok: true;
+  id: string;
+  roles: TiUsuarioRoleAssignment[];
+}

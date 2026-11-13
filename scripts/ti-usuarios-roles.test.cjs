@@ -181,6 +181,8 @@ let mockRevokedTokensCount = 2;
 let failOnTxSqlMatch = null;
 let lastUpdatedPasswordHash = null;
 let txEvents = [];
+let mockTxUserRoles = new Map();
+const MOCK_VALID_CLUES = new Set(['BCIMB00001', 'BCIMB00002']);
 
 pool.connect = async () => {
   return {
@@ -230,6 +232,43 @@ pool.connect = async () => {
 
       if (/^UPDATE public\.app_refresh_tokens SET revoked_at = COALESCE\(revoked_at, now\(\)\) WHERE user_id = \$1 AND revoked_at IS NULL$/i.test(normalizedSql)) {
         return { rows: [], rowCount: mockRevokedTokensCount };
+      }
+
+      if (/^SELECT id, code FROM public\.app_roles WHERE code = ANY\(\$1::text\[\]\)$/i.test(normalizedSql)) {
+        const requested = Array.isArray(params[0]) ? params[0] : [];
+        const matched = MOCK_ROLES_DB.filter((r) => requested.includes(r.code));
+        return { rows: matched.map((r) => ({ id: r.id, code: r.code })), rowCount: matched.length };
+      }
+
+      if (/FROM public\.unidad_medica WHERE UPPER\(TRIM\(cluesimb\)\) = ANY\(\$1::text\[\]\)$/i.test(normalizedSql)) {
+        const requested = Array.isArray(params[0]) ? params[0] : [];
+        const matched = requested.filter((c) => MOCK_VALID_CLUES.has(c));
+        return { rows: matched.map((clues) => ({ clues })), rowCount: matched.length };
+      }
+
+      if (/^DELETE FROM public\.app_user_roles WHERE user_id = \$1$/i.test(normalizedSql)) {
+        mockTxUserRoles.set(params[0], []);
+        return { rows: [], rowCount: 1 };
+      }
+
+      if (/^INSERT INTO public\.app_user_roles \(user_id, role_id, scope_type, scope_id\) VALUES \(\$1, \$2, \$3, \$4\)$/i.test(normalizedSql)) {
+        const [uId, roleId, scopeType, scopeId] = params;
+        const roleObj = MOCK_ROLES_DB.find((r) => r.id === roleId);
+        const list = mockTxUserRoles.get(uId) || [];
+        list.push({ code: roleObj ? roleObj.code : roleId, scope_type: scopeType, scope_id: scopeId });
+        mockTxUserRoles.set(uId, list);
+        return { rows: [], rowCount: 1 };
+      }
+
+      if (/SELECT r\.code, ur\.scope_type, ur\.scope_id FROM public\.app_user_roles ur JOIN public\.app_roles r/i.test(normalizedSql)) {
+        const list = (mockTxUserRoles.get(params[0]) || []).slice().sort((a, b) => {
+          return (
+            a.code.localeCompare(b.code) ||
+            a.scope_type.localeCompare(b.scope_type) ||
+            a.scope_id.localeCompare(b.scope_id)
+          );
+        });
+        return { rows: list, rowCount: list.length };
       }
 
       throw new Error(`Consulta TX SQL no esperada en mock: ${normalizedSql}`);
@@ -717,4 +756,146 @@ test('12 (TI-2D.2A.1). Protección del último ADMIN_TIC GLOBAL usa scope_id = \
   assert.equal(txEvents.some((e) => e.sql.startsWith('UPDATE public.app_users')), false);
   assert.equal(txEvents.some((e) => e.sql.startsWith('UPDATE public.app_refresh_tokens')), false);
   assert.ok(txEvents.some((e) => e.sql === 'ROLLBACK'));
+});
+
+test('13 (TI-2D.2B). PUT /api/ti/usuarios/:id/roles asigna roles válidos, persiste scope_id = \'*\', revoca refresh tokens y protege último ADMIN_TIC GLOBAL', async () => {
+  const adminToken = await issueTokenForRoles([{ code: 'ADMIN_TIC', scope: 'GLOBAL', id: null }]);
+  const normalId = '22222222-2222-4222-8222-222222222222';
+  const lastAdminId = '11111111-1111-4111-8111-111111111111';
+
+  // 1. Asignación de RECURSOS_HUMANOS GLOBAL (scope_id = '*')
+  mockTxUsers = new Map([
+    [normalId, { id: normalId, status: 'ACTIVE' }],
+    [lastAdminId, { id: lastAdminId, status: 'ACTIVE' }],
+  ]);
+  mockActiveGlobalAdminIds = [lastAdminId];
+  mockTxUserRoles = new Map();
+  txEvents = [];
+
+  const resGlobal = await requestJson('PUT', `/api/ti/usuarios/${normalId}/roles`, {
+    token: adminToken,
+    body: { roles: [{ code: 'RECURSOS_HUMANOS', scope_type: 'GLOBAL', scope_id: '*' }] },
+  });
+  assert.equal(resGlobal.status, 200);
+  assert.deepEqual(resGlobal.body, {
+    ok: true,
+    id: normalId,
+    roles: [{ code: 'RECURSOS_HUMANOS', scope_type: 'GLOBAL', scope_id: '*' }],
+  });
+  assert.ok(txEvents.some((e) => e.sql.startsWith('UPDATE public.app_refresh_tokens')));
+  assert.ok(txEvents.some((e) => e.sql === 'COMMIT'));
+
+  // 2. Asignación de RECURSOS_HUMANOS CLUES válida (normalizada) y reemplazo atómico múltiple
+  txEvents = [];
+  const resMulti = await requestJson('PUT', `/api/ti/usuarios/${normalId}/roles`, {
+    token: adminToken,
+    body: {
+      roles: [
+        { code: 'RECURSOS_HUMANOS', scope_type: 'CLUES', scope_id: 'bcimb00002' },
+        { code: 'ADMIN_TIC', scope_type: 'CLUES', scope_id: 'BCIMB00001' },
+      ],
+    },
+  });
+  assert.equal(resMulti.status, 200);
+  assert.deepEqual(resMulti.body, {
+    ok: true,
+    id: normalId,
+    roles: [
+      { code: 'ADMIN_TIC', scope_type: 'CLUES', scope_id: 'BCIMB00001' },
+      { code: 'RECURSOS_HUMANOS', scope_type: 'CLUES', scope_id: 'BCIMB00002' },
+    ],
+  });
+
+  // 3. roles: [] para retirar roles cuando está permitido
+  const resEmpty = await requestJson('PUT', `/api/ti/usuarios/${normalId}/roles`, {
+    token: adminToken,
+    body: { roles: [] },
+  });
+  assert.equal(resEmpty.status, 200);
+  assert.deepEqual(resEmpty.body, { ok: true, id: normalId, roles: [] });
+
+  // 4. Protección del último ADMIN_TIC GLOBAL (409)
+  txEvents = [];
+  const resLastAdmin = await requestJson('PUT', `/api/ti/usuarios/${lastAdminId}/roles`, {
+    token: adminToken,
+    body: { roles: [{ code: 'RECURSOS_HUMANOS', scope_type: 'GLOBAL', scope_id: '*' }] },
+  });
+  assert.equal(resLastAdmin.status, 409);
+  assert.ok(txEvents.some((e) => e.sql === 'ROLLBACK'));
+});
+
+test('14 (TI-2D.2B). PUT /api/ti/usuarios/:id/roles rechaza CLUES/rol inexistente, duplicados, GLOBAL != *, DEPTO, 404, 403 y hace ROLLBACK', async () => {
+  const adminToken = await issueTokenForRoles([{ code: 'ADMIN_TIC', scope: 'GLOBAL', id: null }]);
+  const rhToken = await issueTokenForRoles([{ code: 'RECURSOS_HUMANOS', scope: 'GLOBAL', id: null }]);
+  const normalId = '22222222-2222-4222-8222-222222222222';
+  const missingId = '99999999-9999-4999-8999-999999999999';
+
+  mockTxUsers = new Map([[normalId, { id: normalId, status: 'ACTIVE' }]]);
+  mockActiveGlobalAdminIds = [];
+  mockTxUserRoles = new Map();
+
+  // Sin autorización (403)
+  const resForbidden = await requestJson('PUT', `/api/ti/usuarios/${normalId}/roles`, {
+    token: rhToken,
+    body: { roles: [] },
+  });
+  assert.equal(resForbidden.status, 403);
+
+  // Usuario inexistente (404)
+  const resNotFound = await requestJson('PUT', `/api/ti/usuarios/${missingId}/roles`, {
+    token: adminToken,
+    body: { roles: [] },
+  });
+  assert.equal(resNotFound.status, 404);
+
+  // CLUES inexistente (400)
+  const resBadClues = await requestJson('PUT', `/api/ti/usuarios/${normalId}/roles`, {
+    token: adminToken,
+    body: { roles: [{ code: 'RECURSOS_HUMANOS', scope_type: 'CLUES', scope_id: 'NO_EXISTE' }] },
+  });
+  assert.equal(resBadClues.status, 400);
+
+  // Rol inexistente (400)
+  const resBadRole = await requestJson('PUT', `/api/ti/usuarios/${normalId}/roles`, {
+    token: adminToken,
+    body: { roles: [{ code: 'ROL_FICTICIO', scope_type: 'GLOBAL', scope_id: '*' }] },
+  });
+  assert.equal(resBadRole.status, 400);
+
+  // Duplicados (400)
+  const resDup = await requestJson('PUT', `/api/ti/usuarios/${normalId}/roles`, {
+    token: adminToken,
+    body: {
+      roles: [
+        { code: 'RECURSOS_HUMANOS', scope_type: 'GLOBAL', scope_id: '*' },
+        { code: 'RECURSOS_HUMANOS', scope_type: 'GLOBAL', scope_id: '*' },
+      ],
+    },
+  });
+  assert.equal(resDup.status, 400);
+
+  // GLOBAL con scope_id != '*' (400)
+  const resBadGlobal = await requestJson('PUT', `/api/ti/usuarios/${normalId}/roles`, {
+    token: adminToken,
+    body: { roles: [{ code: 'RECURSOS_HUMANOS', scope_type: 'GLOBAL', scope_id: 'null' }] },
+  });
+  assert.equal(resBadGlobal.status, 400);
+
+  // DEPTO bloqueado por falta de catálogo verificable (400)
+  const resDepto = await requestJson('PUT', `/api/ti/usuarios/${normalId}/roles`, {
+    token: adminToken,
+    body: { roles: [{ code: 'RECURSOS_HUMANOS', scope_type: 'DEPTO', scope_id: 'TI' }] },
+  });
+  assert.equal(resDepto.status, 400);
+
+  // ROLLBACK ante error SQL (500)
+  failOnTxSqlMatch = 'DELETE FROM public.app_user_roles';
+  txEvents = [];
+  const resDbErr = await requestJson('PUT', `/api/ti/usuarios/${normalId}/roles`, {
+    token: adminToken,
+    body: { roles: [{ code: 'RECURSOS_HUMANOS', scope_type: 'GLOBAL', scope_id: '*' }] },
+  });
+  assert.equal(resDbErr.status, 500);
+  assert.ok(txEvents.some((e) => e.sql === 'ROLLBACK'));
+  failOnTxSqlMatch = null;
 });

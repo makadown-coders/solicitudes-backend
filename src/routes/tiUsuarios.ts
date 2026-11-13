@@ -13,8 +13,9 @@ router.get('/roles', requireAuth, requireTiAdminGlobal(), c.listRoles.bind(c));
 // Consulta paginada de cuentas SSO con persona y roles vinculados (solo lectura, exclusivamente ADMIN_TIC GLOBAL)
 router.get('/usuarios', requireAuth, requireTiAdminGlobal(), c.listUsuarios.bind(c));
 
-// Administración de estado y restablecimiento de contraseña (exclusivamente ADMIN_TIC GLOBAL)
+// Administración de estado, restablecimiento de contraseña y roles (exclusivamente ADMIN_TIC GLOBAL)
 router.patch('/usuarios/:id/status', requireAuth, requireTiAdminGlobal(), c.updateStatus.bind(c));
 router.put('/usuarios/:id/password', requireAuth, requireTiAdminGlobal(), c.resetPassword.bind(c));
+router.put('/usuarios/:id/roles', requireAuth, requireTiAdminGlobal(), c.updateRoles.bind(c));
 
 export default router;

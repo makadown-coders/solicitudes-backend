@@ -6,6 +6,7 @@ import {
   TiUsuarioItem,
   TiUsuarioPasswordResetResult,
   TiUsuarioRoleAssignment,
+  TiUsuarioRolesUpdateResult,
   TiUsuarioStatus,
   TiUsuarioStatusUpdateResult,
   TiUsuariosListParams,
@@ -311,6 +312,195 @@ export default class TiUsuariosService {
         ok: true,
         id: userId,
         revoked_sessions: revRes.rowCount ?? 0,
+      };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Reemplaza atómicamente las asignaciones de roles de una cuenta SSO existente.
+   * - Valida roles contra `public.app_roles` y CLUES contra `public.unidad_medica`.
+   * - Bloquea `DEPTO` al no existir un catálogo verificable en el backend.
+   * - Protege al último `ADMIN_TIC GLOBAL` activo (HTTP 409).
+   * - Revoca refresh tokens vigentes en `public.app_refresh_tokens`.
+   */
+  async updateUsuarioRoles(userId: string, rawRoles: unknown): Promise<TiUsuarioRolesUpdateResult> {
+    if (!UUID_REGEX.test(userId)) {
+      throw new TiUsuarioHttpError(400, 'Identificador de usuario inválido');
+    }
+
+    if (!Array.isArray(rawRoles)) {
+      throw new TiUsuarioHttpError(400, 'La propiedad "roles" debe ser un arreglo');
+    }
+
+    const normalizedRoles: TiUsuarioRoleAssignment[] = [];
+    const seenKeys = new Set<string>();
+    const ALLOWED_SCOPE_TYPES = new Set(['GLOBAL', 'CLUES', 'DEPTO']);
+
+    for (const entry of rawRoles) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        throw new TiUsuarioHttpError(400, 'Cada asignación de rol debe ser un objeto válido');
+      }
+      const entryKeys = Object.keys(entry);
+      if (
+        entryKeys.length !== 3 ||
+        !entryKeys.includes('code') ||
+        !entryKeys.includes('scope_type') ||
+        !entryKeys.includes('scope_id')
+      ) {
+        throw new TiUsuarioHttpError(400, 'Cada rol debe contener exclusivamente las propiedades code, scope_type y scope_id');
+      }
+
+      const rawCode = (entry as Record<string, unknown>).code;
+      const rawScopeType = (entry as Record<string, unknown>).scope_type;
+      const rawScopeId = (entry as Record<string, unknown>).scope_id;
+
+      if (typeof rawCode !== 'string' || typeof rawScopeType !== 'string' || typeof rawScopeId !== 'string') {
+        throw new TiUsuarioHttpError(400, 'Las propiedades code, scope_type y scope_id deben ser cadenas de texto');
+      }
+
+      const code = rawCode.trim().toUpperCase();
+      const scopeType = rawScopeType.trim().toUpperCase();
+      const scopeIdRaw = rawScopeId.trim();
+
+      if (!code) {
+        throw new TiUsuarioHttpError(400, 'El código de rol es obligatorio');
+      }
+      if (!ALLOWED_SCOPE_TYPES.has(scopeType)) {
+        throw new TiUsuarioHttpError(400, `Tipo de alcance inválido: ${scopeType}`);
+      }
+      if (scopeType === 'DEPTO') {
+        throw new TiUsuarioHttpError(
+          400,
+          'El alcance DEPTO no cuenta con un catálogo verificable en el backend para validar asignaciones'
+        );
+      }
+
+      let scopeId: string;
+      if (scopeType === 'GLOBAL') {
+        if (scopeIdRaw !== '*') {
+          throw new TiUsuarioHttpError(400, "El alcance GLOBAL exige scope_id = '*'");
+        }
+        scopeId = '*';
+      } else {
+        if (!scopeIdRaw) {
+          throw new TiUsuarioHttpError(400, 'El alcance CLUES exige un identificador de unidad válido');
+        }
+        scopeId = scopeIdRaw.toUpperCase();
+      }
+
+      const dedupKey = `${code}::${scopeType}::${scopeId}`;
+      if (seenKeys.has(dedupKey)) {
+        throw new TiUsuarioHttpError(400, `Asignación de rol duplicada: ${code} (${scopeType}:${scopeId})`);
+      }
+      seenKeys.add(dedupKey);
+
+      normalizedRoles.push({ code, scope_type: scopeType, scope_id: scopeId });
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const userRes = await client.query(
+        `SELECT id, status FROM public.app_users WHERE id = $1 FOR UPDATE`,
+        [userId]
+      );
+      if (!userRes.rowCount) {
+        throw new TiUsuarioHttpError(404, 'Cuenta SSO no encontrada');
+      }
+
+      const roleIdByCode = new Map<string, string>();
+      if (normalizedRoles.length > 0) {
+        const distinctCodes = Array.from(new Set(normalizedRoles.map((r) => r.code)));
+        const rolesRes = await client.query(
+          `SELECT id, code FROM public.app_roles WHERE code = ANY($1::text[])`,
+          [distinctCodes]
+        );
+        for (const row of rolesRes.rows as Array<{ id: string; code: string }>) {
+          roleIdByCode.set(String(row.code), String(row.id));
+        }
+        for (const code of distinctCodes) {
+          if (!roleIdByCode.has(code)) {
+            throw new TiUsuarioHttpError(400, `Rol inexistente en el catálogo: ${code}`);
+          }
+        }
+
+        const distinctClues = Array.from(
+          new Set(normalizedRoles.filter((r) => r.scope_type === 'CLUES').map((r) => r.scope_id))
+        );
+        if (distinctClues.length > 0) {
+          const cluesRes = await client.query(
+            `SELECT UPPER(TRIM(cluesimb)) AS clues FROM public.unidad_medica WHERE UPPER(TRIM(cluesimb)) = ANY($1::text[])`,
+            [distinctClues]
+          );
+          const validClues = new Set((cluesRes.rows as Array<{ clues: string }>).map((r) => String(r.clues)));
+          for (const clues of distinctClues) {
+            if (!validClues.has(clues)) {
+              throw new TiUsuarioHttpError(400, `CLUES inexistente en el catálogo institucional: ${clues}`);
+            }
+          }
+        }
+      }
+
+      const activeGlobalAdminIds = await this.lockAndListActiveGlobalAdminIds(client);
+      const isTargetActiveGlobalAdmin = activeGlobalAdminIds.includes(userId);
+      const keepsGlobalAdmin = normalizedRoles.some(
+        (r) => r.code === 'ADMIN_TIC' && r.scope_type === 'GLOBAL' && r.scope_id === '*'
+      );
+      if (isTargetActiveGlobalAdmin && activeGlobalAdminIds.length <= 1 && !keepsGlobalAdmin) {
+        throw new TiUsuarioHttpError(
+          409,
+          'No es posible retirar el rol ADMIN_TIC GLOBAL al último administrador global activo.'
+        );
+      }
+
+      await client.query(`DELETE FROM public.app_user_roles WHERE user_id = $1`, [userId]);
+
+      for (const role of normalizedRoles) {
+        const roleId = roleIdByCode.get(role.code)!;
+        await client.query(
+          `INSERT INTO public.app_user_roles (user_id, role_id, scope_type, scope_id)
+           VALUES ($1, $2, $3, $4)`,
+          [userId, roleId, role.scope_type, role.scope_id]
+        );
+      }
+
+      const persistedRes = await client.query(
+        `SELECT r.code, ur.scope_type, ur.scope_id
+           FROM public.app_user_roles ur
+           JOIN public.app_roles r ON r.id = ur.role_id
+          WHERE ur.user_id = $1
+          ORDER BY r.code ASC, ur.scope_type ASC, ur.scope_id ASC`,
+        [userId]
+      );
+
+      await client.query(
+        `UPDATE public.app_refresh_tokens
+            SET revoked_at = COALESCE(revoked_at, now())
+          WHERE user_id = $1
+            AND revoked_at IS NULL`,
+        [userId]
+      );
+
+      await client.query('COMMIT');
+
+      const persistedRoles: TiUsuarioRoleAssignment[] = (
+        persistedRes.rows as Array<{ code: string; scope_type: string; scope_id: string }>
+      ).map((r) => ({
+        code: String(r.code),
+        scope_type: String(r.scope_type),
+        scope_id: String(r.scope_id),
+      }));
+
+      return {
+        ok: true,
+        id: userId,
+        roles: persistedRoles,
       };
     } catch (err) {
       await client.query('ROLLBACK');

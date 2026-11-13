@@ -132,33 +132,43 @@ export default class PersonasService {
   async create(payload: {
     nombre_completo: string;
     unidad_medica_id?: number | null;
-    correos?: string[];        // el primero será principal si no especificas más reglas
+    correo_principal?: string | null;
+    correos?: string[];
   }): Promise<{ id: number }> {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
 
+      const correos = Array.isArray(payload.correos)
+        ? payload.correos.map(c => normEmail(c)).filter(Boolean)
+        : [];
+      const explicitPrincipal =
+        payload.correo_principal !== undefined && payload.correo_principal !== null
+          ? normEmail(payload.correo_principal) || null
+          : null;
+      const correoPrincipal = explicitPrincipal ?? (correos[0] ?? null);
+
       const { rows } = await client.query(
-        `INSERT INTO persona (nombre_completo, unidad_medica_id, activo, creado_en, actualizado_en)
-         VALUES ($1, $2, TRUE, NOW(), NOW())
+        `INSERT INTO persona (nombre_completo, unidad_medica_id, correo_principal, activo, creado_en, actualizado_en)
+         VALUES ($1, $2, $3, TRUE, NOW(), NOW())
          RETURNING id`,
-        [payload.nombre_completo, payload.unidad_medica_id ?? null]
+        [payload.nombre_completo, payload.unidad_medica_id ?? null, correoPrincipal]
       );
       const personaId = Number(rows[0].id);
 
-      const correos = Array.isArray(payload.correos)
-        ? payload.correos.map(c => String(c).trim()).filter(Boolean)
-        : [];
+      // persona_correo es complementaria y opcional:
+      // No se crea una fila en persona_correo solo para replicar un único correo principal ya guardado en persona.correo_principal.
+      // Únicamente se registran correos complementarios adicionales cuando vienen en payload.correos.
+      const complementarios = explicitPrincipal
+        ? correos.filter(c => c.toLowerCase() !== explicitPrincipal.toLowerCase())
+        : correos.slice(1);
 
-      if (correos.length) {
-        for (let i = 0; i < correos.length; i++) {
-          await client.query(
-            `INSERT INTO persona_correo (persona_id, correo, es_principal, activo)
-             VALUES ($1, $2, $3, TRUE)`,
-            [personaId, correos[i], i === 0]  // primero = principal
-          );
-        }
-        // la función/trigger actualizará persona.correo_principal
+      for (const correo of complementarios) {
+        await client.query(
+          `INSERT INTO persona_correo (persona_id, correo, es_principal, activo)
+           VALUES ($1, $2, FALSE, TRUE)`,
+          [personaId, correo]
+        );
       }
 
       await client.query('COMMIT');
@@ -179,6 +189,7 @@ export default class PersonasService {
   async update(id: number, payload: {
     nombre_completo?: string;
     unidad_medica_id?: number | null;
+    correo_principal?: string | null;
     correos?: string[]; // lista completa deseada (ACTIVOS). Los no incluidos se desactivan (soft-delete).
   }): Promise<{ id: number }> {
     const client = await pool.connect();
@@ -189,48 +200,101 @@ export default class PersonasService {
       const chk = await client.query(`SELECT id FROM persona WHERE id=$1 AND activo=TRUE`, [id]);
       if (!chk.rowCount) throw new Error('Persona no encontrada o inactiva.');
 
-      // Actualiza datos básicos si vienen
-      // Nota sobre unidad_medica_id: si no se envía (undefined), se preserva el valor almacenado en BD.
-      // (En PersonasController.update, null y undefined se colapsan con `?? undefined`; esa ambigüedad
-      // se documenta sin modificar el controlador en esta microintervención).
-      if (payload.nombre_completo != null || payload.unidad_medica_id !== undefined) {
+      const hasCorreosArray = Array.isArray(payload.correos);
+      const incoming = hasCorreosArray
+        ? payload.correos!.map(c => normEmail(c)).filter(Boolean)
+        : [];
+      const hasCorreoPrincipalField = payload.correo_principal !== undefined;
+
+      let shouldUpdateCorreoPrincipal = false;
+      let nextCorreoPrincipal: string | null = null;
+
+      if (hasCorreoPrincipalField) {
+        shouldUpdateCorreoPrincipal = true;
+        nextCorreoPrincipal =
+          payload.correo_principal !== null ? normEmail(payload.correo_principal) || null : null;
+      } else if (hasCorreosArray) {
+        shouldUpdateCorreoPrincipal = true;
+        nextCorreoPrincipal = incoming[0] ?? null;
+      }
+
+      // Actualiza datos básicos si vienen (distinguiendo explícitamente omisión vs NULL)
+      if (
+        payload.nombre_completo != null ||
+        payload.unidad_medica_id !== undefined ||
+        shouldUpdateCorreoPrincipal
+      ) {
         await client.query(
           `UPDATE persona
               SET nombre_completo = COALESCE($2, nombre_completo),
                   unidad_medica_id = CASE WHEN $4::boolean THEN $3::integer ELSE unidad_medica_id END,
+                  correo_principal = CASE WHEN $6::boolean THEN $5::text ELSE correo_principal END,
                   actualizado_en = NOW()
             WHERE id = $1`,
           [
             id,
             payload.nombre_completo ?? null,
             payload.unidad_medica_id ?? null,
-            payload.unidad_medica_id !== undefined
+            payload.unidad_medica_id !== undefined,
+            nextCorreoPrincipal,
+            shouldUpdateCorreoPrincipal
           ]
         );
       }
 
-      // Sincronía de correos activos (si se envía la lista)
-      if (Array.isArray(payload.correos)) {
-        const incoming = payload.correos.map(c => String(c).trim()).filter(Boolean);
+      // Si se modificó o eliminó explícitamente correo_principal sin enviar el arreglo `correos`,
+      // mantenemos coherente cualquier fila principal previa en persona_correo sin desactivar los demás correos.
+      if (hasCorreoPrincipalField && !hasCorreosArray) {
+        if (nextCorreoPrincipal === null) {
+          await client.query(
+            `UPDATE persona_correo
+                SET activo = FALSE,
+                    es_principal = FALSE
+              WHERE persona_id = $1
+                AND es_principal = TRUE`,
+            [id]
+          );
+        } else {
+          await client.query(
+            `UPDATE persona_correo
+                SET es_principal = FALSE
+              WHERE persona_id = $1
+                AND es_principal = TRUE
+                AND lower(correo) <> $2`,
+            [id, nextCorreoPrincipal.toLowerCase()]
+          );
+        }
+      }
 
-        // a) desactivar los que ya no están en la lista entrante
+      // Sincronía de correos complementarios (únicamente si se envía la lista `correos`)
+      if (hasCorreosArray) {
+        // a) desactivar los que ya no están en la lista entrante (limpiando es_principal = FALSE)
         await client.query(
           `UPDATE persona_correo
-              SET activo = FALSE
+              SET activo = FALSE,
+                  es_principal = FALSE
             WHERE persona_id = $1
-              AND activo = TRUE
+              AND (activo = TRUE OR es_principal = TRUE)
               AND lower(correo) <> ALL ($2::text[])`,
           [id, incoming.map(c => c.toLowerCase())]
         );
 
-        // b) upsert de los entrantes (reactiva si existían inactivos)
+        // b) limpiar bandera principal antes de reasignar para evitar colisión con uq_persona_correo_principal_por_persona
+        await client.query(
+          `UPDATE persona_correo
+              SET es_principal = FALSE
+            WHERE persona_id = $1
+              AND es_principal = TRUE`,
+          [id]
+        );
+
+        // c) upsert de los entrantes (reactiva si existían inactivos)
         for (let i = 0; i < incoming.length; i++) {
           const correo = incoming[i];
-          // intenta reactivar
           const upd = await client.query(
             `UPDATE persona_correo
                 SET activo = TRUE,
-                    es_principal = es_principal -- lo ajustamos luego
+                    es_principal = FALSE
               WHERE persona_id = $1 AND lower(correo) = $2
             RETURNING id`,
             [id, correo.toLowerCase()]
@@ -244,11 +308,7 @@ export default class PersonasService {
           }
         }
 
-        // c) fija principal = primer correo de la lista (si hay lista)
-        await client.query(
-          `UPDATE persona_correo SET es_principal = FALSE WHERE persona_id = $1 AND activo = TRUE`,
-          [id]
-        );
+        // d) fija principal en persona_correo cuando hay lista entrante
         if (incoming.length) {
           await client.query(
             `UPDATE persona_correo
@@ -257,7 +317,6 @@ export default class PersonasService {
             [id, incoming[0].toLowerCase()]
           );
         }
-        // trigger actualiza persona.correo_principal
       }
 
       await client.query('COMMIT');
@@ -301,7 +360,8 @@ export default class PersonasService {
 
       await client.query(
         `UPDATE persona_correo
-            SET activo = FALSE
+            SET activo = FALSE,
+                es_principal = FALSE
           WHERE persona_id = $1`,
         [id]
       );

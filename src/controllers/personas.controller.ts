@@ -35,16 +35,19 @@ export default class PersonasController {
 
   create = async (req: Request, res: Response): Promise<void> => {
     try {
-      const { nombre_completo, unidad_medica_id, correos } = req.body || {};
+      const body = req.body || {};
+      const { nombre_completo, unidad_medica_id, correo_principal, correos } = body;
       if (!nombre_completo?.trim()) {
         res.status(400).json({ ok: false, error: 'nombre_completo requerido' });
         return;
       }
 
+      const hasCorreoPrincipal = Object.prototype.hasOwnProperty.call(body, 'correo_principal');
       const out = await this.svc.create({
         nombre_completo: String(nombre_completo).trim(),
         unidad_medica_id: unidad_medica_id ?? null,
-        correos: Array.isArray(correos) ? correos : []
+        correo_principal: hasCorreoPrincipal ? correo_principal : undefined,
+        correos: Array.isArray(correos) ? correos : undefined
       });
       res.status(201).json(out);
     } catch (e: any) {
@@ -55,10 +58,15 @@ export default class PersonasController {
   update = async (req: Request, res: Response): Promise<void> => {
     try {
       const id = Number(req.params.id);
-      const { nombre_completo, unidad_medica_id, correos } = req.body || {};
+      const body = req.body || {};
+      const { nombre_completo, unidad_medica_id, correo_principal, correos } = body;
+      const hasUnidad = Object.prototype.hasOwnProperty.call(body, 'unidad_medica_id');
+      const hasCorreoPrincipal = Object.prototype.hasOwnProperty.call(body, 'correo_principal');
+
       const out = await this.svc.update(id, {
         nombre_completo: nombre_completo ?? undefined,
-        unidad_medica_id: unidad_medica_id ?? undefined,
+        unidad_medica_id: hasUnidad ? unidad_medica_id : undefined,
+        correo_principal: hasCorreoPrincipal ? correo_principal : undefined,
         correos: Array.isArray(correos) ? correos : undefined
       });
       res.json(out);

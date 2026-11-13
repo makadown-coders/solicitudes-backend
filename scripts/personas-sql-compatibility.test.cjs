@@ -64,6 +64,7 @@ function createMockDb({
       if (/^INSERT INTO persona\b/i.test(normalizedSql)) {
         state.nombre_completo = params[0];
         state.unidad_medica_id = params[1];
+        state.correo_principal = params.length >= 3 ? params[2] : null;
         state.activo = true;
         return { rows: [{ id: state.id }], rowCount: 1 };
       }
@@ -78,12 +79,15 @@ function createMockDb({
 
       // UPDATE persona en update()
       if (/^UPDATE persona SET nombre_completo = COALESCE\(\$2, nombre_completo\)/i.test(normalizedSql)) {
-        const [, newNombre, newUnidadId, shouldUpdateUnidad] = params;
+        const [, newNombre, newUnidadId, shouldUpdateUnidad, newCorreoPrincipal, shouldUpdateCorreo] = params;
         if (newNombre !== null && newNombre !== undefined) {
           state.nombre_completo = newNombre;
         }
         if (shouldUpdateUnidad === true) {
           state.unidad_medica_id = newUnidadId;
+        }
+        if (shouldUpdateCorreo === true) {
+          state.correo_principal = newCorreoPrincipal;
         }
         return { rows: [], rowCount: 1 };
       }
@@ -172,14 +176,13 @@ test('1 y 4. PersonasService.create utiliza exclusivamente columnas válidas de 
       );
     }
 
-    // Verificar parametrización ($1, $2) y que persona_correo no fue alterado
-    assert.deepEqual(insertPersonaQuery.params, ['Dr. Roberto Juárez', 10]);
+    // Verificar parametrización ($1, $2, $3) y que persona_correo solo guarda el complementario
+    assert.deepEqual(insertPersonaQuery.params, ['Dr. Roberto Juárez', 10, 'roberto@imssb.bc']);
     const correoInserts = mockDb.executedQueries.filter((q) =>
       /^INSERT INTO persona_correo\b/i.test(q.sql)
     );
-    assert.equal(correoInserts.length, 2);
-    assert.deepEqual(correoInserts[0].params, [42, 'roberto@imssb.bc', true]);
-    assert.deepEqual(correoInserts[1].params, [42, 'roberto.alt@imssb.bc', false]);
+    assert.equal(correoInserts.length, 1);
+    assert.deepEqual(correoInserts[0].params, [42, 'roberto.alt@imssb.bc']);
   } finally {
     mockDb.restore();
   }
@@ -214,8 +217,8 @@ test('2, 4 y 5. PersonasService.update utiliza actualizado_en y preserva unidad_
       );
     }
 
-    // Verificar que los parámetros indican NO sobrescribir unidad_medica_id ($4 = false)
-    assert.deepEqual(updateQueryA.params, [42, 'Dra. Ana María Gómez', null, false]);
+    // Verificar que los parámetros indican NO sobrescribir unidad_medica_id ($4 = false) ni correo_principal ($6 = false)
+    assert.deepEqual(updateQueryA.params, [42, 'Dra. Ana María Gómez', null, false, null, false]);
     assert.equal(
       mockDb.getState().unidad_medica_id,
       15,
@@ -230,7 +233,7 @@ test('2, 4 y 5. PersonasService.update utiliza actualizado_en y preserva unidad_
     });
     assert.deepEqual(outB, { id: 42 });
     const updateQueryB = mockDb.executedQueries.find((q) => /^UPDATE persona\b/i.test(q.sql));
-    assert.deepEqual(updateQueryB.params, [42, null, 25, true]);
+    assert.deepEqual(updateQueryB.params, [42, null, 25, true, null, false]);
     assert.equal(mockDb.getState().unidad_medica_id, 25);
 
     // Caso C: Se envía explícitamente null al servicio (payload.unidad_medica_id === null)
@@ -240,7 +243,7 @@ test('2, 4 y 5. PersonasService.update utiliza actualizado_en y preserva unidad_
     });
     assert.deepEqual(outC, { id: 42 });
     const updateQueryC = mockDb.executedQueries.find((q) => /^UPDATE persona\b/i.test(q.sql));
-    assert.deepEqual(updateQueryC.params, [42, null, null, true]);
+    assert.deepEqual(updateQueryC.params, [42, null, null, true, null, false]);
     assert.equal(mockDb.getState().unidad_medica_id, null);
   } finally {
     mockDb.restore();
@@ -321,7 +324,7 @@ test('6 y 7. PersonasController mantiene contratos HTTP y parametrización al in
 });
 
 test('9. create, update y softDelete ejecutan ROLLBACK y liberan el cliente cuando ocurre un error en la transacción (verificación con mock de cliente)', async () => {
-  // 9a. Error en create (al insertar en persona_correo)
+  // 9a. Error en create (al insertar correo complementario en persona_correo)
   const mockCreate = createMockDb({ failOnSqlMatch: 'INSERT INTO persona_correo' });
   try {
     const svc = new PersonasService();
@@ -330,7 +333,7 @@ test('9. create, update y softDelete ejecutan ROLLBACK y liberan el cliente cuan
         svc.create({
           nombre_completo: 'Test Rollback',
           unidad_medica_id: 10,
-          correos: ['fail@imssb.bc'],
+          correos: ['principal@imssb.bc', 'fail@imssb.bc'],
         }),
       /Simulated DB error/
     );
@@ -743,5 +746,137 @@ test('10. Lectura compatible de correos (6.4B-2B.1): precedencia persona.correo_
     assert.deepEqual(byIdPayload.correos, []);
   } finally {
     mock.restore();
+  }
+});
+
+test('11 (TI-2C.1). CREATE sin correo ni unidad permite NULL, y CREATE con correo principal no duplica fila en persona_correo', async () => {
+  // 1) Alta sin correo ni unidad
+  const mock1 = createMockDb();
+  try {
+    const svc = new PersonasService();
+    const res = await svc.create({ nombre_completo: 'Trabajador Sin Correo' });
+    assert.deepEqual(res, { id: 42 });
+    assert.equal(mock1.getState().nombre_completo, 'Trabajador Sin Correo');
+    assert.equal(mock1.getState().unidad_medica_id, null);
+    assert.equal(mock1.getState().correo_principal, null);
+
+    const pcInserts = mock1.executedQueries.filter((q) => /^INSERT INTO persona_correo/i.test(q.sql));
+    assert.equal(pcInserts.length, 0, 'No debe insertar en persona_correo cuando no hay correo');
+  } finally {
+    mock1.restore();
+  }
+
+  // 2) Alta con correo principal (via correo_principal o correos: [uno]) no fabrica fila redundante en persona_correo
+  const mock2 = createMockDb();
+  try {
+    const svc = new PersonasService();
+    await svc.create({
+      nombre_completo: 'Médico Con Correo',
+      unidad_medica_id: 10,
+      correo_principal: '  medico@imssb.gob.mx ',
+    });
+    assert.equal(mock2.getState().correo_principal, 'medico@imssb.gob.mx');
+    const pcInserts = mock2.executedQueries.filter((q) => /^INSERT INTO persona_correo/i.test(q.sql));
+    assert.equal(pcInserts.length, 0, 'No debe replicar el correo principal único en persona_correo');
+  } finally {
+    mock2.restore();
+  }
+});
+
+test('12 (TI-2C.1). UPDATE preserva campos omitidos, distingue omisión vs NULL en unidad_medica_id y correo_principal, y limpia es_principal al desactivar', async () => {
+  // A) Solo nombre -> preserva unidad_medica_id, correo_principal y persona_correo
+  const mockNombre = createMockDb({
+    initialPersona: {
+      id: 42,
+      nombre_completo: 'Nombre Original',
+      unidad_medica_id: 15,
+      activo: true,
+      correo_principal: 'original@imssb.gob.mx',
+    },
+  });
+  try {
+    const svc = new PersonasService();
+    await svc.update(42, { nombre_completo: 'Nombre Nuevo' });
+    assert.equal(mockNombre.getState().nombre_completo, 'Nombre Nuevo');
+    assert.equal(mockNombre.getState().unidad_medica_id, 15);
+    assert.equal(mockNombre.getState().correo_principal, 'original@imssb.gob.mx');
+    assert.equal(
+      mockNombre.executedQueries.filter((q) => /persona_correo/i.test(q.sql)).length,
+      0,
+      'No debe tocar persona_correo al actualizar solo el nombre'
+    );
+  } finally {
+    mockNombre.restore();
+  }
+
+  // B) Eliminación explícita de unidad_medica_id mediante NULL desde PersonasController.update
+  const mockNullUnidad = createMockDb({
+    initialPersona: {
+      id: 42,
+      nombre_completo: 'Persona',
+      unidad_medica_id: 15,
+      activo: true,
+      correo_principal: 'original@imssb.gob.mx',
+    },
+  });
+  try {
+    const ctrl = new PersonasController();
+    let jsonPayload = null;
+    await ctrl.update(
+      { params: { id: '42' }, body: { unidad_medica_id: null } },
+      { status() { return this; }, json(d) { jsonPayload = d; return this; } }
+    );
+    assert.deepEqual(jsonPayload, { id: 42 });
+    assert.equal(mockNullUnidad.getState().unidad_medica_id, null);
+    assert.equal(mockNullUnidad.getState().correo_principal, 'original@imssb.gob.mx');
+  } finally {
+    mockNullUnidad.restore();
+  }
+
+  // C) Eliminación explícita de correo_principal mediante NULL o correos: [] limpia es_principal = FALSE
+  const mockDelCorreo = createMockDb({
+    initialPersona: {
+      id: 42,
+      nombre_completo: 'Persona',
+      unidad_medica_id: 15,
+      activo: true,
+      correo_principal: 'original@imssb.gob.mx',
+    },
+  });
+  try {
+    const svc = new PersonasService();
+    await svc.update(42, { correos: [] });
+    assert.equal(mockDelCorreo.getState().correo_principal, null);
+    const deactivateQuery = mockDelCorreo.executedQueries.find((q) =>
+      /UPDATE persona_correo SET activo = FALSE, es_principal = FALSE/i.test(q.sql)
+    );
+    assert.ok(deactivateQuery, 'Al desactivar filas en persona_correo debe establecer es_principal = FALSE');
+
+    // Nunca toca app_users
+    assert.equal(
+      mockDelCorreo.executedQueries.some((q) => /app_users/i.test(q.sql)),
+      false,
+      'PersonasService nunca debe modificar app_users'
+    );
+  } finally {
+    mockDelCorreo.restore();
+  }
+
+  // D) Sustitución de correo complementario principal limpia es_principal antes de promover el nuevo
+  const mockReplace = createMockDb();
+  try {
+    const svc = new PersonasService();
+    await svc.update(42, { correos: ['nuevo.principal@imssb.gob.mx', 'secundario@imssb.gob.mx'] });
+    assert.equal(mockReplace.getState().correo_principal, 'nuevo.principal@imssb.gob.mx');
+
+    const resetPrincipalIdx = mockReplace.executedQueries.findIndex((q) =>
+      /UPDATE persona_correo SET es_principal = FALSE WHERE persona_id = \$1 AND es_principal = TRUE/i.test(q.sql)
+    );
+    const setPrincipalIdx = mockReplace.executedQueries.findIndex((q) =>
+      /UPDATE persona_correo SET es_principal = TRUE WHERE persona_id = \$1 AND lower\(correo\) = \$2/i.test(q.sql)
+    );
+    assert.ok(resetPrincipalIdx >= 0 && setPrincipalIdx > resetPrincipalIdx, 'Debe limpiar es_principal antes de asignar el nuevo principal');
+  } finally {
+    mockReplace.restore();
   }
 });

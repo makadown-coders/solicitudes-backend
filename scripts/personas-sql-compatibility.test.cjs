@@ -40,6 +40,7 @@ function createMockDb({
     correo_principal: 'ana@imssb.bc',
   },
   activeAssignmentCount = 0,
+  linkedSsoStatus = null,
   failOnSqlMatch = null,
 } = {}) {
   const executedQueries = [];
@@ -90,6 +91,20 @@ function createMockDb({
           state.correo_principal = newCorreoPrincipal;
         }
         return { rows: [], rowCount: 1 };
+      }
+
+      // SELECT id FROM public.persona WHERE id = $1 FOR UPDATE en softDelete()
+      if (/^SELECT id FROM public\.persona WHERE id = \$1 FOR UPDATE$/i.test(normalizedSql)) {
+        return { rows: [{ id: state.id }], rowCount: 1 };
+      }
+
+      // SELECT 1 FROM public.app_users WHERE persona_id = $1 LIMIT 1 en softDelete()
+      if (/^SELECT 1 FROM public\.app_users WHERE persona_id = \$1 LIMIT 1$/i.test(normalizedSql)) {
+        const hasLink = linkedSsoStatus !== null;
+        return {
+          rows: hasLink ? [{ '?column?': 1 }] : [],
+          rowCount: hasLink ? 1 : 0,
+        };
       }
 
       // SELECT 1 FROM asignacion_dispositivo en softDelete()
@@ -959,5 +974,57 @@ test('13 (TI-2C.1B). Contrato nuevo (correo_principal + correos_complementarios)
     assert.deepEqual(inserts[0].params, [42, 'extra@imssb.gob.mx']);
   } finally {
     mockNoDup.restore();
+  }
+});
+
+test('14 (TI-2C.3). softDelete bloquea con HTTP 409 cuando existe cuenta SSO vinculada (ACTIVE, SUSPENDED o INACTIVE) sin modificar persona ni correos', async () => {
+  const ctrl = new PersonasController();
+
+  for (const status of ['ACTIVE', 'SUSPENDED', 'INACTIVE']) {
+    const mockDb = createMockDb({ linkedSsoStatus: status });
+    try {
+      let resStatus = 200;
+      let resBody = null;
+      await ctrl.softDelete(
+        { params: { id: '42' } },
+        {
+          status(code) { resStatus = code; return this; },
+          json(data) { resBody = data; return this; },
+        }
+      );
+
+      assert.equal(resStatus, 409, `Debe responder HTTP 409 para cuenta SSO ${status}`);
+      assert.equal(resBody.ok, false);
+      assert.match(resBody.error, /cuenta de acceso vinculada/i);
+
+      // Verifica que no se modificó persona ni persona_correo y se ejecutó ROLLBACK
+      assert.equal(mockDb.getState().activo, true);
+      assert.equal(mockDb.getState().correo_principal, 'ana@imssb.bc');
+      const sqls = mockDb.executedQueries.map((q) => q.sql);
+      assert.equal(sqls.some((s) => /^UPDATE persona\b/i.test(s)), false);
+      assert.equal(sqls.some((s) => /^UPDATE persona_correo\b/i.test(s)), false);
+      assert.equal(sqls[sqls.length - 1], 'ROLLBACK');
+      assert.equal(mockDb.getReleasedCount(), 1);
+    } finally {
+      mockDb.restore();
+    }
+  }
+
+  // Conserva bloqueo por equipo asignado cuando no hay cuenta SSO
+  const mockEquip = createMockDb({ linkedSsoStatus: null, activeAssignmentCount: 1 });
+  try {
+    let resStatus = 200;
+    let resBody = null;
+    await ctrl.softDelete(
+      { params: { id: '42' } },
+      {
+        status(code) { resStatus = code; return this; },
+        json(data) { resBody = data; return this; },
+      }
+    );
+    assert.equal(resStatus, 400);
+    assert.match(resBody.error, /equipo asignado/i);
+  } finally {
+    mockEquip.restore();
   }
 });

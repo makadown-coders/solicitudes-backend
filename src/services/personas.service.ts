@@ -405,6 +405,21 @@ export default class PersonasService {
     try {
       await client.query('BEGIN');
 
+      /* Bloquea fila de persona y valida que no tenga cuenta SSO vinculada en public.app_users */
+      await client.query(`SELECT id FROM public.persona WHERE id = $1 FOR UPDATE`, [id]);
+
+      const ssoLink = await client.query(
+        `SELECT 1 FROM public.app_users WHERE persona_id = $1 LIMIT 1`,
+        [id]
+      );
+      if (ssoLink.rowCount) {
+        const conflictErr = new Error(
+          'Esta persona tiene una cuenta de acceso vinculada. Administra primero su situación desde Usuarios SSO.'
+        ) as Error & { status?: number };
+        conflictErr.status = 409;
+        throw conflictErr;
+      }
+
       /* Valida que no tenga asignaciones activas*/
 
       const asign = await client.query(

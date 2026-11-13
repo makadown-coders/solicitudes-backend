@@ -104,7 +104,8 @@ export default class PersonasController {
       const out = await this.svc.softDelete(id);
       res.json(out);
     } catch (e: any) {
-      res.status(400).json({ ok: false, error: e?.message || 'No se pudo eliminar (soft-delete)' });
+      const status = e?.status === 409 ? 409 : 400;
+      res.status(status).json({ ok: false, error: e?.message || 'No se pudo eliminar (soft-delete)' });
     }
   };
 }

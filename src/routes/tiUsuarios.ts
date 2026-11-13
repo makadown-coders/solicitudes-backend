@@ -10,8 +10,9 @@ const c = new TiUsuariosController();
 // Consulta de roles disponibles en el sistema (solo lectura, exclusivamente ADMIN_TIC GLOBAL)
 router.get('/roles', requireAuth, requireTiAdminGlobal(), c.listRoles.bind(c));
 
-// Consulta paginada de cuentas SSO con persona y roles vinculados (solo lectura, exclusivamente ADMIN_TIC GLOBAL)
+// Consulta paginada y alta de cuentas SSO con persona y roles vinculados (exclusivamente ADMIN_TIC GLOBAL)
 router.get('/usuarios', requireAuth, requireTiAdminGlobal(), c.listUsuarios.bind(c));
+router.post('/usuarios', requireAuth, requireTiAdminGlobal(), c.createUsuario.bind(c));
 
 // Administración de estado, restablecimiento de contraseña y roles (exclusivamente ADMIN_TIC GLOBAL)
 router.patch('/usuarios/:id/status', requireAuth, requireTiAdminGlobal(), c.updateStatus.bind(c));

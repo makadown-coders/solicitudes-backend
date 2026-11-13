@@ -456,12 +456,13 @@ test('4. Acceso rechazado con ADMIN_TIC no global (CLUES, DEPTO o id distinto de
     }
   }
 
-  // Verificar que POST, PUT, PATCH y DELETE no existen (solo lectura en TI-2A)
+  // Verificar que métodos de escritura no habilitados devuelven 404 (POST /api/ti/usuarios ya está habilitado en TI-2D.3D)
   const validToken = await issueTokenForRoles([{ code: 'ADMIN_TIC', scope: 'GLOBAL', id: null }]);
   for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
     for (const endpoint of ['/api/ti/roles', '/api/ti/usuarios']) {
+      if (method === 'POST' && endpoint === '/api/ti/usuarios') continue;
       const res = await requestJson(method, endpoint, { token: validToken, body: {} });
-      assert.equal(res.status, 404, `${method} ${endpoint} no debe estar habilitado en TI-2A`);
+      assert.equal(res.status, 404, `${method} ${endpoint} no debe estar habilitado`);
     }
   }
 });
@@ -716,36 +717,28 @@ test('11 (TI-2D.2A). PUT /api/ti/usuarios/:id/password genera hash argon2 compat
   failOnTxSqlMatch = null;
 });
 
-test('15 (TI-2D.3B). POST /api/ti/usuarios NO está registrado en Express y el controlador/servicio crea cuentas SSO válidas', async () => {
+test('15 (TI-2D.3D). POST /api/ti/usuarios habilitado con requireAuth + requireTiAdminGlobal() y validaciones completas', async () => {
   const adminToken = await issueTokenForRoles([{ code: 'ADMIN_TIC', scope: 'GLOBAL', id: null }]);
+  const rhToken = await issueTokenForRoles([{ code: 'RECURSOS_HUMANOS', scope: 'GLOBAL', id: null }]);
 
-  // 18. Confirmar que POST /api/ti/usuarios NO está registrado en las rutas de Express (404)
-  const resRouteNotMounted = await requestJson('POST', '/api/ti/usuarios', {
-    token: adminToken,
+  // 1. Sin autenticación (401)
+  const resNoAuth = await requestJson('POST', '/api/ti/usuarios', {
     body: { persona_id: 101, email: 'nuevo@ejemplo.gob.mx', password: 'ClaveSeguraTI#2026' },
   });
-  assert.equal(resRouteNotMounted.status, 404);
+  assert.equal(resNoAuth.status, 401);
 
-  // Invocar el controlador directamente en aislamiento
-  const TiUsuariosController = require('../dist/controllers/tiUsuarios.controller').default;
-  const controller = new TiUsuariosController();
-  const invokeCreate = async (body) => {
-    let statusCode = 200;
-    let jsonBody = null;
-    const req = { body };
-    const res = {
-      status(code) {
-        statusCode = code;
-        return this;
-      },
-      json(payload) {
-        jsonBody = payload;
-        return this;
-      },
-    };
-    await controller.createUsuario(req, res);
-    return { status: statusCode, body: jsonBody };
-  };
+  // 2. Con autenticación sin ADMIN_TIC GLOBAL (403)
+  const resForbidden = await requestJson('POST', '/api/ti/usuarios', {
+    token: rhToken,
+    body: { persona_id: 101, email: 'nuevo@ejemplo.gob.mx', password: 'ClaveSeguraTI#2026' },
+  });
+  assert.equal(resForbidden.status, 403);
+
+  const invokeCreate = async (body) =>
+    requestJson('POST', '/api/ti/usuarios', {
+      token: adminToken,
+      body,
+    });
 
   mockTxPersonas = new Map([
     [101, { id: 101, nombre_completo: 'María Pérez', activo: true }],
@@ -1024,36 +1017,28 @@ test('14 (TI-2D.2B). PUT /api/ti/usuarios/:id/roles rechaza CLUES/rol inexistent
   failOnTxSqlMatch = null;
 });
 
-test('15 (TI-2D.3B). POST /api/ti/usuarios NO está registrado en Express y el controlador/servicio crea cuentas SSO válidas', async () => {
+test('15 (TI-2D.3D). POST /api/ti/usuarios habilitado con requireAuth + requireTiAdminGlobal() y validaciones completas', async () => {
   const adminToken = await issueTokenForRoles([{ code: 'ADMIN_TIC', scope: 'GLOBAL', id: null }]);
+  const rhToken = await issueTokenForRoles([{ code: 'RECURSOS_HUMANOS', scope: 'GLOBAL', id: null }]);
 
-  // 18. Confirmar que POST /api/ti/usuarios NO está registrado en las rutas de Express (404)
-  const resRouteNotMounted = await requestJson('POST', '/api/ti/usuarios', {
-    token: adminToken,
+  // 1. Sin autenticación (401)
+  const resNoAuth = await requestJson('POST', '/api/ti/usuarios', {
     body: { persona_id: 101, email: 'nuevo@ejemplo.gob.mx', password: 'ClaveSeguraTI#2026' },
   });
-  assert.equal(resRouteNotMounted.status, 404);
+  assert.equal(resNoAuth.status, 401);
 
-  // Invocar el controlador directamente en aislamiento
-  const TiUsuariosController = require('../dist/controllers/tiUsuarios.controller').default;
-  const controller = new TiUsuariosController();
-  const invokeCreate = async (body) => {
-    let statusCode = 200;
-    let jsonBody = null;
-    const req = { body };
-    const res = {
-      status(code) {
-        statusCode = code;
-        return this;
-      },
-      json(payload) {
-        jsonBody = payload;
-        return this;
-      },
-    };
-    await controller.createUsuario(req, res);
-    return { status: statusCode, body: jsonBody };
-  };
+  // 2. Con autenticación sin ADMIN_TIC GLOBAL (403)
+  const resForbidden = await requestJson('POST', '/api/ti/usuarios', {
+    token: rhToken,
+    body: { persona_id: 101, email: 'nuevo@ejemplo.gob.mx', password: 'ClaveSeguraTI#2026' },
+  });
+  assert.equal(resForbidden.status, 403);
+
+  const invokeCreate = async (body) =>
+    requestJson('POST', '/api/ti/usuarios', {
+      token: adminToken,
+      body,
+    });
 
   mockTxPersonas = new Map([
     [101, { id: 101, nombre_completo: 'María Pérez', activo: true }],

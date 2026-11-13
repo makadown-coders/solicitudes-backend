@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import TiUsuariosService from '../services/tiUsuarios.service';
+import TiUsuariosService, { TiUsuarioHttpError } from '../services/tiUsuarios.service';
 
 function isInvalidNonStringQuery(val: unknown): boolean {
   return val !== undefined && val !== null && typeof val !== 'string';
@@ -81,6 +81,56 @@ export default class TiUsuariosController {
       res.json(out);
     } catch {
       res.status(500).json({ ok: false, error: 'Error al listar usuarios' });
+    }
+  };
+
+  updateStatus = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const body = req.body;
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        res.status(400).json({ ok: false, error: 'Payload inválido' });
+        return;
+      }
+
+      const keys = Object.keys(body);
+      if (keys.length !== 1 || keys[0] !== 'status' || typeof body.status !== 'string') {
+        res.status(400).json({ ok: false, error: 'Solo se admite la propiedad "status" como cadena válida' });
+        return;
+      }
+
+      const out = await this.svc.updateUsuarioStatus(String(req.params.id ?? ''), body.status);
+      res.json(out);
+    } catch (err: unknown) {
+      if (err instanceof TiUsuarioHttpError) {
+        res.status(err.status).json({ ok: false, error: err.message });
+        return;
+      }
+      res.status(500).json({ ok: false, error: 'Error al actualizar el estado de la cuenta' });
+    }
+  };
+
+  resetPassword = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const body = req.body;
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        res.status(400).json({ ok: false, error: 'Payload inválido' });
+        return;
+      }
+
+      const keys = Object.keys(body);
+      if (keys.length !== 1 || keys[0] !== 'password' || typeof body.password !== 'string') {
+        res.status(400).json({ ok: false, error: 'Solo se admite la propiedad "password" como cadena válida' });
+        return;
+      }
+
+      const out = await this.svc.resetUsuarioPassword(String(req.params.id ?? ''), body.password);
+      res.json(out);
+    } catch (err: unknown) {
+      if (err instanceof TiUsuarioHttpError) {
+        res.status(err.status).json({ ok: false, error: err.message });
+        return;
+      }
+      res.status(500).json({ ok: false, error: 'Error al restablecer la contraseña' });
     }
   };
 }

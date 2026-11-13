@@ -173,6 +173,73 @@ pool.query = async (sql, params = []) => {
   throw new Error(`Consulta SQL no esperada en mock: ${normalizedSql}`);
 };
 
+const argon2 = require('argon2');
+const originalPoolConnect = pool.connect.bind(pool);
+let mockTxUsers = new Map();
+let mockActiveGlobalAdminIds = [];
+let mockRevokedTokensCount = 2;
+let failOnTxSqlMatch = null;
+let lastUpdatedPasswordHash = null;
+let txEvents = [];
+
+pool.connect = async () => {
+  return {
+    async query(sql, params = []) {
+      const normalizedSql = String(sql).replace(/\s+/g, ' ').trim();
+      txEvents.push({ sql: normalizedSql, params });
+
+      if (failOnTxSqlMatch && normalizedSql.includes(failOnTxSqlMatch)) {
+        throw new Error(`Simulated TX DB error on ${failOnTxSqlMatch}`);
+      }
+
+      if (normalizedSql === 'BEGIN' || normalizedSql === 'COMMIT' || normalizedSql === 'ROLLBACK') {
+        return { rows: [], rowCount: 0 };
+      }
+
+      if (/^SELECT id, status FROM public\.app_users WHERE id = \$1 FOR UPDATE$/i.test(normalizedSql)) {
+        const u = mockTxUsers.get(params[0]);
+        return u ? { rows: [{ id: u.id, status: u.status }], rowCount: 1 } : { rows: [], rowCount: 0 };
+      }
+
+      if (/^SELECT id FROM public\.app_users WHERE id = \$1 FOR UPDATE$/i.test(normalizedSql)) {
+        const u = mockTxUsers.get(params[0]);
+        return u ? { rows: [{ id: u.id }], rowCount: 1 } : { rows: [], rowCount: 0 };
+      }
+
+      if (/^SELECT id FROM public\.app_roles WHERE code = 'ADMIN_TIC' FOR UPDATE$/i.test(normalizedSql)) {
+        return { rows: [{ id: 'aaaa1111-0000-0000-0000-000000000001' }], rowCount: 1 };
+      }
+
+      if (/FROM public\.app_users u JOIN public\.app_user_roles ur/i.test(normalizedSql)) {
+        return {
+          rows: mockActiveGlobalAdminIds.map((id) => ({ id })),
+          rowCount: mockActiveGlobalAdminIds.length,
+        };
+      }
+
+      if (/^UPDATE public\.app_users SET status = \$2 WHERE id = \$1$/i.test(normalizedSql)) {
+        const u = mockTxUsers.get(params[0]);
+        if (u) u.status = params[1];
+        return { rows: [], rowCount: u ? 1 : 0 };
+      }
+
+      if (/^UPDATE public\.app_users SET password_hash = \$2 WHERE id = \$1$/i.test(normalizedSql)) {
+        lastUpdatedPasswordHash = params[1];
+        return { rows: [], rowCount: 1 };
+      }
+
+      if (/^UPDATE public\.app_refresh_tokens SET revoked_at = COALESCE\(revoked_at, now\(\)\) WHERE user_id = \$1 AND revoked_at IS NULL$/i.test(normalizedSql)) {
+        return { rows: [], rowCount: mockRevokedTokensCount };
+      }
+
+      throw new Error(`Consulta TX SQL no esperada en mock: ${normalizedSql}`);
+    },
+    release() {
+      txEvents.push({ sql: 'RELEASE', params: [] });
+    },
+  };
+};
+
 const app = express();
 app.use(express.json());
 app.use('/api/ti', tiUsuariosRoutes);
@@ -470,4 +537,106 @@ test('9. Manejo seguro de parámetros inválidos (400) y errores internos sin fi
   assert.equal(errUsers.status, 500);
   assert.deepEqual(errUsers.body, { ok: false, error: 'Error al listar usuarios' });
   assert.equal(JSON.stringify(errUsers.body).includes('postgres_prod_secret'), false);
+});
+
+test('10 (TI-2D.2A). PATCH /api/ti/usuarios/:id/status cambia estado, revoca app_refresh_tokens, protege último ADMIN_TIC GLOBAL (409) y hace ROLLBACK ante error', async () => {
+  const token = await issueTokenForRoles([{ code: 'ADMIN_TIC', scope: 'GLOBAL', id: null }]);
+  const adminId = '11111111-1111-4111-8111-111111111111';
+  const normalId = '22222222-2222-4222-8222-222222222222';
+
+  mockTxUsers = new Map([
+    [adminId, { id: adminId, status: 'ACTIVE' }],
+    [normalId, { id: normalId, status: 'ACTIVE' }],
+  ]);
+  mockActiveGlobalAdminIds = [adminId];
+  mockRevokedTokensCount = 3;
+  failOnTxSqlMatch = null;
+  txEvents = [];
+
+  // 1) Suspender usuario normal (ACTIVE -> SUSPENDED) revoca refresh tokens
+  const resSuspend = await requestJson('PATCH', `/api/ti/usuarios/${normalId}/status`, {
+    token,
+    body: { status: 'SUSPENDED' },
+  });
+  assert.equal(resSuspend.status, 200);
+  assert.deepEqual(resSuspend.body, { ok: true, id: normalId, status: 'SUSPENDED', revoked_sessions: 3 });
+  assert.equal(mockTxUsers.get(normalId).status, 'SUSPENDED');
+
+  // 2) Reactivar usuario (SUSPENDED -> ACTIVE) no revoca ni reactiva sesiones
+  const resActivate = await requestJson('PATCH', `/api/ti/usuarios/${normalId}/status`, {
+    token,
+    body: { status: 'ACTIVE' },
+  });
+  assert.equal(resActivate.status, 200);
+  assert.deepEqual(resActivate.body, { ok: true, id: normalId, status: 'ACTIVE', revoked_sessions: 0 });
+
+  // 3) Bloqueo del último ADMIN_TIC GLOBAL activo (HTTP 409)
+  txEvents = [];
+  const resLastAdmin = await requestJson('PATCH', `/api/ti/usuarios/${adminId}/status`, {
+    token,
+    body: { status: 'SUSPENDED' },
+  });
+  assert.equal(resLastAdmin.status, 409);
+  assert.equal(resLastAdmin.body.ok, false);
+  assert.equal(mockTxUsers.get(adminId).status, 'ACTIVE');
+  assert.ok(txEvents.some((e) => e.sql === 'ROLLBACK'));
+
+  // 4) Estado inválido (400), payload con propiedades extra (400), cuenta inexistente (404)
+  const resBadStatus = await requestJson('PATCH', `/api/ti/usuarios/${normalId}/status`, {
+    token,
+    body: { status: 'DELETED' },
+  });
+  assert.equal(resBadStatus.status, 400);
+
+  const resMassAssign = await requestJson('PATCH', `/api/ti/usuarios/${normalId}/status`, {
+    token,
+    body: { status: 'ACTIVE', persona_id: 999 },
+  });
+  assert.equal(resMassAssign.status, 400);
+
+  const resNotFound = await requestJson('PATCH', '/api/ti/usuarios/99999999-9999-4999-8999-999999999999/status', {
+    token,
+    body: { status: 'SUSPENDED' },
+  });
+  assert.equal(resNotFound.status, 404);
+});
+
+test('11 (TI-2D.2A). PUT /api/ti/usuarios/:id/password genera hash argon2 compatible, revoca sesiones y no expone secretos', async () => {
+  const token = await issueTokenForRoles([{ code: 'ADMIN_TIC', scope: 'GLOBAL', id: null }]);
+  const normalId = '22222222-2222-4222-8222-222222222222';
+
+  mockTxUsers = new Map([[normalId, { id: normalId, status: 'ACTIVE' }]]);
+  mockRevokedTokensCount = 2;
+  failOnTxSqlMatch = null;
+  lastUpdatedPasswordHash = null;
+  txEvents = [];
+
+  const newPass = 'ClaveSeguraTI#2026';
+  const res = await requestJson('PUT', `/api/ti/usuarios/${normalId}/password`, {
+    token,
+    body: { password: newPass },
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body, { ok: true, id: normalId, revoked_sessions: 2 });
+  assert.ok(lastUpdatedPasswordHash, 'Debe persistir password_hash');
+  assert.equal(await argon2.verify(lastUpdatedPasswordHash, newPass), true, 'El hash debe ser verificable por argon2');
+  assert.equal(JSON.stringify(res.body).includes(newPass), false);
+  assert.equal(JSON.stringify(res.body).includes('argon2'), false);
+
+  // Contraseña corta (400) y ROLLBACK ante error SQL (500)
+  const resShort = await requestJson('PUT', `/api/ti/usuarios/${normalId}/password`, {
+    token,
+    body: { password: '123' },
+  });
+  assert.equal(resShort.status, 400);
+
+  failOnTxSqlMatch = 'UPDATE public.app_refresh_tokens';
+  txEvents = [];
+  const resDbErr = await requestJson('PUT', `/api/ti/usuarios/${normalId}/password`, {
+    token,
+    body: { password: newPass },
+  });
+  assert.equal(resDbErr.status, 500);
+  assert.ok(txEvents.some((e) => e.sql === 'ROLLBACK'));
+  failOnTxSqlMatch = null;
 });

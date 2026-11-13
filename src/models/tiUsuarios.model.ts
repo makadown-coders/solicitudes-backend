@@ -35,3 +35,18 @@ export interface TiUsuariosPagedResponse {
   pageSize: number;
   total: number;
 }
+
+export type TiUsuarioStatus = 'ACTIVE' | 'SUSPENDED' | 'INACTIVE';
+
+export interface TiUsuarioStatusUpdateResult {
+  ok: true;
+  id: string;
+  status: TiUsuarioStatus;
+  revoked_sessions: number;
+}
+
+export interface TiUsuarioPasswordResetResult {
+  ok: true;
+  id: string;
+  revoked_sessions: number;
+}

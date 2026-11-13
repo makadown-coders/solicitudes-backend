@@ -1,11 +1,28 @@
+import * as argon2 from 'argon2';
+import { PoolClient } from 'pg';
 import { pool } from '../db/pool';
 import {
   TiRoleItem,
   TiUsuarioItem,
+  TiUsuarioPasswordResetResult,
   TiUsuarioRoleAssignment,
+  TiUsuarioStatus,
+  TiUsuarioStatusUpdateResult,
   TiUsuariosListParams,
   TiUsuariosPagedResponse,
 } from '../models/tiUsuarios.model';
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const ALLOWED_STATUSES: ReadonlySet<string> = new Set(['ACTIVE', 'SUSPENDED', 'INACTIVE']);
+
+export class TiUsuarioHttpError extends Error {
+  constructor(
+    public readonly status: 400 | 404 | 409,
+    message: string
+  ) {
+    super(message);
+  }
+}
 
 export default class TiUsuariosService {
   /**
@@ -143,5 +160,163 @@ export default class TiUsuariosService {
       pageSize,
       total,
     };
+  }
+
+  /**
+   * Bloquea el rol `ADMIN_TIC` y obtiene los IDs de administradores globales activos (`FOR UPDATE OF u`)
+   * para serializar operaciones concurrentes que puedan reducir el conjunto de administradores globales.
+   *
+   * Reutilizable en TI-2D.2B al modificar asignaciones en `public.app_user_roles`.
+   */
+  async lockAndListActiveGlobalAdminIds(client: PoolClient): Promise<string[]> {
+    await client.query(
+      `SELECT id FROM public.app_roles WHERE code = 'ADMIN_TIC' FOR UPDATE`
+    );
+
+    const { rows } = await client.query(
+      `SELECT u.id
+         FROM public.app_users u
+         JOIN public.app_user_roles ur
+           ON ur.user_id = u.id
+         JOIN public.app_roles r
+           ON r.id = ur.role_id
+        WHERE r.code = 'ADMIN_TIC'
+          AND ur.scope_type = 'GLOBAL'
+          AND ur.scope_id = '*'
+          AND UPPER(TRIM(u.status)) = 'ACTIVE'
+          FOR UPDATE OF u`
+    );
+
+    return rows.map((r: any) => String(r.id));
+  }
+
+  /**
+   * Cambia el estado de una cuenta SSO (`ACTIVE`, `SUSPENDED`, `INACTIVE`).
+   * - Protege contra la suspensión/desactivación del último `ADMIN_TIC GLOBAL` activo (HTTP 409).
+   * - Al suspender o desactivar, revoca todos los refresh tokens vigentes en `public.app_refresh_tokens`.
+   * - No modifica `persona_id`, correos, contraseñas ni roles.
+   * - No reactiva sesiones al volver a `ACTIVE`.
+   */
+  async updateUsuarioStatus(userId: string, rawStatus: string): Promise<TiUsuarioStatusUpdateResult> {
+    if (!UUID_REGEX.test(userId)) {
+      throw new TiUsuarioHttpError(400, 'Identificador de usuario inválido');
+    }
+
+    const nextStatus = String(rawStatus ?? '').trim().toUpperCase();
+    if (!ALLOWED_STATUSES.has(nextStatus)) {
+      throw new TiUsuarioHttpError(400, 'Estado de cuenta inválido. Valores permitidos: ACTIVE, SUSPENDED, INACTIVE');
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const userRes = await client.query(
+        `SELECT id, status FROM public.app_users WHERE id = $1 FOR UPDATE`,
+        [userId]
+      );
+      if (!userRes.rowCount) {
+        throw new TiUsuarioHttpError(404, 'Cuenta SSO no encontrada');
+      }
+
+      if (nextStatus !== 'ACTIVE') {
+        const activeGlobalAdminIds = await this.lockAndListActiveGlobalAdminIds(client);
+        const isTargetActiveGlobalAdmin = activeGlobalAdminIds.includes(userId);
+        if (isTargetActiveGlobalAdmin && activeGlobalAdminIds.length <= 1) {
+          throw new TiUsuarioHttpError(
+            409,
+            'No es posible suspender o desactivar al último administrador global activo (ADMIN_TIC GLOBAL).'
+          );
+        }
+      }
+
+      await client.query(
+        `UPDATE public.app_users
+            SET status = $2
+          WHERE id = $1`,
+        [userId, nextStatus]
+      );
+
+      let revokedSessions = 0;
+      if (nextStatus !== 'ACTIVE') {
+        const revRes = await client.query(
+          `UPDATE public.app_refresh_tokens
+              SET revoked_at = COALESCE(revoked_at, now())
+            WHERE user_id = $1
+              AND revoked_at IS NULL`,
+          [userId]
+        );
+        revokedSessions = revRes.rowCount ?? 0;
+      }
+
+      await client.query('COMMIT');
+      return {
+        ok: true,
+        id: userId,
+        status: nextStatus as TiUsuarioStatus,
+        revoked_sessions: revokedSessions,
+      };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Restablecimiento administrativo de contraseña usando `argon2.hash` (mecanismo vigente de `LocalAuthService`)
+   * y revocación inmediata de todos los refresh tokens vigentes en `public.app_refresh_tokens`.
+   */
+  async resetUsuarioPassword(userId: string, password: string): Promise<TiUsuarioPasswordResetResult> {
+    if (!UUID_REGEX.test(userId)) {
+      throw new TiUsuarioHttpError(400, 'Identificador de usuario inválido');
+    }
+
+    if (typeof password !== 'string' || password.trim().length < 10) {
+      throw new TiUsuarioHttpError(400, 'La contraseña debe tener al menos 10 caracteres');
+    }
+
+    const passwordHash = await argon2.hash(password);
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const userRes = await client.query(
+        `SELECT id FROM public.app_users WHERE id = $1 FOR UPDATE`,
+        [userId]
+      );
+      if (!userRes.rowCount) {
+        throw new TiUsuarioHttpError(404, 'Cuenta SSO no encontrada');
+      }
+
+      await client.query(
+        `UPDATE public.app_users
+            SET password_hash = $2
+          WHERE id = $1`,
+        [userId, passwordHash]
+      );
+
+      const revRes = await client.query(
+        `UPDATE public.app_refresh_tokens
+            SET revoked_at = COALESCE(revoked_at, now())
+          WHERE user_id = $1
+            AND revoked_at IS NULL`,
+        [userId]
+      );
+
+      await client.query('COMMIT');
+      return {
+        ok: true,
+        id: userId,
+        revoked_sessions: revRes.rowCount ?? 0,
+      };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 }

@@ -640,3 +640,81 @@ test('11 (TI-2D.2A). PUT /api/ti/usuarios/:id/password genera hash argon2 compat
   assert.ok(txEvents.some((e) => e.sql === 'ROLLBACK'));
   failOnTxSqlMatch = null;
 });
+
+test('12 (TI-2D.2A.1). Protección del último ADMIN_TIC GLOBAL usa scope_id = \'*\' y nunca scope_id IS NULL', async () => {
+  const token = await issueTokenForRoles([{ code: 'ADMIN_TIC', scope: 'GLOBAL', id: null }]);
+  const admin1 = '11111111-1111-4111-8111-111111111111';
+  const admin2 = '22222222-2222-4222-8222-222222222222';
+  const admin3 = '33333333-3333-4333-8333-333333333333';
+  const cluesAdmin = '44444444-4444-4444-8444-444444444444';
+
+  const assertGlobalAdminQueryContract = (events) => {
+    const adminQuery = events.find(
+      (e) => e.sql.includes('FROM public.app_users u') && e.sql.includes("r.code = 'ADMIN_TIC'")
+    );
+    assert.ok(adminQuery, 'Debe ejecutar consulta de administradores globales activos');
+    assert.ok(
+      /ur\.scope_id\s*=\s*'\*'/.test(adminQuery.sql),
+      "La consulta SQL debe usar literalmente ur.scope_id = '*'"
+    );
+    assert.equal(
+      /scope_id\s+IS\s+NULL/i.test(adminQuery.sql),
+      false,
+      'No debe usar scope_id IS NULL para localizar roles globales en PostgreSQL'
+    );
+    assert.ok(adminQuery.sql.includes('FOR UPDATE OF u'), 'Debe bloquear filas dentro de la transacción');
+    assert.ok(events[0].sql === 'BEGIN', 'El bloqueo y verificación deben iniciar dentro de una transacción');
+  };
+
+  // Caso 1: Único ADMIN_TIC GLOBAL activo -> HTTP 409, sin UPDATE ni revocación de sesiones
+  mockTxUsers = new Map([[admin1, { id: admin1, status: 'ACTIVE' }]]);
+  mockActiveGlobalAdminIds = [admin1];
+  txEvents = [];
+  const resSingle = await requestJson('PATCH', `/api/ti/usuarios/${admin1}/status`, {
+    token,
+    body: { status: 'SUSPENDED' },
+  });
+  assert.equal(resSingle.status, 409);
+  assert.equal(mockTxUsers.get(admin1).status, 'ACTIVE');
+  assertGlobalAdminQueryContract(txEvents);
+  assert.equal(txEvents.some((e) => e.sql.startsWith('UPDATE public.app_users')), false);
+  assert.equal(txEvents.some((e) => e.sql.startsWith('UPDATE public.app_refresh_tokens')), false);
+  assert.ok(txEvents.some((e) => e.sql === 'ROLLBACK'));
+
+  // Caso 2: Tres ADMIN_TIC GLOBAL activos -> permite suspender uno
+  mockTxUsers = new Map([
+    [admin1, { id: admin1, status: 'ACTIVE' }],
+    [admin2, { id: admin2, status: 'ACTIVE' }],
+    [admin3, { id: admin3, status: 'ACTIVE' }],
+  ]);
+  mockActiveGlobalAdminIds = [admin1, admin2, admin3];
+  txEvents = [];
+  const resThree = await requestJson('PATCH', `/api/ti/usuarios/${admin1}/status`, {
+    token,
+    body: { status: 'SUSPENDED' },
+  });
+  assert.equal(resThree.status, 200);
+  assert.equal(mockTxUsers.get(admin1).status, 'SUSPENDED');
+  assertGlobalAdminQueryContract(txEvents);
+  assert.ok(txEvents.some((e) => e.sql === 'COMMIT'));
+
+  // Caso 3: Un único ADMIN_TIC GLOBAL activo y otros suspendidos (y uno con scope CLUES) -> bloquea al último activo con 409
+  mockTxUsers = new Map([
+    [admin1, { id: admin1, status: 'SUSPENDED' }],
+    [admin2, { id: admin2, status: 'ACTIVE' }],
+    [cluesAdmin, { id: cluesAdmin, status: 'ACTIVE' }],
+  ]);
+  // Solo admin2 tiene scope_type = 'GLOBAL' y scope_id = '*' con status = 'ACTIVE'
+  mockActiveGlobalAdminIds = [admin2];
+  txEvents = [];
+  const resLastWithSuspendedAndClues = await requestJson('PATCH', `/api/ti/usuarios/${admin2}/status`, {
+    token,
+    body: { status: 'SUSPENDED' },
+  });
+  assert.equal(resLastWithSuspendedAndClues.status, 409);
+  assert.equal(mockTxUsers.get(admin2).status, 'ACTIVE');
+  assertGlobalAdminQueryContract(txEvents);
+  assert.equal(txEvents.some((e) => e.sql.startsWith('UPDATE public.app_users')), false);
+  assert.equal(txEvents.some((e) => e.sql.startsWith('UPDATE public.app_refresh_tokens')), false);
+  assert.ok(txEvents.some((e) => e.sql === 'ROLLBACK'));
+});

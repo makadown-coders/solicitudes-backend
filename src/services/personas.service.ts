@@ -6,6 +6,23 @@ import { UpdatePayload } from '../models/UpdatePayload';
 
 const normEmail = (s: string) => String(s || '').trim();
 
+function deduplicateEmails(emails: string[], excludeEmail?: string | null): string[] {
+  const seen = new Set<string>();
+  if (excludeEmail) {
+    seen.add(excludeEmail.toLowerCase());
+  }
+  const result: string[] = [];
+  for (const raw of emails) {
+    const clean = normEmail(raw);
+    if (!clean) continue;
+    const key = clean.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(clean);
+  }
+  return result;
+}
+
 export default class PersonasService {
   async listPaged(opts: {
     q?: string | null;
@@ -133,20 +150,36 @@ export default class PersonasService {
     nombre_completo: string;
     unidad_medica_id?: number | null;
     correo_principal?: string | null;
+    correos_complementarios?: string[];
     correos?: string[];
   }): Promise<{ id: number }> {
+    const hasLegacy = payload.correos !== undefined;
+    const hasNew = payload.correo_principal !== undefined || payload.correos_complementarios !== undefined;
+    if (hasLegacy && hasNew) {
+      throw new Error('Payload ambiguo: no mezcles "correos" con "correo_principal" o "correos_complementarios".');
+    }
+
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
 
-      const correos = Array.isArray(payload.correos)
-        ? payload.correos.map(c => normEmail(c)).filter(Boolean)
-        : [];
-      const explicitPrincipal =
-        payload.correo_principal !== undefined && payload.correo_principal !== null
-          ? normEmail(payload.correo_principal) || null
-          : null;
-      const correoPrincipal = explicitPrincipal ?? (correos[0] ?? null);
+      let correoPrincipal: string | null = null;
+      let complementarios: string[] = [];
+
+      if (hasLegacy) {
+        const legacyList = deduplicateEmails(Array.isArray(payload.correos) ? payload.correos : []);
+        correoPrincipal = legacyList[0] ?? null;
+        complementarios = legacyList.slice(1);
+      } else {
+        correoPrincipal =
+          payload.correo_principal !== undefined && payload.correo_principal !== null
+            ? normEmail(payload.correo_principal) || null
+            : null;
+        complementarios = deduplicateEmails(
+          Array.isArray(payload.correos_complementarios) ? payload.correos_complementarios : [],
+          correoPrincipal
+        );
+      }
 
       const { rows } = await client.query(
         `INSERT INTO persona (nombre_completo, unidad_medica_id, correo_principal, activo, creado_en, actualizado_en)
@@ -155,13 +188,6 @@ export default class PersonasService {
         [payload.nombre_completo, payload.unidad_medica_id ?? null, correoPrincipal]
       );
       const personaId = Number(rows[0].id);
-
-      // persona_correo es complementaria y opcional:
-      // No se crea una fila en persona_correo solo para replicar un único correo principal ya guardado en persona.correo_principal.
-      // Únicamente se registran correos complementarios adicionales cuando vienen en payload.correos.
-      const complementarios = explicitPrincipal
-        ? correos.filter(c => c.toLowerCase() !== explicitPrincipal.toLowerCase())
-        : correos.slice(1);
 
       for (const correo of complementarios) {
         await client.query(
@@ -190,21 +216,28 @@ export default class PersonasService {
     nombre_completo?: string;
     unidad_medica_id?: number | null;
     correo_principal?: string | null;
-    correos?: string[]; // lista completa deseada (ACTIVOS). Los no incluidos se desactivan (soft-delete).
+    correos_complementarios?: string[];
+    correos?: string[]; // contrato heredado
   }): Promise<{ id: number }> {
+    const hasLegacy = payload.correos !== undefined;
+    const hasCorreoPrincipalField = payload.correo_principal !== undefined;
+    const hasComplementariosField = payload.correos_complementarios !== undefined;
+    if (hasLegacy && (hasCorreoPrincipalField || hasComplementariosField)) {
+      throw new Error('Payload ambiguo: no mezcles "correos" con "correo_principal" o "correos_complementarios".');
+    }
+
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
 
-      // Asegura que persona esté activa (si quieres permitir actualizar inactivos, quita esta cláusula)
-      const chk = await client.query(`SELECT id FROM persona WHERE id=$1 AND activo=TRUE`, [id]);
+      // Asegura que persona esté activa
+      const chk = await client.query(`SELECT id, correo_principal FROM persona WHERE id=$1 AND activo=TRUE`, [id]);
       if (!chk.rowCount) throw new Error('Persona no encontrada o inactiva.');
 
       const hasCorreosArray = Array.isArray(payload.correos);
-      const incoming = hasCorreosArray
-        ? payload.correos!.map(c => normEmail(c)).filter(Boolean)
+      const legacyIncoming = hasCorreosArray
+        ? deduplicateEmails(payload.correos!)
         : [];
-      const hasCorreoPrincipalField = payload.correo_principal !== undefined;
 
       let shouldUpdateCorreoPrincipal = false;
       let nextCorreoPrincipal: string | null = null;
@@ -215,7 +248,7 @@ export default class PersonasService {
           payload.correo_principal !== null ? normEmail(payload.correo_principal) || null : null;
       } else if (hasCorreosArray) {
         shouldUpdateCorreoPrincipal = true;
-        nextCorreoPrincipal = incoming[0] ?? null;
+        nextCorreoPrincipal = legacyIncoming[0] ?? null;
       }
 
       // Actualiza datos básicos si vienen (distinguiendo explícitamente omisión vs NULL)
@@ -242,9 +275,8 @@ export default class PersonasService {
         );
       }
 
-      // Si se modificó o eliminó explícitamente correo_principal sin enviar el arreglo `correos`,
-      // mantenemos coherente cualquier fila principal previa en persona_correo sin desactivar los demás correos.
-      if (hasCorreoPrincipalField && !hasCorreosArray) {
+      // Contrato nuevo: manejo explícito de correo_principal sin tocar los complementarios si no se enviaron
+      if (hasCorreoPrincipalField) {
         if (nextCorreoPrincipal === null) {
           await client.query(
             `UPDATE persona_correo
@@ -266,9 +298,14 @@ export default class PersonasService {
         }
       }
 
-      // Sincronía de correos complementarios (únicamente si se envía la lista `correos`)
-      if (hasCorreosArray) {
-        // a) desactivar los que ya no están en la lista entrante (limpiando es_principal = FALSE)
+      // Contrato nuevo: sincronía exclusiva de correos_complementarios sin alterar persona.correo_principal
+      if (hasComplementariosField && Array.isArray(payload.correos_complementarios)) {
+        const effectivePrincipal = shouldUpdateCorreoPrincipal
+          ? nextCorreoPrincipal
+          : (chk.rows[0]?.correo_principal ? normEmail(chk.rows[0].correo_principal) || null : null);
+
+        const complementarios = deduplicateEmails(payload.correos_complementarios, effectivePrincipal);
+
         await client.query(
           `UPDATE persona_correo
               SET activo = FALSE,
@@ -276,10 +313,40 @@ export default class PersonasService {
             WHERE persona_id = $1
               AND (activo = TRUE OR es_principal = TRUE)
               AND lower(correo) <> ALL ($2::text[])`,
-          [id, incoming.map(c => c.toLowerCase())]
+          [id, complementarios.map(c => c.toLowerCase())]
         );
 
-        // b) limpiar bandera principal antes de reasignar para evitar colisión con uq_persona_correo_principal_por_persona
+        for (const correo of complementarios) {
+          const upd = await client.query(
+            `UPDATE persona_correo
+                SET activo = TRUE,
+                    es_principal = FALSE
+              WHERE persona_id = $1 AND lower(correo) = $2
+            RETURNING id`,
+            [id, correo.toLowerCase()]
+          );
+          if (!upd.rowCount) {
+            await client.query(
+              `INSERT INTO persona_correo (persona_id, correo, es_principal, activo)
+               VALUES ($1, $2, FALSE, TRUE)`,
+              [id, correo]
+            );
+          }
+        }
+      }
+
+      // Contrato heredado: sincronía completa mediante arreglo `correos`
+      if (hasCorreosArray) {
+        await client.query(
+          `UPDATE persona_correo
+              SET activo = FALSE,
+                  es_principal = FALSE
+            WHERE persona_id = $1
+              AND (activo = TRUE OR es_principal = TRUE)
+              AND lower(correo) <> ALL ($2::text[])`,
+          [id, legacyIncoming.map(c => c.toLowerCase())]
+        );
+
         await client.query(
           `UPDATE persona_correo
               SET es_principal = FALSE
@@ -288,9 +355,7 @@ export default class PersonasService {
           [id]
         );
 
-        // c) upsert de los entrantes (reactiva si existían inactivos)
-        for (let i = 0; i < incoming.length; i++) {
-          const correo = incoming[i];
+        for (const correo of legacyIncoming) {
           const upd = await client.query(
             `UPDATE persona_correo
                 SET activo = TRUE,
@@ -308,13 +373,12 @@ export default class PersonasService {
           }
         }
 
-        // d) fija principal en persona_correo cuando hay lista entrante
-        if (incoming.length) {
+        if (legacyIncoming.length) {
           await client.query(
             `UPDATE persona_correo
                 SET es_principal = TRUE
               WHERE persona_id = $1 AND lower(correo) = $2`,
-            [id, incoming[0].toLowerCase()]
+            [id, legacyIncoming[0].toLowerCase()]
           );
         }
       }

@@ -36,18 +36,30 @@ export default class PersonasController {
   create = async (req: Request, res: Response): Promise<void> => {
     try {
       const body = req.body || {};
-      const { nombre_completo, unidad_medica_id, correo_principal, correos } = body;
+      const { nombre_completo, unidad_medica_id, correo_principal, correos_complementarios, correos } = body;
       if (!nombre_completo?.trim()) {
         res.status(400).json({ ok: false, error: 'nombre_completo requerido' });
         return;
       }
 
+      const hasCorreos = Object.prototype.hasOwnProperty.call(body, 'correos');
       const hasCorreoPrincipal = Object.prototype.hasOwnProperty.call(body, 'correo_principal');
+      const hasCorreosComplementarios = Object.prototype.hasOwnProperty.call(body, 'correos_complementarios');
+
+      if (hasCorreos && (hasCorreoPrincipal || hasCorreosComplementarios)) {
+        res.status(400).json({
+          ok: false,
+          error: 'Payload ambiguo: no mezcles "correos" con "correo_principal" o "correos_complementarios".'
+        });
+        return;
+      }
+
       const out = await this.svc.create({
         nombre_completo: String(nombre_completo).trim(),
         unidad_medica_id: unidad_medica_id ?? null,
         correo_principal: hasCorreoPrincipal ? correo_principal : undefined,
-        correos: Array.isArray(correos) ? correos : undefined
+        correos_complementarios: hasCorreosComplementarios && Array.isArray(correos_complementarios) ? correos_complementarios : undefined,
+        correos: hasCorreos && Array.isArray(correos) ? correos : undefined
       });
       res.status(201).json(out);
     } catch (e: any) {
@@ -59,15 +71,26 @@ export default class PersonasController {
     try {
       const id = Number(req.params.id);
       const body = req.body || {};
-      const { nombre_completo, unidad_medica_id, correo_principal, correos } = body;
+      const { nombre_completo, unidad_medica_id, correo_principal, correos_complementarios, correos } = body;
       const hasUnidad = Object.prototype.hasOwnProperty.call(body, 'unidad_medica_id');
+      const hasCorreos = Object.prototype.hasOwnProperty.call(body, 'correos');
       const hasCorreoPrincipal = Object.prototype.hasOwnProperty.call(body, 'correo_principal');
+      const hasCorreosComplementarios = Object.prototype.hasOwnProperty.call(body, 'correos_complementarios');
+
+      if (hasCorreos && (hasCorreoPrincipal || hasCorreosComplementarios)) {
+        res.status(400).json({
+          ok: false,
+          error: 'Payload ambiguo: no mezcles "correos" con "correo_principal" o "correos_complementarios".'
+        });
+        return;
+      }
 
       const out = await this.svc.update(id, {
         nombre_completo: nombre_completo ?? undefined,
         unidad_medica_id: hasUnidad ? unidad_medica_id : undefined,
         correo_principal: hasCorreoPrincipal ? correo_principal : undefined,
-        correos: Array.isArray(correos) ? correos : undefined
+        correos_complementarios: hasCorreosComplementarios && Array.isArray(correos_complementarios) ? correos_complementarios : undefined,
+        correos: hasCorreos && Array.isArray(correos) ? correos : undefined
       });
       res.json(out);
     } catch (e: any) {

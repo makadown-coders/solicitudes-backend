@@ -69,10 +69,10 @@ function createMockDb({
         return { rows: [{ id: state.id }], rowCount: 1 };
       }
 
-      // SELECT id FROM persona WHERE id=$1 AND activo=TRUE
-      if (/^SELECT id FROM persona WHERE id=\$1 AND activo=TRUE$/i.test(normalizedSql)) {
+      // SELECT id[, correo_principal] FROM persona WHERE id=$1 AND activo=TRUE
+      if (/^SELECT id(?:, correo_principal)? FROM persona WHERE id=\$1 AND activo=TRUE$/i.test(normalizedSql)) {
         if (state.id === params[0] && state.activo) {
-          return { rows: [{ id: state.id }], rowCount: 1 };
+          return { rows: [{ id: state.id, correo_principal: state.correo_principal ?? null }], rowCount: 1 };
         }
         return { rows: [], rowCount: 0 };
       }
@@ -878,5 +878,86 @@ test('12 (TI-2C.1). UPDATE preserva campos omitidos, distingue omisión vs NULL 
     assert.ok(resetPrincipalIdx >= 0 && setPrincipalIdx > resetPrincipalIdx, 'Debe limpiar es_principal antes de asignar el nuevo principal');
   } finally {
     mockReplace.restore();
+  }
+});
+
+test('13 (TI-2C.1B). Contrato nuevo (correo_principal + correos_complementarios) y rechazo 400 de mezcla ambigua con correos', async () => {
+  const ctrl = new PersonasController();
+
+  // A) Rechazo HTTP 400 en POST y PUT cuando se mezcla `correos` con `correo_principal` o `correos_complementarios`
+  for (const ambiguousBody of [
+    { nombre_completo: 'Test', correos: ['a@x.com'], correo_principal: 'b@x.com' },
+    { nombre_completo: 'Test', correos: ['a@x.com'], correos_complementarios: [] },
+    { nombre_completo: 'Test', correos: [], correo_principal: null },
+  ]) {
+    let postStatus = 0;
+    let postJson = null;
+    await ctrl.create(
+      { body: ambiguousBody },
+      {
+        status(code) { postStatus = code; return this; },
+        json(d) { postJson = d; return this; },
+      }
+    );
+    assert.equal(postStatus, 400);
+    assert.equal(postJson.ok, false);
+    assert.match(postJson.error, /ambiguo/i);
+
+    let putStatus = 0;
+    let putJson = null;
+    await ctrl.update(
+      { params: { id: '42' }, body: ambiguousBody },
+      {
+        status(code) { putStatus = code; return this; },
+        json(d) { putJson = d; return this; },
+      }
+    );
+    assert.equal(putStatus, 400);
+    assert.equal(putJson.ok, false);
+    assert.match(putJson.error, /ambiguo/i);
+  }
+
+  // B) PUT nuevo con solo `correos_complementarios: []` preserva `persona.correo_principal`
+  const mockKeepPrincipal = createMockDb({
+    initialPersona: {
+      id: 42,
+      nombre_completo: 'Persona',
+      unidad_medica_id: 15,
+      activo: true,
+      correo_principal: 'principal@imssb.gob.mx',
+    },
+  });
+  try {
+    const svc = new PersonasService();
+    await svc.update(42, { correos_complementarios: [] });
+    assert.equal(mockKeepPrincipal.getState().correo_principal, 'principal@imssb.gob.mx');
+    const deactivateQuery = mockKeepPrincipal.executedQueries.find((q) =>
+      /UPDATE persona_correo SET activo = FALSE, es_principal = FALSE/i.test(q.sql)
+    );
+    assert.ok(deactivateQuery);
+  } finally {
+    mockKeepPrincipal.restore();
+  }
+
+  // C) PUT nuevo con `correos_complementarios` que incluye el principal no lo duplica en `persona_correo`
+  const mockNoDup = createMockDb({
+    initialPersona: {
+      id: 42,
+      nombre_completo: 'Persona',
+      unidad_medica_id: 15,
+      activo: true,
+      correo_principal: 'principal@imssb.gob.mx',
+    },
+  });
+  try {
+    const svc = new PersonasService();
+    await svc.update(42, {
+      correos_complementarios: ['PRINCIPAL@imssb.gob.mx', 'extra@imssb.gob.mx', 'extra@imssb.gob.mx'],
+    });
+    const inserts = mockNoDup.executedQueries.filter((q) => /^INSERT INTO persona_correo/i.test(q.sql));
+    assert.equal(inserts.length, 1);
+    assert.deepEqual(inserts[0].params, [42, 'extra@imssb.gob.mx']);
+  } finally {
+    mockNoDup.restore();
   }
 });

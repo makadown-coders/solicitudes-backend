@@ -13,4 +13,25 @@ router.get(
   controller.unidadesAutorizadas.bind(controller)
 );
 
+router.get(
+  '/unidades/:unidadId/personal',
+  requireAuth,
+  requireRhAccess(),
+  controller.personalPorUnidad.bind(controller)
+);
+
+router.get(
+  '/unidades/:unidadId/personas-candidatas',
+  requireAuth,
+  requireRhAccess(),
+  controller.personasCandidatasPorUnidad.bind(controller)
+);
+
+router.post(
+  '/unidades/:unidadId/adscripciones',
+  requireAuth,
+  requireRhAccess(),
+  controller.createAdscripcionPorUnidad.bind(controller)
+);
+
 export default router;

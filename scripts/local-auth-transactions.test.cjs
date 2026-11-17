@@ -117,7 +117,8 @@ function createMockDb(initialState = {}) {
       return { rows: [], rowCount: 1 };
     }
 
-    if (/UPDATE public\.app_refresh_tokens SET revoked_at = COALESCE\(revoked_at, now\(\)\) WHERE user_id=\$1 AND revoked_at IS NULL/i.test(sql)) {
+    if (/UPDATE public\.app_refresh_tokens SET revoked_at = COALESCE\(revoked_at, now\(\)\) WHERE user_id=\$1 AND revoked_at IS NULL/i.test(sql) ||
+        /UPDATE public\.app_refresh_tokens\s+SET revoked_at = COALESCE\(revoked_at, now\(\)\)\s+WHERE user_id = \$1\s+AND revoked_at IS NULL/i.test(sql)) {
       const [userId] = values;
       let count = 0;
       for (const tok of tokens.values()) {
@@ -212,6 +213,25 @@ function createMockDb(initialState = {}) {
               rows: row ? [{ ...row }] : [],
               rowCount: row ? 1 : 0,
             };
+          }
+
+          if (/SELECT id, password_hash, status FROM public\.app_users WHERE id = \$1 FOR UPDATE/i.test(sql)) {
+            const userId = values[0];
+            assert.match(userId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, 'userId sent to DB must be valid UUID');
+            await acquireRowLock(`user:${userId}`, clientId);
+            const row = users.get(userId);
+            return {
+              rows: row ? [{ id: row.id, password_hash: row.password_hash, status: row.status }] : [],
+              rowCount: row ? 1 : 0,
+            };
+          }
+
+          if (/UPDATE public\.app_users\s+SET password_hash = \$2\s+WHERE id = \$1/i.test(sql)) {
+            const [userId, newPasswordHash] = values;
+            const existing = users.get(userId);
+            if (!existing) return { rows: [], rowCount: 0 };
+            existing.password_hash = newPasswordHash;
+            return { rows: [], rowCount: 1 };
           }
 
           if (/UPDATE public\.app_refresh_tokens SET revoked_at=now\(\), replaced_by=\$1 WHERE jti=\$2 AND revoked_at IS NULL/i.test(sql)) {
@@ -792,3 +812,304 @@ test('12. logout() válido es idempotente y libera correctamente el cliente', as
     assert.equal(c.inTransaction, false);
   }
 });
+
+test('13 (TI-2H.1). PUT /api/auth/me/password: ruta protegida con requireAuth (sin requireTiAdminGlobal), cambio exitoso para ACTIVE (con o sin ADMIN_TIC), verificación Argon2 y revocación aislada de refresh tokens', async () => {
+  // 1) Verificar en el router Express que PUT /me/password tiene únicamente requireAuth + handler (2 handlers, sin requireTiAdminGlobal)
+  const mePasswordLayer = authRouter.stack.find(
+    layer => layer.route && layer.route.path === '/me/password' && layer.route.methods.put
+  );
+  assert.ok(mePasswordLayer, 'Ruta PUT /me/password debe existir en authRouter');
+  assert.equal(
+    mePasswordLayer.route.stack.length,
+    2,
+    'PUT /me/password debe tener exactamente 2 handlers (requireAuth y changeOwnPassword, sin requireTiAdminGlobal)'
+  );
+  assert.equal(mePasswordLayer.route.stack[0].name, 'requireAuth');
+
+  // 2) Sin token -> HTTP 401
+  const reqUnauth = {
+    headers: {},
+    get() { return undefined; },
+    body: { current_password: 'OldPassword1!', new_password: 'NewPassword2!' },
+  };
+  const resUnauth = createMockRes();
+  let nextCalled = false;
+  await mePasswordLayer.route.stack[0].handle(reqUnauth, resUnauth, () => {
+    nextCalled = true;
+  });
+  assert.equal(nextCalled, false);
+  assert.equal(resUnauth.statusCode, 401);
+
+  // 3) Preparar usuarios en BD simulada:
+  // - userNoAdmin: usuario ACTIVE sin ADMIN_TIC (con 2 refresh tokens activos y 1 ya revocado)
+  // - userAdmin: usuario ACTIVE con ADMIN_TIC GLOBAL (con 1 refresh token activo)
+  // - otherUser: otro usuario ACTIVE (con 1 refresh token activo que NO debe revocarse)
+  const userNoAdminId = '11111111-2222-4333-8444-555555555551';
+  const userAdminId = '11111111-2222-4333-8444-555555555552';
+  const otherUserId = '11111111-2222-4333-8444-555555555553';
+
+  const oldPassNoAdmin = 'ClaveActualUsuario#1';
+  const newPassNoAdmin = 'ClaveNuevaUsuario#2';
+  const oldPassAdmin = 'ClaveActualAdmin#1';
+  const newPassAdmin = 'ClaveNuevaAdmin#2';
+
+  const db = createMockDb({
+    users: [
+      {
+        id: userNoAdminId,
+        email: 'operador@imssb.gob.mx',
+        password_hash: await argon2.hash(oldPassNoAdmin),
+        name: 'Operador Sin Admin',
+        status: 'ACTIVE',
+      },
+      {
+        id: userAdminId,
+        email: 'admin.tic@imssb.gob.mx',
+        password_hash: await argon2.hash(oldPassAdmin),
+        name: 'Admin TIC Global',
+        status: 'ACTIVE',
+      },
+      {
+        id: otherUserId,
+        email: 'otro@imssb.gob.mx',
+        password_hash: await argon2.hash('ClaveOtro#1'),
+        name: 'Otro Usuario',
+        status: 'ACTIVE',
+      },
+    ],
+    userRoles: {
+      [userNoAdminId]: [{ code: 'SOLICITUDES_ABASTO', scope_type: 'CLUES', scope_id: 'BCIMB000001' }],
+      [userAdminId]: [{ code: 'ADMIN_TIC', scope_type: 'GLOBAL', scope_id: '*' }],
+    },
+    tokens: [
+      { jti: 'aaaaaaaa-1111-4111-8111-111111111111', user_id: userNoAdminId, hashed_token: 'h1', revoked_at: null },
+      { jti: 'aaaaaaaa-2222-4222-8222-222222222222', user_id: userNoAdminId, hashed_token: 'h2', revoked_at: null },
+      { jti: 'aaaaaaaa-3333-4333-8333-333333333333', user_id: userNoAdminId, hashed_token: 'h3', revoked_at: '2026-01-01T00:00:00.000Z' },
+      { jti: 'bbbbbbbb-1111-4111-8111-111111111111', user_id: userAdminId, hashed_token: 'h4', revoked_at: null },
+      { jti: 'cccccccc-1111-4111-8111-111111111111', user_id: otherUserId, hashed_token: 'h5', revoked_at: null },
+    ],
+  });
+
+  const local = new LocalAuthService({ db, signToken: dummySignToken });
+  const auth = new AuthService({ local });
+  const controller = new AuthController({ auth });
+
+  // Caso A: Usuario ACTIVE sin ADMIN_TIC cambia su propia contraseña
+  const reqNoAdmin = {
+    user: { sub: userNoAdminId, email: 'operador@imssb.gob.mx', roles: [{ code: 'SOLICITUDES_ABASTO', scope: 'CLUES', id: 'BCIMB000001' }] },
+    body: { current_password: oldPassNoAdmin, new_password: newPassNoAdmin },
+  };
+  const resNoAdmin = createMockRes();
+  await controller.changeOwnPassword(reqNoAdmin, resNoAdmin);
+
+  assert.equal(resNoAdmin.statusCode, 200);
+  assert.deepEqual(resNoAdmin.body, { ok: true, revoked_sessions: 2 });
+  assert.equal(JSON.stringify(resNoAdmin.body).includes(newPassNoAdmin), false);
+  assert.equal(JSON.stringify(resNoAdmin.body).includes('argon2'), false);
+
+  // Verificar que el nuevo hash en BD fue generado con Argon2 y corresponde a newPassNoAdmin
+  const updatedNoAdminHash = db.users.get(userNoAdminId).password_hash;
+  assert.equal(await argon2.verify(updatedNoAdminHash, newPassNoAdmin), true);
+  assert.equal(await argon2.verify(updatedNoAdminHash, oldPassNoAdmin), false);
+
+  // Verificar que se revocaron los 2 refresh tokens activos de userNoAdminId y NO los de otros usuarios
+  assert.ok(db.tokens.get('aaaaaaaa-1111-4111-8111-111111111111').revoked_at);
+  assert.ok(db.tokens.get('aaaaaaaa-2222-4222-8222-222222222222').revoked_at);
+  assert.equal(db.tokens.get('bbbbbbbb-1111-4111-8111-111111111111').revoked_at, null);
+  assert.equal(db.tokens.get('cccccccc-1111-4111-8111-111111111111').revoked_at, null);
+
+  // Caso B: Usuario ADMIN_TIC también puede cambiar su propia contraseña
+  const reqAdmin = {
+    user: { sub: userAdminId, email: 'admin.tic@imssb.gob.mx', roles: [{ code: 'ADMIN_TIC', scope: 'GLOBAL', id: null }] },
+    body: { current_password: oldPassAdmin, new_password: newPassAdmin },
+  };
+  const resAdmin = createMockRes();
+  await controller.changeOwnPassword(reqAdmin, resAdmin);
+
+  assert.equal(resAdmin.statusCode, 200);
+  assert.deepEqual(resAdmin.body, { ok: true, revoked_sessions: 1 });
+  assert.equal(await argon2.verify(db.users.get(userAdminId).password_hash, newPassAdmin), true);
+  assert.ok(db.tokens.get('bbbbbbbb-1111-4111-8111-111111111111').revoked_at);
+  assert.equal(db.tokens.get('cccccccc-1111-4111-8111-111111111111').revoked_at, null, 'No debe revocar sesiones de third-party');
+});
+
+test('14 (TI-2H.1). Validaciones de entrada, rechazo de propiedades extra (user_id, persona_id, email), contraseña actual incorrecta, nueva corta o igual a la actual y estados no activos', async () => {
+  const activeUserId = '22222222-2222-4222-8222-222222222221';
+  const suspendedUserId = '22222222-2222-4222-8222-222222222222';
+  const inactiveUserId = '22222222-2222-4222-8222-222222222223';
+  const missingUserId = '22222222-2222-4222-8222-222222222299';
+  const victimUserId = '22222222-2222-4222-8222-222222222288';
+
+  const currentPass = 'MiClaveActual#2026';
+  const initialHash = await argon2.hash(currentPass);
+  const victimHash = await argon2.hash('ClaveVictima#2026');
+
+  const db = createMockDb({
+    users: [
+      { id: activeUserId, email: 'activo@imssb.gob.mx', password_hash: initialHash, name: 'Activo', status: 'ACTIVE' },
+      { id: suspendedUserId, email: 'suspendido@imssb.gob.mx', password_hash: initialHash, name: 'Suspendido', status: 'SUSPENDED' },
+      { id: inactiveUserId, email: 'inactivo@imssb.gob.mx', password_hash: initialHash, name: 'Inactivo', status: 'INACTIVE' },
+      { id: victimUserId, email: 'victima@imssb.gob.mx', password_hash: victimHash, name: 'Victima', status: 'ACTIVE' },
+    ],
+    tokens: [
+      { jti: 'dddddddd-1111-4111-8111-111111111111', user_id: activeUserId, hashed_token: 'h1', revoked_at: null },
+      { jti: 'dddddddd-2222-4222-8222-222222222222', user_id: victimUserId, hashed_token: 'h2', revoked_at: null },
+    ],
+  });
+
+  const local = new LocalAuthService({ db, signToken: dummySignToken });
+  const auth = new AuthService({ local });
+  const controller = new AuthController({ auth });
+
+  // 1) Propiedades adicionales y campos prohibidos en body (user_id, persona_id, email, extra) -> HTTP 400 sin abrir transacción
+  const forbiddenBodies = [
+    { current_password: currentPass, new_password: 'NuevaClaveValida#1', user_id: victimUserId },
+    { current_password: currentPass, new_password: 'NuevaClaveValida#1', persona_id: 101 },
+    { current_password: currentPass, new_password: 'NuevaClaveValida#1', email: 'victima@imssb.gob.mx' },
+    { current_password: currentPass, new_password: 'NuevaClaveValida#1', extra: true },
+    { current_password: currentPass },
+    { new_password: 'NuevaClaveValida#1' },
+    null,
+    ['array'],
+  ];
+
+  for (const badBody of forbiddenBodies) {
+    const res = createMockRes();
+    await controller.changeOwnPassword({ user: { sub: activeUserId }, body: badBody }, res);
+    assert.equal(res.statusCode, 400);
+  }
+  assert.equal(db.clients.length, 0, 'Payloads rechazados en controlador no deben abrir conexiones a BD');
+
+  // 2) Contraseña nueva demasiado corta (< 8 caracteres) o solo espacios -> HTTP 400 sin tocar BD
+  for (const shortPass of ['', '1234567', '       ', '   abc  ']) {
+    const res = createMockRes();
+    await controller.changeOwnPassword(
+      { user: { sub: activeUserId }, body: { current_password: currentPass, new_password: shortPass } },
+      res
+    );
+    assert.equal(res.statusCode, 400);
+    assert.equal(JSON.stringify(res.body).includes(shortPass.trim() || '1234567'), false);
+  }
+  assert.equal(db.clients.length, 0);
+
+  // 3) Nueva contraseña idéntica a la actual -> HTTP 400 sin escrituras
+  const resSame = createMockRes();
+  await controller.changeOwnPassword(
+    { user: { sub: activeUserId }, body: { current_password: currentPass, new_password: currentPass } },
+    resSame
+  );
+  assert.equal(resSame.statusCode, 400);
+  assert.equal(db.users.get(activeUserId).password_hash, initialHash);
+  assert.equal(db.tokens.get('dddddddd-1111-4111-8111-111111111111').revoked_at, null);
+
+  // 4) Contraseña actual incorrecta -> HTTP 400 con ROLLBACK, sin actualizar hash ni revocar sesiones ni filtrar contraseña
+  const wrongCurrent = 'ClaveIncorrecta#999';
+  const resWrong = createMockRes();
+  await controller.changeOwnPassword(
+    { user: { sub: activeUserId }, body: { current_password: wrongCurrent, new_password: 'NuevaClaveValida#2026' } },
+    resWrong
+  );
+  assert.equal(resWrong.statusCode, 400);
+  assert.equal(JSON.stringify(resWrong.body).includes(wrongCurrent), false);
+  assert.equal(JSON.stringify(resWrong.body).includes(initialHash), false);
+  assert.equal(db.users.get(activeUserId).password_hash, initialHash);
+  assert.equal(db.tokens.get('dddddddd-1111-4111-8111-111111111111').revoked_at, null);
+  assert.equal(db.clients.at(-1).queries.at(-1).sql, 'ROLLBACK');
+
+  // 5) Cuenta SUSPENDED o INACTIVE -> HTTP 403 sin escrituras
+  for (const uid of [suspendedUserId, inactiveUserId]) {
+    const resStatus = createMockRes();
+    await controller.changeOwnPassword(
+      { user: { sub: uid }, body: { current_password: currentPass, new_password: 'NuevaClaveValida#2026' } },
+      resStatus
+    );
+    assert.equal(resStatus.statusCode, 403);
+    assert.equal(db.users.get(uid).password_hash, initialHash);
+    assert.equal(db.clients.at(-1).queries.at(-1).sql, 'ROLLBACK');
+  }
+
+  // 6) Cuenta autenticada inexistente en app_users -> HTTP 404
+  const resMissing = createMockRes();
+  await controller.changeOwnPassword(
+    { user: { sub: missingUserId }, body: { current_password: currentPass, new_password: 'NuevaClaveValida#2026' } },
+    resMissing
+  );
+  assert.equal(resMissing.statusCode, 404);
+  assert.equal(db.clients.at(-1).queries.at(-1).sql, 'ROLLBACK');
+
+  // 7) La cuenta objetivo procede exclusivamente de req.user.sub (ignorando params/query de otra cuenta)
+  const resTargetCheck = createMockRes();
+  await controller.changeOwnPassword(
+    {
+      user: { sub: activeUserId },
+      params: { id: victimUserId },
+      query: { user_id: victimUserId },
+      body: { current_password: currentPass, new_password: 'NuevaClavePropia#2026' },
+    },
+    resTargetCheck
+  );
+  assert.equal(resTargetCheck.statusCode, 200);
+  assert.equal(db.users.get(victimUserId).password_hash, victimHash, 'La cuenta de otro usuario jamás debe modificarse');
+  assert.equal(db.tokens.get('dddddddd-2222-4222-8222-222222222222').revoked_at, null);
+});
+
+test('15 (TI-2H.1). Atomicidad/rollback ante error de persistencia y concurrencia con bloqueo FOR UPDATE en changeOwnPassword()', async () => {
+  const userId = '33333333-3333-4333-8333-333333333333';
+  const initialPass = 'PasswordInicial#1';
+  const initialHash = await argon2.hash(initialPass);
+
+  const db = createMockDb({
+    users: [
+      { id: userId, email: 'concurrencia@imssb.gob.mx', password_hash: initialHash, name: 'Usuario Concurrencia', status: 'ACTIVE' },
+    ],
+    tokens: [
+      { jti: 'eeeeeeee-1111-4111-8111-111111111111', user_id: userId, hashed_token: 'h1', revoked_at: null },
+    ],
+  });
+
+  const local = new LocalAuthService({ db, signToken: dummySignToken });
+  const auth = new AuthService({ local });
+  const controller = new AuthController({ auth });
+
+  // Parte A: Error en revocación de refresh tokens dentro de la transacción -> ROLLBACK y 500 sin exponer detalles SQL
+  db.failOnQuery = (sql) => {
+    if (/UPDATE public\.app_refresh_tokens/i.test(sql)) {
+      throw new Error('simulated pg error on app_refresh_tokens');
+    }
+  };
+
+  const resFail = createMockRes();
+  await controller.changeOwnPassword(
+    { user: { sub: userId }, body: { current_password: initialPass, new_password: 'PasswordFallida#2' } },
+    resFail
+  );
+  assert.equal(resFail.statusCode, 500);
+  assert.deepEqual(resFail.body, { error: 'Internal server error' });
+  assert.equal(db.clients[0].queries.at(-1).sql, 'ROLLBACK');
+  assert.equal(db.clients[0].released, true);
+
+  // Restauramos hash inicial para probar concurrencia limpia
+  db.users.get(userId).password_hash = initialHash;
+  db.failOnQuery = null;
+
+  // Parte B: Dos solicitudes concurrentes con la misma current_password ("PasswordInicial#1")
+  // Gracias a SELECT ... FOR UPDATE sobre app_users, la primera actualiza el hash y hace COMMIT;
+  // la segunda lee el nuevo hash tras liberarse el lock y rechaza current_password con 400.
+  const [outcome1, outcome2] = await Promise.allSettled([
+    local.changeOwnPassword(userId, { current_password: initialPass, new_password: 'NuevaConcurrenteA#1' }),
+    local.changeOwnPassword(userId, { current_password: initialPass, new_password: 'NuevaConcurrenteB#2' }),
+  ]);
+
+  const fulfilled = [outcome1, outcome2].filter(o => o.status === 'fulfilled');
+  const rejected = [outcome1, outcome2].filter(o => o.status === 'rejected');
+
+  assert.equal(fulfilled.length, 1, 'Exactamente una solicitud concurrente debe tener éxito');
+  assert.equal(rejected.length, 1, 'La segunda solicitud basada en la contraseña anterior debe ser rechazada');
+  assert.equal(rejected[0].reason.statusCode, 400);
+
+  // La contraseña final en BD debe corresponder exclusivamente a la primera que adquirió el lock (NuevaConcurrenteA#1)
+  const finalHash = db.users.get(userId).password_hash;
+  assert.equal(await argon2.verify(finalHash, 'NuevaConcurrenteA#1'), true);
+  assert.equal(await argon2.verify(finalHash, 'NuevaConcurrenteB#2'), false);
+});
+

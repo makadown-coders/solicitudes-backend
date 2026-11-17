@@ -23,6 +23,12 @@ router.post('/refresh', controller.refresh.bind(controller));
 router.get('/me', requireAuth, controller.me.bind(controller));
 
 /**
+ * PUT /api/auth/me/password (protegido con Bearer token; autoservicio para cualquier cuenta activa)
+ * Body: { current_password, new_password }
+ */
+router.put('/me/password', requireAuth, controller.changeOwnPassword.bind(controller));
+
+/**
  * POST /api/auth/logout
  */
 router.post('/logout', controller.logout.bind(controller));

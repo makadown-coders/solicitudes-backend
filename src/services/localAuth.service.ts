@@ -29,6 +29,46 @@ export class AuthUnauthorizedError extends Error {
   }
 }
 
+export class AuthBadRequestError extends Error {
+  readonly statusCode = 400;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'AuthBadRequestError';
+    Object.setPrototypeOf(this, AuthBadRequestError.prototype);
+  }
+}
+
+export class AuthForbiddenError extends Error {
+  readonly statusCode = 403;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'AuthForbiddenError';
+    Object.setPrototypeOf(this, AuthForbiddenError.prototype);
+  }
+}
+
+export class AuthNotFoundError extends Error {
+  readonly statusCode = 404;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'AuthNotFoundError';
+    Object.setPrototypeOf(this, AuthNotFoundError.prototype);
+  }
+}
+
+export interface ChangeOwnPasswordInput {
+  current_password: string;
+  new_password: string;
+}
+
+export interface ChangeOwnPasswordResult {
+  ok: true;
+  revoked_sessions: number;
+}
+
 export function isAuthUnauthorizedError(err: unknown): err is AuthUnauthorizedError {
   return (
     err instanceof AuthUnauthorizedError ||
@@ -36,6 +76,36 @@ export function isAuthUnauthorizedError(err: unknown): err is AuthUnauthorizedEr
       err !== null &&
       ((err as { name?: unknown }).name === 'AuthUnauthorizedError' ||
         (err as { statusCode?: unknown }).statusCode === 401))
+  );
+}
+
+export function isAuthBadRequestError(err: unknown): err is AuthBadRequestError {
+  return (
+    err instanceof AuthBadRequestError ||
+    (typeof err === 'object' &&
+      err !== null &&
+      ((err as { name?: unknown }).name === 'AuthBadRequestError' ||
+        (err as { statusCode?: unknown }).statusCode === 400))
+  );
+}
+
+export function isAuthForbiddenError(err: unknown): err is AuthForbiddenError {
+  return (
+    err instanceof AuthForbiddenError ||
+    (typeof err === 'object' &&
+      err !== null &&
+      ((err as { name?: unknown }).name === 'AuthForbiddenError' ||
+        (err as { statusCode?: unknown }).statusCode === 403))
+  );
+}
+
+export function isAuthNotFoundError(err: unknown): err is AuthNotFoundError {
+  return (
+    err instanceof AuthNotFoundError ||
+    (typeof err === 'object' &&
+      err !== null &&
+      ((err as { name?: unknown }).name === 'AuthNotFoundError' ||
+        (err as { statusCode?: unknown }).statusCode === 404))
   );
 }
 
@@ -296,6 +366,120 @@ export default class LocalAuthService {
       [user_id]
     );
     return { ok: true };
+  }
+
+  /**
+   * Cambia la contraseña de la propia cuenta autenticada (`PUT /api/auth/me/password`).
+   * - Obtiene la identidad exclusivamente de `user_id` (contexto validado por `requireAuth`).
+   * - Bloquea la fila de `public.app_users` con `FOR UPDATE` para serializar cambios concurrentes.
+   * - Verifica que la cuenta exista y tenga estado `ACTIVE`.
+   * - Verifica `current_password` mediante Argon2 contra el `password_hash` vigente (bajo el bloqueo).
+   * - Valida que `new_password` tenga al menos 8 caracteres válidos y no coincida con la contraseña actual ni con el hash almacenado.
+   * - Actualiza `password_hash` con Argon2 y revoca todos los refresh tokens activos de la cuenta en la misma transacción.
+   */
+  async changeOwnPassword(
+    user_id: string,
+    input: ChangeOwnPasswordInput
+  ): Promise<ChangeOwnPasswordResult> {
+    if (typeof user_id !== 'string' || !UUID_REGEX.test(user_id.trim())) {
+      throw new AuthUnauthorizedError('Unauthorized');
+    }
+    const normalizedUserId = user_id.trim();
+
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      throw new AuthBadRequestError('Payload inválido');
+    }
+
+    const { current_password, new_password } = input;
+
+    if (typeof current_password !== 'string' || current_password.length === 0) {
+      throw new AuthBadRequestError('La contraseña actual es obligatoria');
+    }
+
+    if (typeof new_password !== 'string' || new_password.trim().length < 8) {
+      throw new AuthBadRequestError('La nueva contraseña debe tener al menos 8 caracteres válidos');
+    }
+
+    if (new_password === current_password) {
+      throw new AuthBadRequestError('La nueva contraseña debe ser diferente a la contraseña actual');
+    }
+
+    const client = await this.db.connect();
+    let inTransaction = false;
+    let releaseError: boolean | Error | undefined;
+    try {
+      await client.query('BEGIN');
+      inTransaction = true;
+
+      const userRes = await client.query(
+        'SELECT id, password_hash, status FROM public.app_users WHERE id = $1 FOR UPDATE',
+        [normalizedUserId]
+      );
+      const user = userRes.rows[0];
+      if (!user) {
+        throw new AuthNotFoundError('Cuenta no encontrada');
+      }
+
+      const normalizedStatus = typeof user.status === 'string' ? user.status.trim().toUpperCase() : '';
+      if (normalizedStatus !== 'ACTIVE') {
+        throw new AuthForbiddenError('La cuenta no se encuentra activa');
+      }
+
+      if (typeof user.password_hash !== 'string' || !user.password_hash) {
+        throw new AuthBadRequestError('La contraseña actual es incorrecta');
+      }
+
+      const currentMatches = await argon2.verify(user.password_hash, current_password);
+      if (!currentMatches) {
+        throw new AuthBadRequestError('La contraseña actual es incorrecta');
+      }
+
+      const newMatchesStored = await argon2.verify(user.password_hash, new_password);
+      if (newMatchesStored) {
+        throw new AuthBadRequestError('La nueva contraseña debe ser diferente a la contraseña actual');
+      }
+
+      const newPasswordHash = await argon2.hash(new_password);
+
+      await client.query(
+        `UPDATE public.app_users
+            SET password_hash = $2
+          WHERE id = $1`,
+        [normalizedUserId, newPasswordHash]
+      );
+
+      const revRes = await client.query(
+        `UPDATE public.app_refresh_tokens
+            SET revoked_at = COALESCE(revoked_at, now())
+          WHERE user_id = $1
+            AND revoked_at IS NULL`,
+        [normalizedUserId]
+      );
+
+      await client.query('COMMIT');
+      inTransaction = false;
+
+      return {
+        ok: true,
+        revoked_sessions: revRes.rowCount ?? 0,
+      };
+    } catch (e) {
+      if (inTransaction) {
+        try {
+          await client.query('ROLLBACK');
+        } catch (rollbackErr) {
+          releaseError = rollbackErr instanceof Error ? rollbackErr : new Error(String(rollbackErr));
+        }
+        inTransaction = false;
+      }
+      throw e;
+    } finally {
+      if (releaseError !== undefined) {
+        client.release(releaseError);
+      } else {
+        client.release();
+      }
+    }
   }
 
   async getUserWithRoles(userId: string, queryable: Pick<AuthPoolClient, 'query'> = this.db) {

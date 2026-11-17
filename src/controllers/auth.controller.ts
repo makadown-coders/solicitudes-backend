@@ -1,6 +1,11 @@
 import type { Request, Response } from 'express';
 import AuthService from '../services/auth.service';
-import { isAuthUnauthorizedError } from '../services/localAuth.service';
+import {
+  isAuthBadRequestError,
+  isAuthForbiddenError,
+  isAuthNotFoundError,
+  isAuthUnauthorizedError,
+} from '../services/localAuth.service';
 
 export default class AuthController {
   private auth: AuthService;
@@ -87,5 +92,64 @@ export default class AuthController {
       }
       res.status(400).json({ error: e?.message || 'logout failed' });
     }
-  }
+  };
+
+  changeOwnPassword = async (req: Request, res: Response): Promise<void> => {
+    if (typeof req.user?.sub !== 'string' || !req.user.sub.trim()) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      res.status(400).json({ error: 'Payload inválido' });
+      return;
+    }
+
+    const ALLOWED_KEYS = new Set(['current_password', 'new_password']);
+    const keys = Object.keys(body);
+    for (const key of keys) {
+      if (!ALLOWED_KEYS.has(key)) {
+        res.status(400).json({ error: `Propiedad no permitida: ${key}` });
+        return;
+      }
+    }
+
+    if (
+      keys.length !== 2 ||
+      typeof body.current_password !== 'string' ||
+      typeof body.new_password !== 'string'
+    ) {
+      res.status(400).json({
+        error: 'Se requieren exclusivamente las propiedades "current_password" y "new_password" como cadenas de texto',
+      });
+      return;
+    }
+
+    try {
+      const out = await this.auth.changeOwnPassword(req.user.sub, {
+        current_password: body.current_password,
+        new_password: body.new_password,
+      });
+      res.status(200).json(out);
+    } catch (e: unknown) {
+      if (isAuthBadRequestError(e)) {
+        res.status(400).json({ error: e.message });
+        return;
+      }
+      if (isAuthUnauthorizedError(e)) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+      if (isAuthForbiddenError(e)) {
+        res.status(403).json({ error: e.message });
+        return;
+      }
+      if (isAuthNotFoundError(e)) {
+        res.status(404).json({ error: e.message });
+        return;
+      }
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  };
 }

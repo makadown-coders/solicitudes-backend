@@ -14,6 +14,7 @@ import {
   RUTAS_PRIMER_NIVEL_PROVISIONALES,
   RUTA_SIN_ASIGNAR,
 } from '../config/rutas-primer-nivel.provisional';
+import { clasificarTipoInsumo } from '../helpers/clasificar-tipo-insumo';
 
 const ORIGENES: OrigenCapturaPrimerNivel[] = ['APS', 'PROGRAMA_PREVENTIVO', 'CLAVE'];
 
@@ -31,18 +32,6 @@ function normalizarClaveMatriz(value: unknown): string {
   return /^311\.[0-9]{3}\.[0-9]{4}\.[0-9]{2}$/.test(clave)
     ? clave.replace(/\.[0-9]{2}$/, '')
     : clave;
-}
-
-function clasificarTipoInsumo(clave: string, categoria: unknown): 'MED' | 'MC' | null {
-  const prefijo = clave.split('.')[0];
-  if (['060', '070', '080', '160', '180', '200', '204', '254', '311', '531', '537'].includes(prefijo)) {
-    return 'MC';
-  }
-  const categoriaNormalizada = String(categoria ?? '').trim().toUpperCase();
-  if (categoriaNormalizada.includes('MEDICAMENTO')) return 'MED';
-  if (categoriaNormalizada.includes('MATERIAL') && categoriaNormalizada.includes('CURACI')) return 'MC';
-  if (prefijo === '010') return 'MED';
-  return null;
 }
 
 export default class ConcentradoPrimerNivelService {

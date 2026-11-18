@@ -1,4 +1,7 @@
-import LocalAuthService from "./localAuth.service";
+import LocalAuthService, {
+    ChangeOwnPasswordInput,
+    ChangeOwnPasswordResult,
+} from "./localAuth.service";
 
 
 const local = new LocalAuthService();
@@ -29,6 +32,13 @@ class AuthService {
 
     async logoutAll(user_id: string) {
         return this.local.logoutAll(user_id);
+    }
+
+    async changeOwnPassword(
+        user_id: string,
+        input: ChangeOwnPasswordInput
+    ): Promise<ChangeOwnPasswordResult> {
+        return this.local.changeOwnPassword(user_id, input);
     }
 }
 export default AuthService;

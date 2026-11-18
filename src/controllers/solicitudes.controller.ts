@@ -51,6 +51,7 @@ export class SolicitudesController {
                 totalInsumos: resultado.totalInsumos,
                 totalPiezas: resultado.totalPiezas,
                 recibidoEn: resultado.recibidoEn,
+                desglose: resultado.desglose,
             })).toString('base64'));
             res.status(200).send(resultado.buffer);
         } catch (err: any) {

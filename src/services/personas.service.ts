@@ -6,6 +6,23 @@ import { UpdatePayload } from '../models/UpdatePayload';
 
 const normEmail = (s: string) => String(s || '').trim();
 
+function deduplicateEmails(emails: string[], excludeEmail?: string | null): string[] {
+  const seen = new Set<string>();
+  if (excludeEmail) {
+    seen.add(excludeEmail.toLowerCase());
+  }
+  const result: string[] = [];
+  for (const raw of emails) {
+    const clean = normEmail(raw);
+    if (!clean) continue;
+    const key = clean.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(clean);
+  }
+  return result;
+}
+
 export default class PersonasService {
   async listPaged(opts: {
     q?: string | null;
@@ -53,7 +70,7 @@ export default class PersonasService {
          p.nombre_completo,
          p.unidad_medica_id,
          um.nombre AS unidad_medica,
-         COALESCE(p.correo_principal, pe.email_principal) AS email_principal,
+         COALESCE(NULLIF(TRIM(p.correo_principal), ''), NULLIF(TRIM(pe.email_principal), '')) AS email_principal,
          COALESCE(pec.n_correos, 0) AS n_correos,
          COUNT(*) OVER() AS total
     FROM persona p
@@ -61,8 +78,11 @@ export default class PersonasService {
     LEFT JOIN LATERAL (
       SELECT pc.correo AS email_principal
         FROM persona_correo pc
-       WHERE pc.persona_id = p.id AND pc.activo = TRUE
-       ORDER BY pc.es_principal DESC, pc.id DESC
+       WHERE pc.persona_id = p.id
+         AND pc.activo = TRUE
+         AND pc.es_principal = TRUE
+         AND NULLIF(TRIM(pc.correo), '') IS NOT NULL
+       ORDER BY pc.id DESC
        LIMIT 1
     ) pe ON TRUE   
     LEFT JOIN LATERAL (
@@ -90,9 +110,23 @@ export default class PersonasService {
 
   async byId(id: number) {
     const p = await pool.query(`
-    SELECT p.id, p.nombre_completo, p.unidad_medica_id, um.nombre AS unidad_medica
+    SELECT p.id,
+           p.nombre_completo,
+           p.unidad_medica_id,
+           um.nombre AS unidad_medica,
+           COALESCE(NULLIF(TRIM(p.correo_principal), ''), NULLIF(TRIM(pe.email_principal), '')) AS correo
       FROM persona p
       LEFT JOIN unidad_medica um ON um.id = p.unidad_medica_id
+      LEFT JOIN LATERAL (
+        SELECT pc.correo AS email_principal
+          FROM persona_correo pc
+         WHERE pc.persona_id = p.id
+           AND pc.activo = TRUE
+           AND pc.es_principal = TRUE
+           AND NULLIF(TRIM(pc.correo), '') IS NOT NULL
+         ORDER BY pc.id DESC
+         LIMIT 1
+      ) pe ON TRUE
      WHERE p.id = $1 AND p.activo = TRUE
   `, [id]);
 
@@ -105,40 +139,62 @@ export default class PersonasService {
      ORDER BY es_principal DESC, id DESC
   `, [id]);
 
-    return { ...p.rows[0], correos: correos.rows };
+    const row = p.rows[0];
+    const correoPrincipal = row.correo ?? null;
+
+    return { ...row, correo: correoPrincipal, email_principal: correoPrincipal, correos: correos.rows };
   }
 
   // =============== CREATE ===============
   async create(payload: {
     nombre_completo: string;
     unidad_medica_id?: number | null;
-    correos?: string[];        // el primero será principal si no especificas más reglas
+    correo_principal?: string | null;
+    correos_complementarios?: string[];
+    correos?: string[];
   }): Promise<{ id: number }> {
+    const hasLegacy = payload.correos !== undefined;
+    const hasNew = payload.correo_principal !== undefined || payload.correos_complementarios !== undefined;
+    if (hasLegacy && hasNew) {
+      throw new Error('Payload ambiguo: no mezcles "correos" con "correo_principal" o "correos_complementarios".');
+    }
+
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
 
+      let correoPrincipal: string | null = null;
+      let complementarios: string[] = [];
+
+      if (hasLegacy) {
+        const legacyList = deduplicateEmails(Array.isArray(payload.correos) ? payload.correos : []);
+        correoPrincipal = legacyList[0] ?? null;
+        complementarios = legacyList.slice(1);
+      } else {
+        correoPrincipal =
+          payload.correo_principal !== undefined && payload.correo_principal !== null
+            ? normEmail(payload.correo_principal) || null
+            : null;
+        complementarios = deduplicateEmails(
+          Array.isArray(payload.correos_complementarios) ? payload.correos_complementarios : [],
+          correoPrincipal
+        );
+      }
+
       const { rows } = await client.query(
-        `INSERT INTO persona (nombre_completo, unidad_medica_id, activo, created_at, updated_at)
-         VALUES ($1, $2, TRUE, NOW(), NOW())
+        `INSERT INTO persona (nombre_completo, unidad_medica_id, correo_principal, activo, creado_en, actualizado_en)
+         VALUES ($1, $2, $3, TRUE, NOW(), NOW())
          RETURNING id`,
-        [payload.nombre_completo, payload.unidad_medica_id ?? null]
+        [payload.nombre_completo, payload.unidad_medica_id ?? null, correoPrincipal]
       );
       const personaId = Number(rows[0].id);
 
-      const correos = Array.isArray(payload.correos)
-        ? payload.correos.map(c => String(c).trim()).filter(Boolean)
-        : [];
-
-      if (correos.length) {
-        for (let i = 0; i < correos.length; i++) {
-          await client.query(
-            `INSERT INTO persona_correo (persona_id, correo, es_principal, activo)
-             VALUES ($1, $2, $3, TRUE)`,
-            [personaId, correos[i], i === 0]  // primero = principal
-          );
-        }
-        // la función/trigger actualizará persona.correo_principal
+      for (const correo of complementarios) {
+        await client.query(
+          `INSERT INTO persona_correo (persona_id, correo, es_principal, activo)
+           VALUES ($1, $2, FALSE, TRUE)`,
+          [personaId, correo]
+        );
       }
 
       await client.query('COMMIT');
@@ -159,50 +215,151 @@ export default class PersonasService {
   async update(id: number, payload: {
     nombre_completo?: string;
     unidad_medica_id?: number | null;
-    correos?: string[]; // lista completa deseada (ACTIVOS). Los no incluidos se desactivan (soft-delete).
+    correo_principal?: string | null;
+    correos_complementarios?: string[];
+    correos?: string[]; // contrato heredado
   }): Promise<{ id: number }> {
+    const hasLegacy = payload.correos !== undefined;
+    const hasCorreoPrincipalField = payload.correo_principal !== undefined;
+    const hasComplementariosField = payload.correos_complementarios !== undefined;
+    if (hasLegacy && (hasCorreoPrincipalField || hasComplementariosField)) {
+      throw new Error('Payload ambiguo: no mezcles "correos" con "correo_principal" o "correos_complementarios".');
+    }
+
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
 
-      // Asegura que persona esté activa (si quieres permitir actualizar inactivos, quita esta cláusula)
-      const chk = await client.query(`SELECT id FROM persona WHERE id=$1 AND activo=TRUE`, [id]);
+      // Asegura que persona esté activa
+      const chk = await client.query(`SELECT id, correo_principal FROM persona WHERE id=$1 AND activo=TRUE`, [id]);
       if (!chk.rowCount) throw new Error('Persona no encontrada o inactiva.');
 
-      // Actualiza datos básicos si vienen
-      if (payload.nombre_completo != null || payload.unidad_medica_id !== undefined) {
+      const hasCorreosArray = Array.isArray(payload.correos);
+      const legacyIncoming = hasCorreosArray
+        ? deduplicateEmails(payload.correos!)
+        : [];
+
+      let shouldUpdateCorreoPrincipal = false;
+      let nextCorreoPrincipal: string | null = null;
+
+      if (hasCorreoPrincipalField) {
+        shouldUpdateCorreoPrincipal = true;
+        nextCorreoPrincipal =
+          payload.correo_principal !== null ? normEmail(payload.correo_principal) || null : null;
+      } else if (hasCorreosArray) {
+        shouldUpdateCorreoPrincipal = true;
+        nextCorreoPrincipal = legacyIncoming[0] ?? null;
+      }
+
+      // Actualiza datos básicos si vienen (distinguiendo explícitamente omisión vs NULL)
+      if (
+        payload.nombre_completo != null ||
+        payload.unidad_medica_id !== undefined ||
+        shouldUpdateCorreoPrincipal
+      ) {
         await client.query(
           `UPDATE persona
               SET nombre_completo = COALESCE($2, nombre_completo),
-                  unidad_medica_id = $3,
-                  updated_at = NOW()
+                  unidad_medica_id = CASE WHEN $4::boolean THEN $3::integer ELSE unidad_medica_id END,
+                  correo_principal = CASE WHEN $6::boolean THEN $5::text ELSE correo_principal END,
+                  actualizado_en = NOW()
             WHERE id = $1`,
-          [id, payload.nombre_completo ?? null, payload.unidad_medica_id ?? null]
+          [
+            id,
+            payload.nombre_completo ?? null,
+            payload.unidad_medica_id ?? null,
+            payload.unidad_medica_id !== undefined,
+            nextCorreoPrincipal,
+            shouldUpdateCorreoPrincipal
+          ]
         );
       }
 
-      // Sincronía de correos activos (si se envía la lista)
-      if (Array.isArray(payload.correos)) {
-        const incoming = payload.correos.map(c => String(c).trim()).filter(Boolean);
+      // Contrato nuevo: manejo explícito de correo_principal sin tocar los complementarios si no se enviaron
+      if (hasCorreoPrincipalField) {
+        if (nextCorreoPrincipal === null) {
+          await client.query(
+            `UPDATE persona_correo
+                SET activo = FALSE,
+                    es_principal = FALSE
+              WHERE persona_id = $1
+                AND es_principal = TRUE`,
+            [id]
+          );
+        } else {
+          await client.query(
+            `UPDATE persona_correo
+                SET es_principal = FALSE
+              WHERE persona_id = $1
+                AND es_principal = TRUE
+                AND lower(correo) <> $2`,
+            [id, nextCorreoPrincipal.toLowerCase()]
+          );
+        }
+      }
 
-        // a) desactivar los que ya no están en la lista entrante
+      // Contrato nuevo: sincronía exclusiva de correos_complementarios sin alterar persona.correo_principal
+      if (hasComplementariosField && Array.isArray(payload.correos_complementarios)) {
+        const effectivePrincipal = shouldUpdateCorreoPrincipal
+          ? nextCorreoPrincipal
+          : (chk.rows[0]?.correo_principal ? normEmail(chk.rows[0].correo_principal) || null : null);
+
+        const complementarios = deduplicateEmails(payload.correos_complementarios, effectivePrincipal);
+
         await client.query(
           `UPDATE persona_correo
-              SET activo = FALSE
+              SET activo = FALSE,
+                  es_principal = FALSE
             WHERE persona_id = $1
-              AND activo = TRUE
+              AND (activo = TRUE OR es_principal = TRUE)
               AND lower(correo) <> ALL ($2::text[])`,
-          [id, incoming.map(c => c.toLowerCase())]
+          [id, complementarios.map(c => c.toLowerCase())]
         );
 
-        // b) upsert de los entrantes (reactiva si existían inactivos)
-        for (let i = 0; i < incoming.length; i++) {
-          const correo = incoming[i];
-          // intenta reactivar
+        for (const correo of complementarios) {
           const upd = await client.query(
             `UPDATE persona_correo
                 SET activo = TRUE,
-                    es_principal = es_principal -- lo ajustamos luego
+                    es_principal = FALSE
+              WHERE persona_id = $1 AND lower(correo) = $2
+            RETURNING id`,
+            [id, correo.toLowerCase()]
+          );
+          if (!upd.rowCount) {
+            await client.query(
+              `INSERT INTO persona_correo (persona_id, correo, es_principal, activo)
+               VALUES ($1, $2, FALSE, TRUE)`,
+              [id, correo]
+            );
+          }
+        }
+      }
+
+      // Contrato heredado: sincronía completa mediante arreglo `correos`
+      if (hasCorreosArray) {
+        await client.query(
+          `UPDATE persona_correo
+              SET activo = FALSE,
+                  es_principal = FALSE
+            WHERE persona_id = $1
+              AND (activo = TRUE OR es_principal = TRUE)
+              AND lower(correo) <> ALL ($2::text[])`,
+          [id, legacyIncoming.map(c => c.toLowerCase())]
+        );
+
+        await client.query(
+          `UPDATE persona_correo
+              SET es_principal = FALSE
+            WHERE persona_id = $1
+              AND es_principal = TRUE`,
+          [id]
+        );
+
+        for (const correo of legacyIncoming) {
+          const upd = await client.query(
+            `UPDATE persona_correo
+                SET activo = TRUE,
+                    es_principal = FALSE
               WHERE persona_id = $1 AND lower(correo) = $2
             RETURNING id`,
             [id, correo.toLowerCase()]
@@ -216,20 +373,14 @@ export default class PersonasService {
           }
         }
 
-        // c) fija principal = primer correo de la lista (si hay lista)
-        await client.query(
-          `UPDATE persona_correo SET es_principal = FALSE WHERE persona_id = $1 AND activo = TRUE`,
-          [id]
-        );
-        if (incoming.length) {
+        if (legacyIncoming.length) {
           await client.query(
             `UPDATE persona_correo
                 SET es_principal = TRUE
               WHERE persona_id = $1 AND lower(correo) = $2`,
-            [id, incoming[0].toLowerCase()]
+            [id, legacyIncoming[0].toLowerCase()]
           );
         }
-        // trigger actualiza persona.correo_principal
       }
 
       await client.query('COMMIT');
@@ -254,6 +405,21 @@ export default class PersonasService {
     try {
       await client.query('BEGIN');
 
+      /* Bloquea fila de persona y valida que no tenga cuenta SSO vinculada en public.app_users */
+      await client.query(`SELECT id FROM public.persona WHERE id = $1 FOR UPDATE`, [id]);
+
+      const ssoLink = await client.query(
+        `SELECT 1 FROM public.app_users WHERE persona_id = $1 LIMIT 1`,
+        [id]
+      );
+      if (ssoLink.rowCount) {
+        const conflictErr = new Error(
+          'Esta persona tiene una cuenta de acceso vinculada. Administra primero su situación desde Usuarios SSO.'
+        ) as Error & { status?: number };
+        conflictErr.status = 409;
+        throw conflictErr;
+      }
+
       /* Valida que no tenga asignaciones activas*/
 
       const asign = await client.query(
@@ -266,14 +432,15 @@ export default class PersonasService {
             SET activo = FALSE,
                 fecha_baja = NOW(),
                 correo_principal = NULL,
-                updated_at = NOW()
+                actualizado_en = NOW()
           WHERE id = $1`,
         [id]
       );
 
       await client.query(
         `UPDATE persona_correo
-            SET activo = FALSE
+            SET activo = FALSE,
+                es_principal = FALSE
           WHERE persona_id = $1`,
         [id]
       );

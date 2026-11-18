@@ -21,6 +21,7 @@ import configRoutes from './routes/solicitudes-config';
 import solicitudesRoutes from './routes/solicitudes';
 import existenciasRoutes from './routes/existencias';
 import personaRoutes from './routes/personas';
+import tiUsuariosRoutes from './routes/tiUsuarios';
 import tipoDispositivoRoutes from './routes/tipoDispositivo';
 import tipoPerifericoRoutes from './routes/tipoPeriferico';
 import estadoDispositivoRoutes from './routes/estadoDispositivo';
@@ -46,6 +47,7 @@ import cnisGruposTerapeuticosRoutes from './routes/cnis-grupos-terapeuticos';
 import reporteCpmSemanalRoutes from './routes/reporteCpmSemanal';
 import reporteRadarSemanalRoutes from './routes/reporteRadarSemanal';
 import universosAbastoRoutes from './routes/universos-abasto';
+import rhRoutes from './routes/rh';
 
 import compression from 'compression';
 import { fetch, Headers } from 'undici';
@@ -95,6 +97,7 @@ app.use('/api/solicitudes', solicitudesRoutes);
 app.use('/api/existencias-temp', existenciasRoutes);
 app.use('/api/catalogos/tipos-dispositivo', tipoDispositivoRoutes);
 app.use('/api/ti/personas', personaRoutes);
+app.use('/api/ti', tiUsuariosRoutes);
 app.use('/api/catalogos/tipos-periferico', tipoPerifericoRoutes);
 app.use('/api/catalogos/estados-dispositivo', estadoDispositivoRoutes);
 app.use('/api/dispositivos', dispositivosRoutes);
@@ -117,6 +120,7 @@ app.use('/api/cnis/grupos-terapeuticos', cnisGruposTerapeuticosRoutes);
 app.use('/api/reportes-cpm-semanal', reporteCpmSemanalRoutes);
 app.use('/api/reportes-radar-semanal', reporteRadarSemanalRoutes);
 app.use('/api/abasto/universos', universosAbastoRoutes);
+app.use('/api/rh', rhRoutes);
 
 
 app.use('/api', asignacionesRoutes);

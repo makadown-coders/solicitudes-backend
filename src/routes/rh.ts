@@ -70,4 +70,25 @@ router.post(
   controller.createAdscripcionPorUnidad.bind(controller)
 );
 
+router.get(
+  '/personas',
+  requireAuth,
+  requireRhAccess(),
+  controller.listPersonasPadron.bind(controller)
+);
+
+router.post(
+  '/personas',
+  requireAuth,
+  requireRhAccess(),
+  controller.createPersona.bind(controller)
+);
+
+router.patch(
+  '/personas/:personaId/estado',
+  requireAuth,
+  requireRhAccess(),
+  controller.updatePersonaEstado.bind(controller)
+);
+
 export default router;

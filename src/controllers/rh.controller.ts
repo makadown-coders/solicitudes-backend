@@ -94,6 +94,26 @@ const ALLOWED_UPDATE_IDENTIFICACION_KEYS: ReadonlySet<string> = new Set([
   'curp',
 ]);
 
+const ALLOWED_CREATE_PERSONA_KEYS: ReadonlySet<string> = new Set([
+  'nombres',
+  'apellidos',
+  'rfc',
+  'curp',
+  'cargo',
+  'correo_principal',
+  'unidad_medica_id',
+]);
+
+const ALLOWED_UPDATE_PERSONA_ESTADO_KEYS: ReadonlySet<string> = new Set(['activo']);
+
+const ALLOWED_LIST_PERSONAS_QUERY_KEYS: ReadonlySet<string> = new Set([
+  'q',
+  'page',
+  'pageSize',
+  'estado',
+  'unidadId',
+]);
+
 export default class RhController {
   private readonly service = new RhService();
 
@@ -566,6 +586,221 @@ export default class RhController {
       }
       console.error('Error en PATCH /api/rh/unidades/:unidadId/personal/:adscripcionId/identificacion');
       res.status(500).json({ error: 'Error interno al actualizar la identificación del trabajador' });
+    }
+  }
+
+  async createPersona(req: RhAuthenticatedRequest, res: Response): Promise<void> {
+    if (typeof req.user?.sub !== 'string' || !req.user.sub.trim()) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    if (!req.rhAccess) {
+      res.status(403).json({ error: 'Permiso insuficiente' });
+      return;
+    }
+
+    if (req.rhAccess.grantedBy !== 'RECURSOS_HUMANOS' || req.rhAccess.scope !== 'GLOBAL') {
+      res.status(403).json({
+        error:
+          'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para registrar personas en el padrón institucional',
+      });
+      return;
+    }
+
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      res.status(400).json({ error: 'Payload inválido' });
+      return;
+    }
+
+    for (const key of Object.keys(body)) {
+      if (!ALLOWED_CREATE_PERSONA_KEYS.has(key)) {
+        res.status(400).json({ error: `Propiedad no permitida: ${key}` });
+        return;
+      }
+    }
+
+    try {
+      const userAgent =
+        typeof req.get === 'function' ? req.get('User-Agent') ?? null : null;
+      const ip = typeof req.ip === 'string' ? req.ip : null;
+
+      const created = await this.service.createPersonaInstitucional(
+        req.rhAccess,
+        body as Record<string, unknown>,
+        {
+          userId: req.user.sub.trim(),
+          ip,
+          userAgent,
+        }
+      );
+
+      if (typeof res.set === 'function') {
+        res.set('Cache-Control', 'no-store');
+      }
+      res.status(201).json(created);
+    } catch (err) {
+      if (err instanceof RhHttpError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      console.error('Error en POST /api/rh/personas');
+      res.status(500).json({ error: 'Error interno al registrar la persona en el padrón' });
+    }
+  }
+
+  async updatePersonaEstado(req: RhAuthenticatedRequest, res: Response): Promise<void> {
+    if (typeof req.user?.sub !== 'string' || !req.user.sub.trim()) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    if (!req.rhAccess) {
+      res.status(403).json({ error: 'Permiso insuficiente' });
+      return;
+    }
+
+    if (req.rhAccess.grantedBy !== 'RECURSOS_HUMANOS' || req.rhAccess.scope !== 'GLOBAL') {
+      res.status(403).json({
+        error:
+          'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para modificar el estado administrativo de personas',
+      });
+      return;
+    }
+
+    const personaId = parseUnidadIdParam(req.params?.personaId);
+    if (personaId === null) {
+      res.status(400).json({ error: 'Identificador de persona inválido' });
+      return;
+    }
+
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      res.status(400).json({ error: 'Payload inválido' });
+      return;
+    }
+
+    const keys = Object.keys(body);
+    if (keys.length !== 1 || !ALLOWED_UPDATE_PERSONA_ESTADO_KEYS.has(keys[0])) {
+      res.status(400).json({
+        error: 'El cuerpo debe contener únicamente la propiedad booleana "activo"',
+      });
+      return;
+    }
+
+    if (typeof body.activo !== 'boolean') {
+      res.status(400).json({ error: 'El campo "activo" debe ser un booleano real (true o false)' });
+      return;
+    }
+
+    try {
+      const userAgent =
+        typeof req.get === 'function' ? req.get('User-Agent') ?? null : null;
+      const ip = typeof req.ip === 'string' ? req.ip : null;
+
+      const updated = await this.service.updatePersonaEstadoAdministrativo(
+        req.rhAccess,
+        personaId,
+        body.activo,
+        {
+          userId: req.user.sub.trim(),
+          ip,
+          userAgent,
+        }
+      );
+
+      if (typeof res.set === 'function') {
+        res.set('Cache-Control', 'no-store');
+      }
+      res.status(200).json(updated);
+    } catch (err) {
+      if (err instanceof RhHttpError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      console.error('Error en PATCH /api/rh/personas/:personaId/estado');
+      res.status(500).json({ error: 'Error interno al actualizar el estado administrativo de la persona' });
+    }
+  }
+
+  async listPersonasPadron(req: RhAuthenticatedRequest, res: Response): Promise<void> {
+    if (!req.rhAccess) {
+      res.status(403).json({ error: 'Permiso insuficiente' });
+      return;
+    }
+
+    if (req.rhAccess.grantedBy !== 'RECURSOS_HUMANOS' || req.rhAccess.scope !== 'GLOBAL') {
+      res.status(403).json({
+        error:
+          'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para consultar el padrón institucional completo',
+      });
+      return;
+    }
+
+    const query = (req.query ?? {}) as Record<string, unknown>;
+    for (const key of Object.keys(query)) {
+      if (!ALLOWED_LIST_PERSONAS_QUERY_KEYS.has(key)) {
+        res.status(400).json({ error: `Parámetro de consulta no permitido: ${key}` });
+        return;
+      }
+    }
+
+    const parsedPagination = parsePaginationAndSearchQuery(query);
+    if (!parsedPagination.ok) {
+      res.status(400).json({ error: parsedPagination.error });
+      return;
+    }
+
+    if (isInvalidNonStringQuery(query.estado) || isInvalidNonStringQuery(query.unidadId)) {
+      res.status(400).json({ error: 'Parámetros de consulta inválidos' });
+      return;
+    }
+
+    let estado: 'activas' | 'inactivas' | 'todas' = 'todas';
+    const rawEstado = extractSingleStringQuery(query.estado);
+    if (rawEstado !== null && rawEstado.trim() !== '') {
+      const normEstado = rawEstado.trim().toLowerCase();
+      if (normEstado !== 'activas' && normEstado !== 'inactivas' && normEstado !== 'todas') {
+        res.status(400).json({
+          error: 'El parámetro "estado" debe ser "activas", "inactivas" o "todas"',
+        });
+        return;
+      }
+      estado = normEstado;
+    }
+
+    let unidadId: number | null = null;
+    const rawUnidadId = extractSingleStringQuery(query.unidadId);
+    if (rawUnidadId !== null && rawUnidadId.trim() !== '') {
+      const parsedUnidad = parseUnidadIdParam(rawUnidadId);
+      if (parsedUnidad === null) {
+        res.status(400).json({ error: 'El parámetro "unidadId" debe ser un entero positivo válido' });
+        return;
+      }
+      unidadId = parsedUnidad;
+    }
+
+    try {
+      const result = await this.service.listPersonasPadronInstitucional(req.rhAccess, {
+        q: parsedPagination.q,
+        page: parsedPagination.page,
+        pageSize: parsedPagination.pageSize,
+        estado,
+        unidadId,
+      });
+
+      if (typeof res.set === 'function') {
+        res.set('Cache-Control', 'no-store');
+      }
+      res.status(200).json(result);
+    } catch (err) {
+      if (err instanceof RhHttpError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      console.error('Error en GET /api/rh/personas');
+      res.status(500).json({ error: 'Error interno al consultar el padrón institucional' });
     }
   }
 }

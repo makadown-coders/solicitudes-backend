@@ -3098,7 +3098,7 @@ async function run() {
       const adminRoutes = rhRouter.stack.filter(
         (l) => l.route && l.route.path !== '/mi-contexto'
       );
-      assert.equal(adminRoutes.length, 8);
+      assert.equal(adminRoutes.length, 11);
       for (const layer of adminRoutes) {
         assert.equal(
           layer.route.stack.length,
@@ -3396,13 +3396,616 @@ async function run() {
       assert.equal(resAdminEndpoint.statusCode, 403);
       passed++;
     }
+
+    // =========================================================================
+    // SUITE RH-4A.1A: POST /api/rh/personas y PATCH /api/rh/personas/:personaId/estado
+    // =========================================================================
+
+    const personaStore = [
+      {
+        id: 201,
+        nombres: 'Persona',
+        apellidos: 'Activa Sin Vinculos',
+        nombre_completo: 'Persona Activa Sin Vinculos',
+        rfc: 'PASV800101AB1',
+        curp: 'PASV800101MDFR0001',
+        cargo: 'Analista',
+        correo_principal: 'persona.sin.vinculos@imssbienestar.gob.mx',
+        unidad_medica_id: 10,
+        activo: true,
+        fecha_baja: null,
+        hasActiveUser: false,
+        hasVigenteAdscripcion: false,
+      },
+      {
+        id: 202,
+        nombres: 'Persona',
+        apellidos: 'Con Cuenta Activa',
+        nombre_completo: 'Persona Con Cuenta Activa',
+        rfc: null,
+        curp: null,
+        cargo: 'Médico',
+        correo_principal: null,
+        unidad_medica_id: 10,
+        activo: true,
+        fecha_baja: null,
+        hasActiveUser: true,
+        hasVigenteAdscripcion: false,
+      },
+      {
+        id: 203,
+        nombres: 'Persona',
+        apellidos: 'Con Adscripcion Vigente',
+        nombre_completo: 'Persona Con Adscripcion Vigente',
+        rfc: null,
+        curp: null,
+        cargo: 'Enfermería',
+        correo_principal: null,
+        unidad_medica_id: 10,
+        activo: true,
+        fecha_baja: null,
+        hasActiveUser: false,
+        hasVigenteAdscripcion: true,
+      },
+      {
+        id: 204,
+        nombres: 'Persona',
+        apellidos: 'Previamente Inactiva',
+        nombre_completo: 'Persona Previamente Inactiva',
+        rfc: null,
+        curp: null,
+        cargo: null,
+        correo_principal: null,
+        unidad_medica_id: null,
+        activo: false,
+        fecha_baja: '2026-01-15',
+        hasActiveUser: false,
+        hasVigenteAdscripcion: false,
+      },
+    ];
+    let nextPersonaId = 205;
+    let simulatePersonaAuditError = false;
+    const personaTxEvents = [];
+    const personaAuditLogs = [];
+    const appUsersCreated = [];
+
+    pool.connect = async () => ({
+      query: async (sql, params = []) => {
+        const s = String(sql).trim();
+        if (s === 'BEGIN' || s === 'COMMIT' || s === 'ROLLBACK') {
+          personaTxEvents.push(s);
+          return { rows: [], rowCount: 0 };
+        }
+        if (s.includes('FROM public.unidad_medica') && s.includes('WHERE id = $1')) {
+          const umId = Number(params[0]);
+          const valid = [10, 20, 30, 177].includes(umId);
+          return { rows: valid ? [{ id: umId }] : [], rowCount: valid ? 1 : 0 };
+        }
+        if (s.startsWith('INSERT INTO public.persona')) {
+          const [nombres, apellidos, rfc, curp, cargo, correo, unidadId] = params;
+          if (rfc && personaStore.some((p) => p.rfc === rfc)) {
+            const err = new Error('duplicate key value violates unique constraint "uq_persona_rfc"');
+            err.code = '23505';
+            err.constraint = 'uq_persona_rfc';
+            throw err;
+          }
+          if (curp && personaStore.some((p) => p.curp === curp)) {
+            const err = new Error('duplicate key value violates unique constraint "uq_persona_curp"');
+            err.code = '23505';
+            err.constraint = 'uq_persona_curp';
+            throw err;
+          }
+          const created = {
+            id: nextPersonaId++,
+            nombres,
+            apellidos,
+            nombre_completo: `${nombres} ${apellidos}`.trim(),
+            rfc,
+            curp,
+            cargo,
+            correo_principal: correo,
+            unidad_medica_id: unidadId,
+            activo: true,
+            fecha_baja: null,
+            hasActiveUser: false,
+            hasVigenteAdscripcion: false,
+          };
+          personaStore.push(created);
+          return { rows: [created], rowCount: 1 };
+        }
+        if (s.includes('FROM public.persona') && s.includes('FOR UPDATE')) {
+          const pId = Number(params[0]);
+          const found = personaStore.find((p) => p.id === pId);
+          return { rows: found ? [{ ...found }] : [], rowCount: found ? 1 : 0 };
+        }
+        if (s.includes('FROM public.app_users') && s.includes('persona_id = $1')) {
+          const pId = Number(params[0]);
+          const found = personaStore.find((p) => p.id === pId);
+          return {
+            rows: found && found.hasActiveUser ? [{ id: 'u-active-1' }] : [],
+            rowCount: found && found.hasActiveUser ? 1 : 0,
+          };
+        }
+        if (s.includes('FROM public.rh_adscripcion_laboral') && s.includes('persona_id = $1')) {
+          const pId = Number(params[0]);
+          const found = personaStore.find((p) => p.id === pId);
+          return {
+            rows: found && found.hasVigenteAdscripcion ? [{ id: 9901 }] : [],
+            rowCount: found && found.hasVigenteAdscripcion ? 1 : 0,
+          };
+        }
+        if (s.startsWith('UPDATE public.persona')) {
+          const pId = Number(params[0]);
+          const found = personaStore.find((p) => p.id === pId);
+          if (s.includes('activo = FALSE')) {
+            found.activo = false;
+            found.fecha_baja = '2026-11-18';
+          } else {
+            found.activo = true;
+            found.fecha_baja = null;
+          }
+          return { rows: [{ ...found }], rowCount: 1 };
+        }
+        if (s.includes('INSERT INTO public.app_audit_logs')) {
+          if (simulatePersonaAuditError) {
+            throw new Error('Simulated audit failure');
+          }
+          personaAuditLogs.push({
+            user_id: params[0],
+            action: params[1],
+            resource: params[2],
+            payload: JSON.parse(params[5]),
+          });
+          return { rows: [], rowCount: 1 };
+        }
+        throw new Error(`Unexpected SQL in RH-4A.1A mock: ${s}`);
+      },
+      release: () => {},
+    });
+
+    // 49 (RH-4A.1A #13, #14, #15): Autorización exclusiva RECURSOS_HUMANOS GLOBAL para POST /personas y PATCH /personas/:id/estado
+    {
+      for (const roleCtx of [
+        undefined,
+        { scope: 'CLUES', clues: ['BCIMB000001'], grantedBy: 'RECURSOS_HUMANOS' },
+        { scope: 'GLOBAL', clues: [], grantedBy: 'ADMIN_TIC' },
+      ]) {
+        const resCreate = createMockRes();
+        await controller.createPersona(
+          { user: { sub: AUTH_USER_UUID }, rhAccess: roleCtx, body: { nombres: 'Ana', apellidos: 'Lopez' } },
+          resCreate
+        );
+        assert.equal(resCreate.statusCode, 403);
+
+        const resEstado = createMockRes();
+        await controller.updatePersonaEstado(
+          { user: { sub: AUTH_USER_UUID }, rhAccess: roleCtx, params: { personaId: '201' }, body: { activo: false } },
+          resEstado
+        );
+        assert.equal(resEstado.statusCode, 403);
+      }
+      assert.equal(personaTxEvents.length, 0);
+      passed++;
+    }
+
+    // 50 (RH-4A.1A #1-#12, #16, #24, #26): Alta de personas (obligatorios, sin RFC/CURP, RFC 10/13, rechazo moral 12, CURP inválida, duplicados 409, nombres vacíos, campos desconocidos, unidad inexistente, sin crear app_users)
+    {
+      const rhGlobal = { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' };
+
+      // Alta con campos obligatorios sin RFC/CURP -> 201, Cache-Control: no-store, sin crear app_users
+      const resMin = createMockRes();
+      await controller.createPersona(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: rhGlobal,
+          body: { nombres: 'Laura', apellidos: 'Ramirez' },
+        },
+        resMin
+      );
+      assert.equal(resMin.statusCode, 201);
+      assert.equal(resMin.headers['cache-control'], 'no-store');
+      assert.equal(resMin.body.nombre_completo, 'Laura Ramirez');
+      assert.equal(resMin.body.activo, true);
+      assert.equal(resMin.body.tiene_rfc, false);
+      assert.equal(resMin.body.tiene_curp, false);
+      assert.equal(appUsersCreated.length, 0);
+
+      // Alta con RFC de 10 caracteres válido estructuralmente
+      const resRfc10 = createMockRes();
+      await controller.createPersona(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: rhGlobal,
+          body: { nombres: 'Mario', apellidos: 'Diaz', rfc: 'DIAM850202', unidad_medica_id: 10 },
+        },
+        resRfc10
+      );
+      assert.equal(resRfc10.statusCode, 201);
+      assert.equal(resRfc10.body.tiene_rfc, true);
+      assert.equal(resRfc10.body.rfc_masked, '*******202');
+
+      // Alta con RFC completo de 13 caracteres y CURP de 18 caracteres (devuelve enmascarados, nunca completos)
+      const resRfc13 = createMockRes();
+      await controller.createPersona(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: rhGlobal,
+          body: {
+            nombres: 'Sofia',
+            apellidos: 'Castro',
+            rfc: 'CASS900303XYZ',
+            curp: 'CASS900303MDFR0002',
+            cargo: 'Química',
+            correo_principal: 'sofia.castro@imssbienestar.gob.mx',
+          },
+        },
+        resRfc13
+      );
+      assert.equal(resRfc13.statusCode, 201);
+      assert.equal(resRfc13.body.rfc_masked, '**********XYZ');
+      assert.equal(resRfc13.body.curp_masked, '****************02');
+      assert.equal(JSON.stringify(resRfc13.body).includes('CASS900303XYZ'), false);
+      assert.equal(JSON.stringify(resRfc13.body).includes('CASS900303MDFR0002'), false);
+
+      // Rechazo de RFC persona moral (12 caracteres), CURP inválida, nombres vacíos, campos desconocidos y unidad inexistente
+      const resMoral = createMockRes();
+      await controller.createPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, body: { nombres: 'A', apellidos: 'B', rfc: 'EMP900101ABC' } },
+        resMoral
+      );
+      assert.equal(resMoral.statusCode, 400);
+
+      const resBadCurp = createMockRes();
+      await controller.createPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, body: { nombres: 'A', apellidos: 'B', curp: 'CURPINVALIDA' } },
+        resBadCurp
+      );
+      assert.equal(resBadCurp.statusCode, 400);
+
+      const resEmptyNames = createMockRes();
+      await controller.createPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, body: { nombres: '   ', apellidos: 'B' } },
+        resEmptyNames
+      );
+      assert.equal(resEmptyNames.statusCode, 400);
+
+      const resUnknownField = createMockRes();
+      await controller.createPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, body: { nombres: 'A', apellidos: 'B', nombre_completo: 'X' } },
+        resUnknownField
+      );
+      assert.equal(resUnknownField.statusCode, 400);
+
+      const resBadUnidad = createMockRes();
+      await controller.createPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, body: { nombres: 'A', apellidos: 'B', unidad_medica_id: 99999 } },
+        resBadUnidad
+      );
+      assert.equal(resBadUnidad.statusCode, 404);
+
+      // RFC duplicado y CURP duplicada -> HTTP 409 sin revelar propietario
+      const resDupRfc = createMockRes();
+      await controller.createPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, body: { nombres: 'Otro', apellidos: 'User', rfc: 'PASV800101AB1' } },
+        resDupRfc
+      );
+      assert.equal(resDupRfc.statusCode, 409);
+
+      const resDupCurp = createMockRes();
+      await controller.createPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, body: { nombres: 'Otro', apellidos: 'User', curp: 'PASV800101MDFR0001' } },
+        resDupCurp
+      );
+      assert.equal(resDupCurp.statusCode, 409);
+
+      // Auditoría sin RFC ni CURP
+      assert.equal(personaAuditLogs.filter((a) => a.action === 'RH_CREATE_PERSONA').length, 3);
+      assert.equal(JSON.stringify(personaAuditLogs).includes('CASS900303XYZ'), false);
+      assert.equal(JSON.stringify(personaAuditLogs).includes('CASS900303MDFR0002'), false);
+      passed++;
+    }
+
+    // 51 (RH-4A.1A #17-#23): Cambio de estado (desactivación válida, reactivación, idempotencia, activo no booleano, persona inexistente, cuenta activa 409, adscripción vigente 409)
+    {
+      const rhGlobal = { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' };
+
+      // activo no booleano ("false") -> 400
+      const resStrBool = createMockRes();
+      await controller.updatePersonaEstado(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '201' }, body: { activo: 'false' } },
+        resStrBool
+      );
+      assert.equal(resStrBool.statusCode, 400);
+
+      // persona inexistente -> 404
+      const resNotFound = createMockRes();
+      await controller.updatePersonaEstado(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '99999' }, body: { activo: false } },
+        resNotFound
+      );
+      assert.equal(resNotFound.statusCode, 404);
+
+      // cuenta activa vinculada -> 409
+      const resActiveUser = createMockRes();
+      await controller.updatePersonaEstado(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '202' }, body: { activo: false } },
+        resActiveUser
+      );
+      assert.equal(resActiveUser.statusCode, 409);
+
+      // adscripción vigente -> 409
+      const resVigenteAds = createMockRes();
+      await controller.updatePersonaEstado(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '203' }, body: { activo: false } },
+        resVigenteAds
+      );
+      assert.equal(resVigenteAds.statusCode, 409);
+
+      // desactivación válida (persona 201) -> 200, activo=false, fecha_baja set
+      const auditCountBefore = personaAuditLogs.length;
+      const resDeactivate = createMockRes();
+      await controller.updatePersonaEstado(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '201' }, body: { activo: false } },
+        resDeactivate
+      );
+      assert.equal(resDeactivate.statusCode, 200);
+      assert.equal(resDeactivate.body.persona.activo, false);
+      assert.equal(resDeactivate.body.persona.fecha_baja, '2026-11-18');
+      assert.equal(resDeactivate.body.idempotente, false);
+      assert.equal(personaAuditLogs.length, auditCountBefore + 1);
+
+      // idempotencia (volver a enviar activo=false) -> 200, idempotente=true, NO duplica auditoría
+      const resIdempotent = createMockRes();
+      await controller.updatePersonaEstado(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '201' }, body: { activo: false } },
+        resIdempotent
+      );
+      assert.equal(resIdempotent.statusCode, 200);
+      assert.equal(resIdempotent.body.idempotente, true);
+      assert.equal(personaAuditLogs.length, auditCountBefore + 1);
+
+      // reactivación válida (persona 204) -> 200, activo=true, fecha_baja=null
+      const resReactivate = createMockRes();
+      await controller.updatePersonaEstado(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '204' }, body: { activo: true } },
+        resReactivate
+      );
+      assert.equal(resReactivate.statusCode, 200);
+      assert.equal(resReactivate.body.persona.activo, true);
+      assert.equal(resReactivate.body.persona.fecha_baja, null);
+      assert.equal(personaAuditLogs.length, auditCountBefore + 2);
+      passed++;
+    }
+
+    // 52 (RH-4A.1A #25, #27): Fallo de auditoría dispara ROLLBACK y devuelve HTTP 500
+    {
+      const rhGlobal = { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' };
+      simulatePersonaAuditError = true;
+      personaTxEvents.length = 0;
+
+      const resAuditFail = createMockRes();
+      await controller.createPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, body: { nombres: 'Rollback', apellidos: 'Test' } },
+        resAuditFail
+      );
+      assert.equal(resAuditFail.statusCode, 500);
+      assert.equal(personaTxEvents.includes('ROLLBACK'), true);
+      assert.equal(personaTxEvents.includes('COMMIT'), false);
+      simulatePersonaAuditError = false;
+      passed++;
+    }
+
+    // =========================================================================
+    // SUITE RH-4A.1A.1: GET /api/rh/personas (Consulta administrativa del padrón)
+    // =========================================================================
+
+    const padronMockRows = [
+      {
+        persona_id: 301,
+        nombre_completo: 'Persona Activa Oficina Central',
+        nombres: 'Persona Activa',
+        apellidos: 'Oficina Central',
+        cargo: 'Coordinación',
+        correo_principal: 'oficina.central@imssbienestar.gob.mx',
+        unidad_medica_id: 177,
+        unidad_medica_nombre: 'OFICINA CENTRAL',
+        unidad_medica_cluesimb: 'N/A',
+        rfc: 'PAOC800101AB1',
+        curp: 'PAOC800101MDFR0001',
+        activo: true,
+        fecha_baja: null,
+        tiene_cuenta_activa: true,
+      },
+      {
+        persona_id: 302,
+        nombre_completo: 'Persona Activa Sin Cuenta Ni Unidad',
+        nombres: 'Persona Activa',
+        apellidos: 'Sin Cuenta Ni Unidad',
+        cargo: null,
+        correo_principal: null,
+        unidad_medica_id: null,
+        unidad_medica_nombre: null,
+        unidad_medica_cluesimb: null,
+        rfc: null,
+        curp: null,
+        activo: true,
+        fecha_baja: null,
+        tiene_cuenta_activa: false,
+      },
+      {
+        persona_id: 303,
+        nombre_completo: 'Persona Inactiva Historica',
+        nombres: 'Persona Inactiva',
+        apellidos: 'Historica',
+        cargo: 'Auxiliar',
+        correo_principal: null,
+        unidad_medica_id: 10,
+        unidad_medica_nombre: 'HOSPITAL GENERAL MEXICALI',
+        unidad_medica_cluesimb: 'BCIMB000001',
+        rfc: 'PIHI850505XY9',
+        curp: null,
+        activo: false,
+        fecha_baja: '2026-02-01',
+        tiene_cuenta_activa: false,
+      },
+    ];
+
+    const padronCapturedQueries = [];
+    pool.query = async (sql, params = []) => {
+      const s = String(sql).trim();
+      padronCapturedQueries.push({ sql: s, params });
+      if (!s.startsWith('SELECT') || !s.includes('FROM public.persona p')) {
+        throw new Error(`Unexpected SQL in GET /api/rh/personas: ${s}`);
+      }
+
+      let filtered = [...padronMockRows];
+      let pIdx = 0;
+
+      if (s.includes('p.activo = TRUE')) {
+        filtered = filtered.filter((r) => r.activo === true);
+      } else if (s.includes('p.activo = FALSE')) {
+        filtered = filtered.filter((r) => r.activo === false);
+      }
+
+      if (s.includes('p.unidad_medica_id = $')) {
+        const uId = Number(params[pIdx++]);
+        filtered = filtered.filter((r) => r.unidad_medica_id === uId);
+      }
+
+      if (s.includes('LOWER(COALESCE(p.nombre_completo')) {
+        const qVal = String(params[pIdx++]).toLowerCase();
+        filtered = filtered.filter(
+          (r) =>
+            r.nombre_completo.toLowerCase().includes(qVal) ||
+            (r.nombres ?? '').toLowerCase().includes(qVal) ||
+            (r.apellidos ?? '').toLowerCase().includes(qVal)
+        );
+      }
+
+      const limit = Number(params[pIdx++]);
+      const offset = Number(params[pIdx++]);
+
+      filtered.sort((a, b) => {
+        if (a.activo !== b.activo) return a.activo ? -1 : 1;
+        const cmp = a.nombre_completo.toLowerCase().localeCompare(b.nombre_completo.toLowerCase());
+        if (cmp !== 0) return cmp;
+        return a.persona_id - b.persona_id;
+      });
+
+      const total = filtered.length;
+      const sliced = filtered.slice(offset, offset + limit).map((r) => ({ ...r, total }));
+      return { rows: sliced, rowCount: sliced.length };
+    };
+
+    // 53 (RH-4A.1A.1 #13, #14, #15): Autorización exclusiva RECURSOS_HUMANOS GLOBAL y rechazo de parámetros inválidos
+    {
+      for (const roleCtx of [
+        undefined,
+        { scope: 'CLUES', clues: ['BCIMB000001'], grantedBy: 'RECURSOS_HUMANOS' },
+        { scope: 'GLOBAL', clues: [], grantedBy: 'ADMIN_TIC' },
+      ]) {
+        const resDenied = createMockRes();
+        await controller.listPersonasPadron({ rhAccess: roleCtx, query: {} }, resDenied);
+        assert.equal(resDenied.statusCode, 403);
+      }
+
+      const rhGlobal = { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' };
+      const resBadParam = createMockRes();
+      await controller.listPersonasPadron(
+        { rhAccess: rhGlobal, query: { rfc: 'PAOC800101AB1' } },
+        resBadParam
+      );
+      assert.equal(resBadParam.statusCode, 400);
+
+      const resBadEstado = createMockRes();
+      await controller.listPersonasPadron(
+        { rhAccess: rhGlobal, query: { estado: 'eliminadas' } },
+        resBadEstado
+      );
+      assert.equal(resBadEstado.statusCode, 400);
+
+      const resBadUnidad = createMockRes();
+      await controller.listPersonasPadron(
+        { rhAccess: rhGlobal, query: { unidadId: 'abc' } },
+        resBadUnidad
+      );
+      assert.equal(resBadUnidad.statusCode, 400);
+
+      const resBadPage = createMockRes();
+      await controller.listPersonasPadron(
+        { rhAccess: rhGlobal, query: { page: '0' } },
+        resBadPage
+      );
+      assert.equal(resBadPage.statusCode, 400);
+      passed++;
+    }
+
+    // 54 (RH-4A.1A.1 #1-#12, #16, #17): Listado activas/inactivas/todas, búsqueda, paginación, orden, sin cuenta/adscripción/unidad, CLUES N/A, RFC/CURP enmascarados y Cache-Control: no-store
+    {
+      const rhGlobal = { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' };
+
+      // Todas sin filtro de estado
+      const resAll = createMockRes();
+      await controller.listPersonasPadron({ rhAccess: rhGlobal, query: {} }, resAll);
+      assert.equal(resAll.statusCode, 200);
+      assert.equal(resAll.headers['cache-control'], 'no-store');
+      assert.equal(resAll.body.total, 3);
+      assert.equal(resAll.body.items[0].persona_id, 301);
+      assert.equal(resAll.body.items[0].unidad_medica_cluesimb, 'N/A');
+      assert.equal(resAll.body.items[0].tiene_cuenta_activa, true);
+      assert.equal(resAll.body.items[0].rfc_masked, '**********AB1');
+      assert.equal(resAll.body.items[0].curp_masked, '****************01');
+      assert.equal(JSON.stringify(resAll.body).includes('PAOC800101AB1'), false);
+      assert.equal(JSON.stringify(resAll.body).includes('PAOC800101MDFR0001'), false);
+
+      // Persona sin cuenta ni unidad incluida
+      assert.equal(resAll.body.items[1].persona_id, 302);
+      assert.equal(resAll.body.items[1].unidad_medica_id, null);
+      assert.equal(resAll.body.items[1].tiene_cuenta_activa, false);
+
+      // Filtro activas
+      const resActivas = createMockRes();
+      await controller.listPersonasPadron(
+        { rhAccess: rhGlobal, query: { estado: 'activas' } },
+        resActivas
+      );
+      assert.equal(resActivas.statusCode, 200);
+      assert.equal(resActivas.body.total, 2);
+
+      // Filtro inactivas
+      const resInactivas = createMockRes();
+      await controller.listPersonasPadron(
+        { rhAccess: rhGlobal, query: { estado: 'inactivas' } },
+        resInactivas
+      );
+      assert.equal(resInactivas.statusCode, 200);
+      assert.equal(resInactivas.body.total, 1);
+      assert.equal(resInactivas.body.items[0].persona_id, 303);
+
+      // Búsqueda por nombre y paginación
+      const resSearch = createMockRes();
+      await controller.listPersonasPadron(
+        { rhAccess: rhGlobal, query: { q: 'Oficina', page: '1', pageSize: '1' } },
+        resSearch
+      );
+      assert.equal(resSearch.statusCode, 200);
+      assert.equal(resSearch.body.total, 1);
+      assert.equal(resSearch.body.items.length, 1);
+
+      // Cero escrituras SQL
+      assert.equal(
+        padronCapturedQueries.every((q) => q.sql.startsWith('SELECT')),
+        true
+      );
+      passed++;
+    }
   } finally {
     pool.query = originalQuery;
     pool.connect = originalConnect;
   }
 
   console.log(
-    `RH-API.1 + RH-2B.1 + RH-2B.4A + RH-2B.4C + RH-2B.4E + RH-2B.4G.1 + RH-2B.4G.2 + RH-2B.4G.2A + RH-2C.2 TESTS PASSED: ${passed}/48`
+    `RH-API.1 + RH-2B.1 + RH-2B.4A + RH-2B.4C + RH-2B.4E + RH-2B.4G.1 + RH-2B.4G.2 + RH-2B.4G.2A + RH-2C.2 + RH-4A.1A + RH-4A.1A.1 TESTS PASSED: ${passed}/54`
   );
 }
 

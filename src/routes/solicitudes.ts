@@ -5,7 +5,10 @@ import { NecesidadesPrimerNivelApsController } from '../controllers/necesidades-
 import { NecesidadesPrimerNivelProgramasPreventivosController } from '../controllers/necesidades-primer-nivel-programas-preventivos.controller';
 import ConcentradoPrimerNivelController from '../controllers/concentrado-primer-nivel.controller';
 
+import { analizarSurtimiento } from '../controllers/surtimiento-primer-nivel.controller';
+
 const r = Router();
+r.post('/primer-nivel/surtimiento', analizarSurtimiento);
 const c = new SolicitudesController();
 const aps = new NecesidadesPrimerNivelApsController();
 const preventivos = new NecesidadesPrimerNivelProgramasPreventivosController();

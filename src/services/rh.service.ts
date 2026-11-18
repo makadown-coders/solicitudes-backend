@@ -169,6 +169,65 @@ export interface RhUpdatePersonaIdentificacionResult {
   campos_modificados: string[];
 }
 
+export type RhMiContextoEstadoVinculacion =
+  | 'ADSCRIPCION_VIGENTE'
+  | 'ADSCRIPCION_HISTORICA'
+  | 'ADSCRIPCION_FUTURA'
+  | 'PENDIENTE_ADSCRIPCION_RH';
+
+export type RhAdscripcionEstadoVigencia = 'VIGENTE' | 'HISTORICA' | 'FUTURA';
+
+export interface RhMiContextoPersona {
+  persona_id: number;
+  nombre_completo: string;
+  nombres: string | null;
+  apellidos: string | null;
+  tiene_rfc: boolean;
+  rfc_masked: string | null;
+  tiene_curp: boolean;
+  curp_masked: string | null;
+}
+
+export interface RhMiContextoUnidadReferencia {
+  id: number;
+  nombre: string;
+  cluesimb: string | null;
+  origen: 'ADSCRIPCION_RH' | 'DIRECTORIO';
+}
+
+export interface RhMiContextoAdscripcionPropia {
+  adscripcion_laboral_id: number;
+  unidad_medica_id: number;
+  unidad: RhUnidadAutorizada;
+  matricula: string | null;
+  puesto: string | null;
+  turno: string | null;
+  jornada: string | null;
+  horario: string | null;
+  vigente_desde: string;
+  vigente_hasta: string | null;
+  activo: boolean;
+  es_vigente: boolean;
+  estado_vigencia: RhAdscripcionEstadoVigencia;
+  observaciones: string | null;
+}
+
+export interface RhMiContextoPermisos {
+  puede_ver_perfil_propio: true;
+  puede_administrar_personal_desde_autogestion: false;
+  puede_revelar_identificadores_desde_autogestion: false;
+  puede_editar_identificacion_desde_autogestion: false;
+}
+
+export interface RhMiContextoResult {
+  modo: 'EMPLEADO';
+  persona: RhMiContextoPersona;
+  unidad_referencia: RhMiContextoUnidadReferencia | null;
+  estado_vinculacion_rh: RhMiContextoEstadoVinculacion;
+  adscripciones: RhMiContextoAdscripcionPropia[];
+  permisos: RhMiContextoPermisos;
+}
+
 export class RhHttpError extends Error {
   constructor(
     public readonly status: 400 | 401 | 403 | 404 | 409,
@@ -392,6 +451,275 @@ function buildEffectiveFichaPermisos(access: RhAccessContext): RhTrabajadorFicha
 }
 
 export default class RhService {
+  /**
+   * Resuelve el contexto individual de autogestión del empleado autenticado (`GET /api/rh/mi-contexto`).
+   *
+   * Reglas estrictas de identidad, seguridad y contención:
+   * - Identidad canónica: `req.user.sub` -> `public.app_users.id` -> `app_users.persona_id` -> `public.persona.id`.
+   * - Nunca utiliza `persona.user_id`, ni coincidencias de correo o nombre, ni acepta `persona_id` externo.
+   * - Exige que la cuenta exista en `public.app_users` con `UPPER(TRIM(status)) = 'ACTIVE'`, que tenga
+   *   `persona_id IS NOT NULL` y que la persona vinculada exista en `public.persona` con `activo = TRUE`.
+   * - No otorga acceso por el simple hecho de poseer `ADMIN_TIC GLOBAL` u otro rol si no tiene persona activa.
+   * - Reconoce `OFICINA CENTRAL` (`unidad_medica.id = 177`, `cluesimb = 'N/A'`) mediante `unidad_medica.id`.
+   * - Consulta exclusivamente las adscripciones de `rh_adscripcion_laboral.persona_id = persona.id` y clasifica
+   *   su vigencia (`VIGENTE`, `FUTURA`, `HISTORICA`) contra `CURRENT_DATE` de PostgreSQL.
+   * - Devuelve siempre `rfc_masked` y `curp_masked` (nunca identificadores completos).
+   */
+  async getMiContextoEmpleado(rawUserId: unknown): Promise<RhMiContextoResult> {
+    const userId = typeof rawUserId === 'string' ? rawUserId.trim() : '';
+    if (!UUID_REGEX.test(userId)) {
+      throw new RhHttpError(401, 'Unauthorized');
+    }
+
+    const identityRes = await pool.query<{
+      user_id: string;
+      user_status: string;
+      user_persona_id: number | null;
+      persona_id: number | null;
+      nombre_completo: string | null;
+      nombres: string | null;
+      apellidos: string | null;
+      rfc: string | null;
+      curp: string | null;
+      persona_activo: boolean | null;
+      directorio_unidad_id: number | null;
+      directorio_unidad_nombre: string | null;
+      directorio_unidad_cluesimb: string | null;
+      directorio_unidad_activo: boolean | null;
+    }>(
+      `SELECT
+         u.id AS user_id,
+         u.status AS user_status,
+         u.persona_id AS user_persona_id,
+         p.id AS persona_id,
+         p.nombre_completo,
+         p.nombres,
+         p.apellidos,
+         p.rfc,
+         p.curp,
+         p.activo AS persona_activo,
+         um.id AS directorio_unidad_id,
+         um.nombre AS directorio_unidad_nombre,
+         um.cluesimb AS directorio_unidad_cluesimb,
+         um.activo AS directorio_unidad_activo
+       FROM public.app_users u
+       LEFT JOIN public.persona p
+         ON p.id = u.persona_id
+       LEFT JOIN public.unidad_medica um
+         ON um.id = p.unidad_medica_id
+      WHERE u.id = $1
+      LIMIT 1`,
+      [userId]
+    );
+
+    const identity = identityRes.rows[0];
+    if (!identity) {
+      throw new RhHttpError(401, 'Cuenta de usuario no encontrada');
+    }
+
+    const normalizedStatus = String(identity.user_status ?? '')
+      .trim()
+      .toUpperCase();
+    if (normalizedStatus !== 'ACTIVE') {
+      throw new RhHttpError(403, 'La cuenta de usuario no se encuentra activa');
+    }
+
+    if (
+      identity.user_persona_id === null ||
+      identity.user_persona_id === undefined ||
+      identity.persona_id === null ||
+      identity.persona_id === undefined
+    ) {
+      throw new RhHttpError(
+        403,
+        'La cuenta autenticada no está vinculada a un registro de persona institucional'
+      );
+    }
+
+    if (identity.persona_activo !== true) {
+      throw new RhHttpError(
+        403,
+        'El registro de persona institucional vinculado a esta cuenta se encuentra inactivo'
+      );
+    }
+
+    const personaId = Number(identity.persona_id);
+
+    const adscripcionesRes = await pool.query<{
+      adscripcion_laboral_id: number;
+      unidad_medica_id: number;
+      unidad_nombre: string;
+      unidad_cluesimb: string | null;
+      matricula: string | null;
+      puesto: string | null;
+      turno: string | null;
+      jornada: string | null;
+      horario: string | null;
+      vigente_desde: unknown;
+      vigente_hasta: unknown;
+      activo: boolean;
+      observaciones: string | null;
+      current_date_iso: unknown;
+    }>(
+      `SELECT
+         al.id AS adscripcion_laboral_id,
+         al.unidad_medica_id,
+         um.nombre AS unidad_nombre,
+         um.cluesimb AS unidad_cluesimb,
+         al.matricula,
+         al.puesto,
+         al.turno,
+         al.jornada,
+         al.horario,
+         al.vigente_desde,
+         al.vigente_hasta,
+         al.activo,
+         al.observaciones,
+         CURRENT_DATE::text AS current_date_iso
+       FROM public.rh_adscripcion_laboral al
+       JOIN public.unidad_medica um
+         ON um.id = al.unidad_medica_id
+      WHERE al.persona_id = $1
+      ORDER BY
+        al.activo DESC,
+        al.vigente_desde DESC,
+        al.id DESC`,
+      [personaId]
+    );
+
+    const fallbackTodayIso = new Date().toISOString().slice(0, 10);
+
+    const mappedAdscripciones: RhMiContextoAdscripcionPropia[] = adscripcionesRes.rows.map(
+      (row) => {
+        const desdeIso = formatDateOnly(row.vigente_desde) ?? '';
+        const hastaIso = formatDateOnly(row.vigente_hasta);
+        const todayIso = formatDateOnly(row.current_date_iso) ?? fallbackTodayIso;
+        const isActive = Boolean(row.activo);
+
+        let estadoVigencia: RhAdscripcionEstadoVigencia;
+        if (!isActive) {
+          estadoVigencia = 'HISTORICA';
+        } else if (desdeIso > todayIso) {
+          estadoVigencia = 'FUTURA';
+        } else if (hastaIso !== null && hastaIso < todayIso) {
+          estadoVigencia = 'HISTORICA';
+        } else {
+          estadoVigencia = 'VIGENTE';
+        }
+
+        const unidad: RhUnidadAutorizada = {
+          id: Number(row.unidad_medica_id),
+          nombre: String(row.unidad_nombre),
+          cluesimb: row.unidad_cluesimb ?? null,
+        };
+
+        return {
+          adscripcion_laboral_id: Number(row.adscripcion_laboral_id),
+          unidad_medica_id: Number(row.unidad_medica_id),
+          unidad,
+          matricula: row.matricula != null ? String(row.matricula) : null,
+          puesto: row.puesto != null ? String(row.puesto) : null,
+          turno: row.turno != null ? String(row.turno) : null,
+          jornada: row.jornada != null ? String(row.jornada) : null,
+          horario: row.horario != null ? String(row.horario) : null,
+          vigente_desde: desdeIso,
+          vigente_hasta: hastaIso,
+          activo: isActive,
+          es_vigente: estadoVigencia === 'VIGENTE',
+          estado_vigencia: estadoVigencia,
+          observaciones: row.observaciones != null ? String(row.observaciones) : null,
+        };
+      }
+    );
+
+    // Ordenar priorizando VIGENTE > FUTURA > HISTORICA y luego vigente_desde DESC, id DESC
+    const priorityMap: Record<RhAdscripcionEstadoVigencia, number> = {
+      VIGENTE: 0,
+      FUTURA: 1,
+      HISTORICA: 2,
+    };
+    mappedAdscripciones.sort((a, b) => {
+      const prioDiff = priorityMap[a.estado_vigencia] - priorityMap[b.estado_vigencia];
+      if (prioDiff !== 0) return prioDiff;
+      if (a.vigente_desde !== b.vigente_desde) {
+        return b.vigente_desde.localeCompare(a.vigente_desde);
+      }
+      return b.adscripcion_laboral_id - a.adscripcion_laboral_id;
+    });
+
+    const firstVigente = mappedAdscripciones.find((a) => a.estado_vigencia === 'VIGENTE') ?? null;
+    const firstFutura = mappedAdscripciones.find((a) => a.estado_vigencia === 'FUTURA') ?? null;
+
+    let estadoVinculacion: RhMiContextoEstadoVinculacion;
+    if (mappedAdscripciones.length === 0) {
+      estadoVinculacion = 'PENDIENTE_ADSCRIPCION_RH';
+    } else if (firstVigente) {
+      estadoVinculacion = 'ADSCRIPCION_VIGENTE';
+    } else if (firstFutura) {
+      estadoVinculacion = 'ADSCRIPCION_FUTURA';
+    } else {
+      estadoVinculacion = 'ADSCRIPCION_HISTORICA';
+    }
+
+    let unidadReferencia: RhMiContextoUnidadReferencia | null = null;
+    if (firstVigente) {
+      unidadReferencia = {
+        id: firstVigente.unidad.id,
+        nombre: firstVigente.unidad.nombre,
+        cluesimb: firstVigente.unidad.cluesimb,
+        origen: 'ADSCRIPCION_RH',
+      };
+    } else if (
+      identity.directorio_unidad_id !== null &&
+      identity.directorio_unidad_id !== undefined &&
+      identity.directorio_unidad_activo === true
+    ) {
+      unidadReferencia = {
+        id: Number(identity.directorio_unidad_id),
+        nombre: String(identity.directorio_unidad_nombre ?? ''),
+        cluesimb:
+          identity.directorio_unidad_cluesimb != null
+            ? String(identity.directorio_unidad_cluesimb)
+            : null,
+        origen: 'DIRECTORIO',
+      };
+    } else if (mappedAdscripciones.length > 0) {
+      const topAds = mappedAdscripciones[0];
+      unidadReferencia = {
+        id: topAds.unidad.id,
+        nombre: topAds.unidad.nombre,
+        cluesimb: topAds.unidad.cluesimb,
+        origen: 'ADSCRIPCION_RH',
+      };
+    }
+
+    const rfcInfo = maskSensitiveIdentifier(identity.rfc, 3);
+    const curpInfo = maskSensitiveIdentifier(identity.curp, 2);
+
+    return {
+      modo: 'EMPLEADO',
+      persona: {
+        persona_id: personaId,
+        nombre_completo: String(identity.nombre_completo ?? ''),
+        nombres: identity.nombres != null ? String(identity.nombres) : null,
+        apellidos: identity.apellidos != null ? String(identity.apellidos) : null,
+        tiene_rfc: rfcInfo.exists,
+        rfc_masked: rfcInfo.masked,
+        tiene_curp: curpInfo.exists,
+        curp_masked: curpInfo.masked,
+      },
+      unidad_referencia: unidadReferencia,
+      estado_vinculacion_rh: estadoVinculacion,
+      adscripciones: mappedAdscripciones,
+      permisos: {
+        puede_ver_perfil_propio: true,
+        puede_administrar_personal_desde_autogestion: false,
+        puede_revelar_identificadores_desde_autogestion: false,
+        puede_editar_identificacion_desde_autogestion: false,
+      },
+    };
+  }
+
   async getUnidadesAutorizadas(access: RhAccessContext): Promise<RhUnidadesAutorizadasResult> {
     if (access.scope === 'GLOBAL') {
       const { rows } = await pool.query<{ id: number; nombre: string; cluesimb: string | null }>(

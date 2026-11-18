@@ -2841,13 +2841,568 @@ async function run() {
       assert.deepEqual(resLegacyIds.body.campos_modificados, ['rfc', 'curp']);
       passed++;
     }
+
+    // =========================================================================
+    // SUITE RH-2C.2 (GET /api/rh/mi-contexto — Autogestión del empleado autenticado)
+    // =========================================================================
+
+    const MOCK_TODAY_ISO = '2026-11-18';
+
+    const MOCK_EMPLOYEES_PERSONAS = [
+      ...MOCK_PERSONAS,
+      {
+        id: 106,
+        nombre_completo: 'Mtro. Jorge Mendoza',
+        nombres: 'Jorge',
+        apellidos: 'Mendoza',
+        cargo: 'Analista Central',
+        unidad_medica_id: 177, // OFICINA CENTRAL (cluesimb = 'N/A')
+        activo: true,
+        rfc: 'MENJ820808KL1',
+        curp: 'MENJ820808HDFR0006',
+        correo_principal: 'jorge@imssb.gob.mx',
+        user_id: '99999999-9999-4999-8999-999999999999', // Columna legada persona.user_id que NUNCA debe usarse
+      },
+      {
+        id: 107,
+        nombre_completo: 'Dra. Elena Castro',
+        nombres: 'Elena',
+        apellidos: 'Castro',
+        cargo: 'Médica General',
+        unidad_medica_id: 20,
+        activo: true,
+        rfc: 'CASE880909MN2',
+        curp: 'CASE880909MDFR0007',
+        correo_principal: 'elena@imssb.gob.mx',
+      },
+      {
+        id: 108,
+        nombre_completo: 'Dr. Roberto Vega',
+        nombres: 'Roberto',
+        apellidos: 'Vega',
+        cargo: 'Médico Internista',
+        unidad_medica_id: 30,
+        activo: true,
+        rfc: 'VEGR750101PQ3',
+        curp: 'VEGR750101HDFR0008',
+        correo_principal: 'roberto@imssb.gob.mx',
+      },
+    ];
+
+    const UUID_EMP_VIGENTE = '11111111-1111-4111-8111-111111111101'; // persona 101 (con adscripción vigente + histórica)
+    const UUID_EMP_OFICINA_CENTRAL_SIN_ADS = '11111111-1111-4111-8111-111111111106'; // persona 106 (OFICINA CENTRAL id=177, sin adscripción RH)
+    const UUID_EMP_SOLO_HISTORICA = '11111111-1111-4111-8111-111111111107'; // persona 107 (solo adscripción histórica/vencida)
+    const UUID_EMP_SOLO_FUTURA = '11111111-1111-4111-8111-111111111108'; // persona 108 (solo adscripción futura)
+    const UUID_EMP_PERSONA_INACTIVA = '11111111-1111-4111-8111-111111111105'; // persona 105 (persona.activo = false)
+    const UUID_USER_INACTIVO = '11111111-1111-4111-8111-111111111190'; // status = 'SUSPENDED'
+    const UUID_CUENTA_TECNICA_SIN_PERSONA = '11111111-1111-4111-8111-111111111191'; // persona_id = null (ej. cuenta técnica ADMIN_TIC GLOBAL)
+    const UUID_USER_INEXISTENTE = '11111111-1111-4111-8111-111111111199';
+
+    const MOCK_APP_USERS = new Map([
+      [UUID_EMP_VIGENTE, { id: UUID_EMP_VIGENTE, status: 'ACTIVE', persona_id: 101 }],
+      [UUID_EMP_OFICINA_CENTRAL_SIN_ADS, { id: UUID_EMP_OFICINA_CENTRAL_SIN_ADS, status: 'ACTIVE', persona_id: 106 }],
+      [UUID_EMP_SOLO_HISTORICA, { id: UUID_EMP_SOLO_HISTORICA, status: 'ACTIVE', persona_id: 107 }],
+      [UUID_EMP_SOLO_FUTURA, { id: UUID_EMP_SOLO_FUTURA, status: 'ACTIVE', persona_id: 108 }],
+      [UUID_EMP_PERSONA_INACTIVA, { id: UUID_EMP_PERSONA_INACTIVA, status: 'ACTIVE', persona_id: 105 }],
+      [UUID_USER_INACTIVO, { id: UUID_USER_INACTIVO, status: 'SUSPENDED', persona_id: 101 }],
+      [UUID_CUENTA_TECNICA_SIN_PERSONA, { id: UUID_CUENTA_TECNICA_SIN_PERSONA, status: 'ACTIVE', persona_id: null }],
+    ]);
+
+    const MOCK_EMPLOYEE_ADSCRIPCIONES = [
+      // Persona 101: tiene 1 adscripción vigente (5001), 1 histórica inactiva (5010) y 1 futura (5011)
+      {
+        id: 5001,
+        persona_id: 101,
+        unidad_medica_id: 10,
+        matricula: 'MAT-1001',
+        puesto: 'Médico Especialista A',
+        turno: 'MATUTINO',
+        jornada: '8 HORAS',
+        horario: '07:00 - 15:00',
+        vigente_desde: '2026-01-01',
+        vigente_hasta: null,
+        activo: true,
+        observaciones: 'Base federalizada',
+      },
+      {
+        id: 5010,
+        persona_id: 101,
+        unidad_medica_id: 177,
+        matricula: 'MAT-1001-HIST',
+        puesto: 'Comisión Administrativa',
+        turno: 'MATUTINO',
+        jornada: '8 HORAS',
+        horario: '08:00 - 16:00',
+        vigente_desde: '2025-01-01',
+        vigente_hasta: '2025-12-31',
+        activo: false,
+        observaciones: 'Comisión concluida',
+      },
+      {
+        id: 5011,
+        persona_id: 101,
+        unidad_medica_id: 20,
+        matricula: 'MAT-1001-FUT',
+        puesto: 'Adscripción Programada 2027',
+        turno: 'VESPERTINO',
+        jornada: '8 HORAS',
+        horario: '14:00 - 21:30',
+        vigente_desde: '2027-01-01',
+        vigente_hasta: null,
+        activo: true,
+        observaciones: 'Cambio programado',
+      },
+      // Persona 107: solo tiene una adscripción con activo=true pero vigente_hasta vencida ('2026-06-30' < '2026-11-18')
+      {
+        id: 5020,
+        persona_id: 107,
+        unidad_medica_id: 20,
+        matricula: 'MAT-1070',
+        puesto: 'Médica General Interina',
+        turno: 'MATUTINO',
+        jornada: '8 HORAS',
+        horario: '07:00 - 15:00',
+        vigente_desde: '2026-01-01',
+        vigente_hasta: '2026-06-30',
+        activo: true,
+        observaciones: 'Interinato concluido',
+      },
+      // Persona 108: solo tiene una adscripción futura ('2026-12-01' > '2026-11-18')
+      {
+        id: 5030,
+        persona_id: 108,
+        unidad_medica_id: 30,
+        matricula: 'MAT-1080',
+        puesto: 'Médico Internista',
+        turno: 'MATUTINO',
+        jornada: '8 HORAS',
+        horario: '07:00 - 15:00',
+        vigente_desde: '2026-12-01',
+        vigente_hasta: null,
+        activo: true,
+        observaciones: 'Alta próxima quincena',
+      },
+      // Persona 104 (otro trabajador, jamás debe filtrarse al consultar 101, 106, 107 o 108)
+      {
+        id: 5003,
+        persona_id: 104,
+        unidad_medica_id: 20,
+        matricula: 'MAT-2004',
+        puesto: 'Urgenciólogo',
+        turno: 'NOCTURNO',
+        jornada: 'ACUMULADA',
+        horario: '20:00 - 08:00',
+        vigente_desde: '2026-01-15',
+        vigente_hasta: null,
+        activo: true,
+        observaciones: 'Guardia nocturna',
+      },
+    ];
+
+    const prevQueryBefore2C2 = pool.query;
+    pool.query = async (sql, params = []) => {
+      const normalized = String(sql).replace(/\s+/g, ' ').trim();
+      capturedQueries.push({ sql: normalized, params });
+
+      // Prohibir estrictamente cualquier sentencia de escritura en RH-2C.2
+      assert.equal(
+        /\b(INSERT|UPDATE|DELETE|ALTER|CREATE|DROP|TRUNCATE)\b/i.test(normalized),
+        false,
+        `Sentencia de escritura no permitida en RH-2C.2: ${normalized}`
+      );
+
+      // Verificar que NUNCA se utilice la columna legada persona.user_id
+      assert.equal(
+        /\bp\.user_id\b/i.test(normalized),
+        false,
+        `No se debe utilizar p.user_id en consultas de identidad RH: ${normalized}`
+      );
+
+      if (/FROM public\.app_users u LEFT JOIN public\.persona p ON p\.id = u\.persona_id LEFT JOIN public\.unidad_medica um ON um\.id = p\.unidad_medica_id WHERE u\.id = \$1 LIMIT 1/i.test(normalized)) {
+        const uid = String(params[0]);
+        const u = MOCK_APP_USERS.get(uid);
+        if (!u) return { rows: [], rowCount: 0 };
+        const p = u.persona_id != null
+          ? MOCK_EMPLOYEES_PERSONAS.find((per) => per.id === u.persona_id) ?? null
+          : null;
+        const um = p && p.unidad_medica_id != null
+          ? MOCK_UNIDADES.get(p.unidad_medica_id) ?? null
+          : null;
+
+        return {
+          rows: [
+            {
+              user_id: u.id,
+              user_status: u.status,
+              user_persona_id: u.persona_id,
+              persona_id: p ? p.id : null,
+              nombre_completo: p ? p.nombre_completo : null,
+              nombres: p ? p.nombres : null,
+              apellidos: p ? p.apellidos : null,
+              rfc: p ? p.rfc : null,
+              curp: p ? p.curp : null,
+              persona_activo: p ? p.activo : null,
+              directorio_unidad_id: um ? um.id : null,
+              directorio_unidad_nombre: um ? um.nombre : null,
+              directorio_unidad_cluesimb: um ? um.cluesimb : null,
+              directorio_unidad_activo: um ? um.activo : null,
+            },
+          ],
+          rowCount: 1,
+        };
+      }
+
+      if (/FROM public\.rh_adscripcion_laboral al JOIN public\.unidad_medica um ON um\.id = al\.unidad_medica_id WHERE al\.persona_id = \$1/i.test(normalized)) {
+        const pid = Number(params[0]);
+        const list = MOCK_EMPLOYEE_ADSCRIPCIONES
+          .filter((al) => al.persona_id === pid)
+          .map((al) => {
+            const um = MOCK_UNIDADES.get(al.unidad_medica_id);
+            return {
+              adscripcion_laboral_id: al.id,
+              unidad_medica_id: al.unidad_medica_id,
+              unidad_nombre: um ? um.nombre : 'UNIDAD',
+              unidad_cluesimb: um ? um.cluesimb : null,
+              matricula: al.matricula,
+              puesto: al.puesto,
+              turno: al.turno,
+              jornada: al.jornada,
+              horario: al.horario,
+              vigente_desde: al.vigente_desde,
+              vigente_hasta: al.vigente_hasta,
+              activo: al.activo,
+              observaciones: al.observaciones,
+              current_date_iso: MOCK_TODAY_ISO,
+            };
+          });
+        return { rows: list, rowCount: list.length };
+      }
+
+      return prevQueryBefore2C2(sql, params);
+    };
+
+    // 45 (Secciones 2, 6, 7 y 8 #16 de RH-2C.2): Ruta GET /mi-contexto registrada únicamente con requireAuth (sin requireRhAccess), mientras todos los demás endpoints RH conservan requireAuth + requireRhAccess
+    {
+      const miContextoLayer = rhRouter.stack.find(
+        (l) => l.route && l.route.path === '/mi-contexto' && l.route.methods.get
+      );
+      assert.ok(miContextoLayer, 'Debe existir GET /mi-contexto en rhRouter');
+      assert.equal(
+        miContextoLayer.route.stack.length,
+        2,
+        'GET /mi-contexto debe tener únicamente requireAuth y el controlador (sin requireRhAccess)'
+      );
+      assert.equal(miContextoLayer.route.stack[0].name, 'requireAuth');
+
+      // Verificar que TODOS los demás endpoints administrativos en rhRouter conservan requireAuth + requireRhAccess (stack.length === 3)
+      const adminRoutes = rhRouter.stack.filter(
+        (l) => l.route && l.route.path !== '/mi-contexto'
+      );
+      assert.equal(adminRoutes.length, 8);
+      for (const layer of adminRoutes) {
+        assert.equal(
+          layer.route.stack.length,
+          3,
+          `La ruta administrativa ${layer.route.path} debe conservar requireAuth + requireRhAccess + controlador`
+        );
+        assert.equal(layer.route.stack[0].name, 'requireAuth');
+      }
+
+      // Caso #16: Usuario no autenticado (sin req.user.sub) -> 401
+      const resNoAuth = createMockRes();
+      await controller.miContexto({}, resNoAuth);
+      assert.equal(resNoAuth.statusCode, 401);
+      passed++;
+    }
+
+    // 46 (Casos #1, #2, #3, #4, #5, #7, #8, #9, #10 de RH-2C.2): Empleado autenticado (sin rol RH, con rol ordinario ABASTO, o combinado con ADMIN_TIC GLOBAL / RH GLOBAL / RH CLUES) consulta su contexto propio con múltiples adscripciones (VIGENTE, FUTURA, HISTORICA), RFC/CURP enmascarados, Cache-Control: no-store y permisos de autogestión sin escalamiento
+    {
+      for (const roleCombo of [
+        [], // #2. Empleado sin ningún rol administrativo
+        [{ code: 'ABASTO', scope: 'GLOBAL', id: null }], // #1. Empleado con rol ordinario
+        [{ code: 'ADMIN_TIC', scope: 'GLOBAL', id: null }], // #3. Empleado que además tiene ADMIN_TIC GLOBAL
+        [{ code: 'RECURSOS_HUMANOS', scope: 'GLOBAL', id: null }], // #4. Empleado que además tiene RECURSOS_HUMANOS GLOBAL
+        [{ code: 'RECURSOS_HUMANOS', scope: 'CLUES', id: 'BCIMB000001' }], // #5. Empleado con RECURSOS_HUMANOS CLUES
+      ]) {
+        capturedQueries = [];
+        const res = createMockRes();
+        await controller.miContexto(
+          {
+            user: { sub: UUID_EMP_VIGENTE, roles: roleCombo },
+            query: {},
+          },
+          res
+        );
+
+        assert.equal(res.statusCode, 200);
+        assert.equal(res.headers['cache-control'], 'no-store');
+        assert.deepEqual(res.body, {
+          modo: 'EMPLEADO',
+          persona: {
+            persona_id: 101,
+            nombre_completo: 'Dra. Ana Gómez',
+            nombres: 'Ana',
+            apellidos: 'Gómez',
+            tiene_rfc: true,
+            rfc_masked: '**********ABC',
+            tiene_curp: true,
+            curp_masked: '****************01',
+          },
+          unidad_referencia: {
+            id: 10,
+            nombre: 'HOSPITAL GENERAL MEXICALI',
+            cluesimb: 'BCIMB000001',
+            origen: 'ADSCRIPCION_RH',
+          },
+          estado_vinculacion_rh: 'ADSCRIPCION_VIGENTE',
+          adscripciones: [
+            {
+              adscripcion_laboral_id: 5001,
+              unidad_medica_id: 10,
+              unidad: {
+                id: 10,
+                nombre: 'HOSPITAL GENERAL MEXICALI',
+                cluesimb: 'BCIMB000001',
+              },
+              matricula: 'MAT-1001',
+              puesto: 'Médico Especialista A',
+              turno: 'MATUTINO',
+              jornada: '8 HORAS',
+              horario: '07:00 - 15:00',
+              vigente_desde: '2026-01-01',
+              vigente_hasta: null,
+              activo: true,
+              es_vigente: true,
+              estado_vigencia: 'VIGENTE',
+              observaciones: 'Base federalizada',
+            },
+            {
+              adscripcion_laboral_id: 5011,
+              unidad_medica_id: 20,
+              unidad: {
+                id: 20,
+                nombre: 'HOSPITAL GENERAL TIJUANA',
+                cluesimb: 'BCIMB000010',
+              },
+              matricula: 'MAT-1001-FUT',
+              puesto: 'Adscripción Programada 2027',
+              turno: 'VESPERTINO',
+              jornada: '8 HORAS',
+              horario: '14:00 - 21:30',
+              vigente_desde: '2027-01-01',
+              vigente_hasta: null,
+              activo: true,
+              es_vigente: false,
+              estado_vigencia: 'FUTURA',
+              observaciones: 'Cambio programado',
+            },
+            {
+              adscripcion_laboral_id: 5010,
+              unidad_medica_id: 177,
+              unidad: {
+                id: 177,
+                nombre: 'OFICINA CENTRAL',
+                cluesimb: 'N/A',
+              },
+              matricula: 'MAT-1001-HIST',
+              puesto: 'Comisión Administrativa',
+              turno: 'MATUTINO',
+              jornada: '8 HORAS',
+              horario: '08:00 - 16:00',
+              vigente_desde: '2025-01-01',
+              vigente_hasta: '2025-12-31',
+              activo: false,
+              es_vigente: false,
+              estado_vigencia: 'HISTORICA',
+              observaciones: 'Comisión concluida',
+            },
+          ],
+          permisos: {
+            puede_ver_perfil_propio: true,
+            puede_administrar_personal_desde_autogestion: false,
+            puede_revelar_identificadores_desde_autogestion: false,
+            puede_editar_identificacion_desde_autogestion: false,
+          },
+        });
+
+        // Verificar que jamás expone RFC/CURP completos ni datos de otros compañeros (ej. Carlos Ruiz, persona 104)
+        const rawJson = JSON.stringify(res.body);
+        assert.equal(rawJson.includes('GOMA800101ABC'), false);
+        assert.equal(rawJson.includes('GOMA800101MDFR0001'), false);
+        assert.equal(rawJson.includes('Carlos'), false);
+        assert.equal(rawJson.includes('MAT-2004'), false);
+      }
+      passed++;
+    }
+
+    // 47 (Casos #6, #8, #9 y #11 de RH-2C.2): Empleado en OFICINA CENTRAL (id=177, cluesimb='N/A') sin adscripción formal RH (PENDIENTE_ADSCRIPCION_RH), empleado solo con adscripción histórica (ADSCRIPCION_HISTORICA) y empleado solo con adscripción futura (ADSCRIPCION_FUTURA)
+    {
+      // A) Caso #6 y #11: Empleado de OFICINA CENTRAL (id=177, cluesimb='N/A') sin fila en rh_adscripcion_laboral
+      const resOficinaCentral = createMockRes();
+      await controller.miContexto(
+        {
+          user: { sub: UUID_EMP_OFICINA_CENTRAL_SIN_ADS, roles: [] },
+          query: {},
+        },
+        resOficinaCentral
+      );
+
+      assert.equal(resOficinaCentral.statusCode, 200);
+      assert.equal(resOficinaCentral.headers['cache-control'], 'no-store');
+      assert.deepEqual(resOficinaCentral.body, {
+        modo: 'EMPLEADO',
+        persona: {
+          persona_id: 106,
+          nombre_completo: 'Mtro. Jorge Mendoza',
+          nombres: 'Jorge',
+          apellidos: 'Mendoza',
+          tiene_rfc: true,
+          rfc_masked: '**********KL1',
+          tiene_curp: true,
+          curp_masked: '****************06',
+        },
+        unidad_referencia: {
+          id: 177,
+          nombre: 'OFICINA CENTRAL',
+          cluesimb: 'N/A',
+          origen: 'DIRECTORIO',
+        },
+        estado_vinculacion_rh: 'PENDIENTE_ADSCRIPCION_RH',
+        adscripciones: [],
+        permisos: {
+          puede_ver_perfil_propio: true,
+          puede_administrar_personal_desde_autogestion: false,
+          puede_revelar_identificadores_desde_autogestion: false,
+          puede_editar_identificacion_desde_autogestion: false,
+        },
+      });
+
+      // B) Caso #8: Empleado con adscripción vencida únicamente -> estado_vinculacion_rh = 'ADSCRIPCION_HISTORICA' y es_vigente = false
+      const resSoloHistorica = createMockRes();
+      await controller.miContexto(
+        {
+          user: { sub: UUID_EMP_SOLO_HISTORICA, roles: [] },
+          query: {},
+        },
+        resSoloHistorica
+      );
+      assert.equal(resSoloHistorica.statusCode, 200);
+      assert.equal(resSoloHistorica.body.estado_vinculacion_rh, 'ADSCRIPCION_HISTORICA');
+      assert.equal(resSoloHistorica.body.adscripciones.length, 1);
+      assert.equal(resSoloHistorica.body.adscripciones[0].es_vigente, false);
+      assert.equal(resSoloHistorica.body.adscripciones[0].estado_vigencia, 'HISTORICA');
+
+      // C) Caso #9: Empleado con adscripción futura únicamente -> estado_vinculacion_rh = 'ADSCRIPCION_FUTURA' y es_vigente = false
+      const resSoloFutura = createMockRes();
+      await controller.miContexto(
+        {
+          user: { sub: UUID_EMP_SOLO_FUTURA, roles: [] },
+          query: {},
+        },
+        resSoloFutura
+      );
+      assert.equal(resSoloFutura.statusCode, 200);
+      assert.equal(resSoloFutura.body.estado_vinculacion_rh, 'ADSCRIPCION_FUTURA');
+      assert.equal(resSoloFutura.body.adscripciones.length, 1);
+      assert.equal(resSoloFutura.body.adscripciones[0].es_vigente, false);
+      assert.equal(resSoloFutura.body.adscripciones[0].estado_vigencia, 'FUTURA');
+      passed++;
+    }
+
+    // 48 (Casos #12, #13, #14, #15 y Secciones 6 y 7 de RH-2C.2): Rechazo de parámetros para elegir otro trabajador (400), rechazo de persona inactiva (403), cuenta inactiva (403), cuenta técnica sin persona_id incluso con ADMIN_TIC GLOBAL (403), usuario inexistente (401) y confirmación de que un empleado sin rol RH no obtiene acceso en resolveRhAccess()
+    {
+      // 1) Intento de pasar query params como persona_id, user_id o unidadId para consultar otra persona -> 400
+      for (const badQuery of [
+        { persona_id: '104' },
+        { personaId: '104' },
+        { user_id: UUID_EMP_OFICINA_CENTRAL_SIN_ADS },
+        { unidadId: '20' },
+      ]) {
+        const resBadQuery = createMockRes();
+        await controller.miContexto(
+          {
+            user: { sub: UUID_EMP_VIGENTE, roles: [] },
+            query: badQuery,
+          },
+          resBadQuery
+        );
+        assert.equal(resBadQuery.statusCode, 400);
+      }
+
+      // 2) Caso #12: Persona vinculada inactiva (persona.activo = false) -> 403
+      const resPersonaInactiva = createMockRes();
+      await controller.miContexto(
+        {
+          user: { sub: UUID_EMP_PERSONA_INACTIVA, roles: [] },
+          query: {},
+        },
+        resPersonaInactiva
+      );
+      assert.equal(resPersonaInactiva.statusCode, 403);
+
+      // 3) Caso #13: Cuenta SSO inactiva/suspendida (app_users.status = 'SUSPENDED') -> 403
+      const resUserInactivo = createMockRes();
+      await controller.miContexto(
+        {
+          user: { sub: UUID_USER_INACTIVO, roles: [] },
+          query: {},
+        },
+        resUserInactivo
+      );
+      assert.equal(resUserInactivo.statusCode, 403);
+
+      // 4) Caso #14: Cuenta técnica sin persona_id (incluso si posee ADMIN_TIC GLOBAL) -> 403 en autogestión de empleado
+      const resCuentaTecnica = createMockRes();
+      await controller.miContexto(
+        {
+          user: {
+            sub: UUID_CUENTA_TECNICA_SIN_PERSONA,
+            roles: [{ code: 'ADMIN_TIC', scope: 'GLOBAL', id: null }],
+          },
+          query: {},
+        },
+        resCuentaTecnica
+      );
+      assert.equal(resCuentaTecnica.statusCode, 403);
+
+      // 5) Caso #15: Usuario inexistente en app_users -> 401
+      const resUserInexistente = createMockRes();
+      await controller.miContexto(
+        {
+          user: { sub: UUID_USER_INEXISTENTE, roles: [] },
+          query: {},
+        },
+        resUserInexistente
+      );
+      assert.equal(resUserInexistente.statusCode, 401);
+
+      // 6) Separación de autorizaciones: un empleado autenticado sin rol RH sigue recibiendo null en resolveRhAccess() y 403 en requireRhAccess()
+      assert.equal(resolveRhAccess([]), null);
+      assert.equal(
+        resolveRhAccess([{ code: 'ABASTO', scope: 'GLOBAL', id: null }]),
+        null
+      );
+      const mw = requireRhAccess();
+      const resAdminEndpoint = createMockRes();
+      let nextCalled = false;
+      mw(
+        { user: { sub: UUID_EMP_VIGENTE, roles: [{ code: 'ABASTO', scope: 'GLOBAL', id: null }] } },
+        resAdminEndpoint,
+        () => {
+          nextCalled = true;
+        }
+      );
+      assert.equal(nextCalled, false);
+      assert.equal(resAdminEndpoint.statusCode, 403);
+      passed++;
+    }
   } finally {
     pool.query = originalQuery;
     pool.connect = originalConnect;
   }
 
   console.log(
-    `RH-API.1 + RH-2B.1 + RH-2B.4A + RH-2B.4C + RH-2B.4E + RH-2B.4G.1 + RH-2B.4G.2 + RH-2B.4G.2A TESTS PASSED: ${passed}/44`
+    `RH-API.1 + RH-2B.1 + RH-2B.4A + RH-2B.4C + RH-2B.4E + RH-2B.4G.1 + RH-2B.4G.2 + RH-2B.4G.2A + RH-2C.2 TESTS PASSED: ${passed}/48`
   );
 }
 

@@ -6,6 +6,14 @@ import RhController from '../controllers/rh.controller';
 const router = Router();
 const controller = new RhController();
 
+// Autogestión del empleado autenticado (/rh): requiere sesión válida y persona institucional activa,
+// sin exigir rol administrativo RECURSOS_HUMANOS ni ADMIN_TIC.
+router.get(
+  '/mi-contexto',
+  requireAuth,
+  controller.miContexto.bind(controller)
+);
+
 router.get(
   '/unidades-autorizadas',
   requireAuth,

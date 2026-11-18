@@ -97,6 +97,36 @@ const ALLOWED_UPDATE_IDENTIFICACION_KEYS: ReadonlySet<string> = new Set([
 export default class RhController {
   private readonly service = new RhService();
 
+  async miContexto(req: RhAuthenticatedRequest, res: Response): Promise<void> {
+    if (typeof req.user?.sub !== 'string' || !req.user.sub.trim()) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const queryKeys = Object.keys((req.query ?? {}) as Record<string, unknown>);
+    if (queryKeys.length > 0) {
+      res.status(400).json({
+        error: `Parámetro de consulta no permitido en mi-contexto: ${queryKeys[0]}`,
+      });
+      return;
+    }
+
+    try {
+      const result = await this.service.getMiContextoEmpleado(req.user.sub.trim());
+      if (typeof res.set === 'function') {
+        res.set('Cache-Control', 'no-store');
+      }
+      res.status(200).json(result);
+    } catch (err) {
+      if (err instanceof RhHttpError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      console.error('Error en GET /api/rh/mi-contexto');
+      res.status(500).json({ error: 'Error interno al consultar el contexto del empleado' });
+    }
+  }
+
   async unidadesAutorizadas(req: RhAuthenticatedRequest, res: Response): Promise<void> {
     if (!req.rhAccess) {
       res.status(403).json({ error: 'Permiso insuficiente' });

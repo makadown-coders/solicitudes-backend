@@ -1018,17 +1018,49 @@ async function run() {
             };
           }
 
-          if (/^UPDATE public\.persona SET nombres = \$1, apellidos = \$2, nombre_completo = \$3, rfc = \$4, curp = \$5 WHERE id = \$6 RETURNING id, nombre_completo, nombres, apellidos, rfc, curp, activo$/i.test(normalized)) {
+          const updatePersonaMatch = /^UPDATE public\.persona SET (.+) WHERE id = \$(\d+) RETURNING id, nombre_completo, nombres, apellidos, rfc, curp, activo$/i.exec(
+            normalized
+          );
+          if (updatePersonaMatch) {
+            const setSegment = updatePersonaMatch[1];
+            const whereParamIdx = Number(updatePersonaMatch[2]);
+
             // Verificar explícitamente que jamás se actualice unidad_medica_id, correo_principal, activo ni fecha_baja
             assert.equal(
-              /SET[^W]*(unidad_medica_id|correo_principal|activo|fecha_baja|user_id)\s*=/i.test(normalized),
+              /\b(unidad_medica_id|correo_principal|activo|fecha_baja|user_id)\s*=/i.test(setSegment),
               false
             );
-            const [nombres, apellidos, nombre_completo_in, rfc, curp, pidRaw] = params;
-            const pid = Number(pidRaw);
+
+            const pid = Number(params[whereParamIdx - 1]);
             const allPersonas = getEffectivePersonas();
             const current = allPersonas.find((p) => p.id === pid);
             if (!current) return { rows: [], rowCount: 0 };
+
+            const nextValues = {
+              nombres: current.nombres ?? null,
+              apellidos: current.apellidos ?? null,
+              nombre_completo: current.nombre_completo,
+              rfc: current.rfc ?? null,
+              curp: current.curp ?? null,
+            };
+
+            let touchedStructuredInSet = false;
+            for (const assignment of setSegment.split(',')) {
+              const m = /^\s*([a-z_]+)\s*=\s*\$(\d+)\s*$/i.exec(assignment);
+              assert.ok(m, `Asignación SET inválida en UPDATE public.persona: ${assignment}`);
+              const col = m[1].toLowerCase();
+              const paramIdx = Number(m[2]) - 1;
+              assert.ok(
+                ['nombres', 'apellidos', 'nombre_completo', 'rfc', 'curp'].includes(col),
+                `Columna no permitida en UPDATE public.persona: ${col}`
+              );
+              nextValues[col] = params[paramIdx];
+              if (col === 'nombres' || col === 'apellidos') {
+                touchedStructuredInSet = true;
+              }
+            }
+
+            const { nombres, apellidos, rfc, curp } = nextValues;
 
             // Simular índices únicos parciales uq_persona_rfc y uq_persona_curp de PostgreSQL (23505)
             if (rfc !== null) {
@@ -1054,12 +1086,14 @@ async function run() {
               }
             }
 
-            // Simular trigger real t_persona_nombre (set_nombre_completo) de PostgreSQL:
+            // Simular trigger real t_persona_nombre de PostgreSQL:
+            // CREATE TRIGGER t_persona_nombre BEFORE INSERT OR UPDATE OF nombres, apellidos ON public.persona
+            // FOR EACH ROW EXECUTE FUNCTION set_nombre_completo()
             // IF NEW.nombres IS NOT NULL OR NEW.apellidos IS NOT NULL THEN
             //   NEW.nombre_completo := btrim(coalesce(NEW.nombres, '') || ' ' || coalesce(NEW.apellidos, ''));
             // END IF;
-            let effectiveNombreCompleto = nombre_completo_in;
-            if (nombres !== null || apellidos !== null) {
+            let effectiveNombreCompleto = nextValues.nombre_completo;
+            if (touchedStructuredInSet && (nombres !== null || apellidos !== null)) {
               effectiveNombreCompleto = `${nombres ?? ''} ${apellidos ?? ''}`.trim();
             }
 
@@ -2712,13 +2746,108 @@ async function run() {
       assert.ok(txEvents.some((e) => e.sql === 'ROLLBACK'));
       passed++;
     }
+
+    // 44 (Verificación RH-2B.4G.2A - Escenarios 1 a 8): PATCH parcial respeta el trigger real t_persona_nombre (BEFORE INSERT OR UPDATE OF nombres, apellidos) sin sobrescribir ni auditar campos ajenos
+    {
+      resetTxState();
+
+      // Escenario 1: Cambiar solamente RFC en registro estructurado (persona 101: nombres='Ana', apellidos='Gómez', nombre_completo='Dra. Ana Gómez')
+      // conserva nombres, apellidos, CURP y nombre_completo, y audita únicamente ['rfc']
+      const resOnlyRfc = createMockRes();
+      await controller.updateIdentificacionPersonalPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+          params: { unidadId: '10', adscripcionId: '5001' },
+          body: { rfc: 'GOMA800101ZZ9' },
+        },
+        resOnlyRfc
+      );
+      assert.equal(resOnlyRfc.statusCode, 200);
+      assert.equal(resOnlyRfc.body.personal.nombres, 'Ana');
+      assert.equal(resOnlyRfc.body.personal.apellidos, 'Gómez');
+      assert.equal(resOnlyRfc.body.personal.nombre_completo, 'Dra. Ana Gómez');
+      assert.equal(resOnlyRfc.body.personal.curp_masked, '****************01');
+      assert.equal(resOnlyRfc.body.personal.rfc_masked, '**********ZZ9');
+      assert.deepEqual(resOnlyRfc.body.campos_modificados, ['rfc']);
+      assert.deepEqual(txAuditLogs[txAuditLogs.length - 1].payload.campos_modificados, ['rfc']);
+
+      // Verificar que el UPDATE SQL ejecutado solo incluyó `SET rfc = $1`
+      const lastUpdateRfcEvent = [...txEvents]
+        .reverse()
+        .find((e) => /^UPDATE public\.persona/i.test(e.sql));
+      assert.ok(lastUpdateRfcEvent);
+      assert.match(
+        lastUpdateRfcEvent.sql,
+        /^UPDATE public\.persona SET rfc = \$1 WHERE id = \$2/i
+      );
+
+      // Escenario 2: Cambiar solamente CURP conserva RFC, nombres, apellidos y nombre_completo, y audita únicamente ['curp']
+      const resOnlyCurp = createMockRes();
+      await controller.updateIdentificacionPersonalPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+          params: { unidadId: '10', adscripcionId: '5001' },
+          body: { curp: 'GOMA800101MDFR0099' },
+        },
+        resOnlyCurp
+      );
+      assert.equal(resOnlyCurp.statusCode, 200);
+      assert.equal(resOnlyCurp.body.personal.nombres, 'Ana');
+      assert.equal(resOnlyCurp.body.personal.apellidos, 'Gómez');
+      assert.equal(resOnlyCurp.body.personal.nombre_completo, 'Dra. Ana Gómez');
+      assert.equal(resOnlyCurp.body.personal.rfc_masked, '**********ZZ9');
+      assert.equal(resOnlyCurp.body.personal.curp_masked, '****************99');
+      assert.deepEqual(resOnlyCurp.body.campos_modificados, ['curp']);
+
+      // Escenario 3: Cambiar nombres o apellidos recalcula nombre_completo adecuadamente en armonía con t_persona_nombre
+      const resChangeNombres = createMockRes();
+      await controller.updateIdentificacionPersonalPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+          params: { unidadId: '10', adscripcionId: '5001' },
+          body: { nombres: 'Ana Sofía' },
+        },
+        resChangeNombres
+      );
+      assert.equal(resChangeNombres.statusCode, 200);
+      assert.equal(resChangeNombres.body.personal.nombres, 'Ana Sofía');
+      assert.equal(resChangeNombres.body.personal.apellidos, 'Gómez');
+      assert.equal(resChangeNombres.body.personal.nombre_completo, 'Ana Sofía Gómez');
+      assert.equal(resChangeNombres.body.personal.rfc_masked, '**********ZZ9');
+      assert.equal(resChangeNombres.body.personal.curp_masked, '****************99');
+      assert.deepEqual(resChangeNombres.body.campos_modificados, ['nombres', 'nombre_completo']);
+
+      // Escenario 4: Registro legado con nombres = NULL y apellidos = NULL (persona 102 en adscripción 5002: nombre_completo='Enf. Luis Pérez')
+      // permite actualizar RFC y CURP sin perder nombre_completo
+      const resLegacyIds = createMockRes();
+      await controller.updateIdentificacionPersonalPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+          params: { unidadId: '10', adscripcionId: '5002' },
+          body: { rfc: 'PERL850505AB1', curp: 'PERL850505HDFR0005' },
+        },
+        resLegacyIds
+      );
+      assert.equal(resLegacyIds.statusCode, 200);
+      assert.equal(resLegacyIds.body.personal.nombre_completo, 'Enf. Luis Pérez');
+      assert.equal(resLegacyIds.body.personal.nombres, null);
+      assert.equal(resLegacyIds.body.personal.apellidos, null);
+      assert.equal(resLegacyIds.body.personal.rfc_masked, '**********AB1');
+      assert.equal(resLegacyIds.body.personal.curp_masked, '****************05');
+      assert.deepEqual(resLegacyIds.body.campos_modificados, ['rfc', 'curp']);
+      passed++;
+    }
   } finally {
     pool.query = originalQuery;
     pool.connect = originalConnect;
   }
 
   console.log(
-    `RH-API.1 + RH-2B.1 + RH-2B.4A + RH-2B.4C + RH-2B.4E + RH-2B.4G.1 + RH-2B.4G.2 TESTS PASSED: ${passed}/43`
+    `RH-API.1 + RH-2B.1 + RH-2B.4A + RH-2B.4C + RH-2B.4E + RH-2B.4G.1 + RH-2B.4G.2 + RH-2B.4G.2A TESTS PASSED: ${passed}/44`
   );
 }
 

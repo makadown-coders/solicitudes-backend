@@ -1846,6 +1846,7 @@ export default class RhService {
           : null;
 
       // 3) Resolver semántica de nombres/apellidos/nombre_completo compatible con el trigger t_persona_nombre
+      //    (`BEFORE INSERT OR UPDATE OF nombres, apellidos ON public.persona FOR EACH ROW EXECUTE FUNCTION set_nombre_completo()`)
       const finalNombres = hasOwn('nombres') ? parsedPatch.nombres! : currentNombres;
       const finalApellidos = hasOwn('apellidos') ? parsedPatch.apellidos! : currentApellidos;
       const finalRfc = hasOwn('rfc') ? parsedPatch.rfc! : currentRfc;
@@ -1861,6 +1862,12 @@ export default class RhService {
           'No se permite eliminar simultáneamente "nombres" y "apellidos" en un registro que ya cuenta con nombre estructurado'
         );
       }
+
+      const touchingStructuredNames =
+        hasOwn('nombres') ||
+        hasOwn('apellidos') ||
+        finalNombres !== currentNombres ||
+        finalApellidos !== currentApellidos;
 
       let finalNombreCompleto = currentNombreCompleto;
 
@@ -1881,7 +1888,9 @@ export default class RhService {
             'Cuando "nombres" o "apellidos" están registrados, "nombre_completo" se sincroniza automáticamente a partir de ellos y no puede enviarse con un valor distinto'
           );
         }
-        finalNombreCompleto = derivedFull;
+        if (touchingStructuredNames || hasOwn('nombre_completo')) {
+          finalNombreCompleto = derivedFull;
+        }
       } else {
         // Caso legado donde nombres IS NULL y apellidos IS NULL
         if (hasOwn('nombre_completo')) {
@@ -1932,8 +1941,38 @@ export default class RhService {
         };
       }
 
-      // 5) Ejecutar UPDATE exclusivamente sobre las columnas de identificación permitidas en public.persona
-      //    (Nunca modifica unidad_medica_id, correo_principal, activo, fecha_baja ni user_id)
+      // 5) Ejecutar UPDATE parcial exclusivamente sobre las columnas de identificación modificadas en public.persona
+      //    - Respeta `t_persona_nombre` (`BEFORE INSERT OR UPDATE OF nombres, apellidos`): solo incluye `nombres` / `apellidos`
+      //      en la cláusula SET cuando realmente fueron parte de la edición, evitando disparar `set_nombre_completo()`
+      //      al editar únicamente `rfc` o `curp`.
+      //    - Nunca modifica `unidad_medica_id`, `correo_principal`, `activo`, `fecha_baja` ni `user_id`.
+      const setClauses: string[] = [];
+      const updateParams: unknown[] = [];
+
+      const pushSetColumn = (columnName: string, value: unknown): void => {
+        updateParams.push(value);
+        setClauses.push(`${columnName} = $${updateParams.length}`);
+      };
+
+      if (camposModificados.includes('nombres')) {
+        pushSetColumn('nombres', finalNombres);
+      }
+      if (camposModificados.includes('apellidos')) {
+        pushSetColumn('apellidos', finalApellidos);
+      }
+      if (camposModificados.includes('nombre_completo')) {
+        pushSetColumn('nombre_completo', finalNombreCompleto);
+      }
+      if (camposModificados.includes('rfc')) {
+        pushSetColumn('rfc', finalRfc);
+      }
+      if (camposModificados.includes('curp')) {
+        pushSetColumn('curp', finalCurp);
+      }
+
+      updateParams.push(personaId);
+      const whereIdParamIdx = updateParams.length;
+
       const updateRes = await client.query<{
         id: number;
         nombre_completo: string;
@@ -1944,12 +1983,8 @@ export default class RhService {
         activo: boolean;
       }>(
         `UPDATE public.persona
-            SET nombres = $1,
-                apellidos = $2,
-                nombre_completo = $3,
-                rfc = $4,
-                curp = $5
-          WHERE id = $6
+            SET ${setClauses.join(',\n                ')}
+          WHERE id = $${whereIdParamIdx}
           RETURNING
             id,
             nombre_completo,
@@ -1958,14 +1993,7 @@ export default class RhService {
             rfc,
             curp,
             activo`,
-        [
-          finalNombres,
-          finalApellidos,
-          finalNombreCompleto,
-          finalRfc,
-          finalCurp,
-          personaId,
-        ]
+        updateParams
       );
 
       const updatedPersona = updateRes.rows[0];

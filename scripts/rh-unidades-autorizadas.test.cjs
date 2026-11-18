@@ -10,6 +10,11 @@ function createMockRes() {
   const res = {
     statusCode: 200,
     body: undefined,
+    headers: {},
+    set(name, value) {
+      this.headers[String(name).toLowerCase()] = value;
+      return this;
+    },
     status(code) {
       this.statusCode = code;
       return this;
@@ -224,11 +229,11 @@ async function run() {
     ]);
 
     const MOCK_PERSONAS = [
-      { id: 101, nombre_completo: 'Dra. Ana Gómez', cargo: 'Médico Especialista', unidad_medica_id: 10, activo: true, rfc: 'GOMA800101XXX', curp: 'GOMA800101MDFR01', correo_principal: 'ana@imssb.gob.mx' },
-      { id: 102, nombre_completo: 'Enf. Luis Pérez', cargo: 'Enfermero General', unidad_medica_id: 10, activo: true, rfc: 'PERL850202XXX', curp: 'PERL850202HDFR02', correo_principal: 'luis@imssb.gob.mx' },
-      { id: 103, nombre_completo: 'Lic. Sofía Ramírez', cargo: 'Analista RH', unidad_medica_id: 10, activo: true, rfc: 'RAMS900303XXX', curp: 'RAMS900303MDFR03', correo_principal: 'sofia@imssb.gob.mx' },
-      { id: 104, nombre_completo: 'Dr. Carlos Ruiz', cargo: 'Urgenciólogo', unidad_medica_id: 20, activo: true, rfc: 'RUIC790404XXX', curp: 'RUIC790404HDFR04', correo_principal: 'carlos@imssb.gob.mx' },
-      { id: 105, nombre_completo: 'Persona Inactiva', cargo: 'Baja', unidad_medica_id: 10, activo: false, rfc: 'INAC000000XXX', curp: 'INAC000000HDFR00', correo_principal: null },
+      { id: 101, nombre_completo: 'Dra. Ana Gómez', nombres: 'Ana', apellidos: 'Gómez', cargo: 'Médico Especialista', unidad_medica_id: 10, activo: true, rfc: 'GOMA800101ABC', curp: 'GOMA800101MDFR0001', correo_principal: 'ana@imssb.gob.mx' },
+      { id: 102, nombre_completo: 'Enf. Luis Pérez', nombres: null, apellidos: null, cargo: 'Enfermero General', unidad_medica_id: 10, activo: true, rfc: null, curp: null, correo_principal: 'luis@imssb.gob.mx' },
+      { id: 103, nombre_completo: 'Lic. Sofía Ramírez', nombres: 'Sofía', apellidos: 'Ramírez', cargo: 'Analista RH', unidad_medica_id: 10, activo: true, rfc: 'RAMS900303XXX', curp: 'RAMS900303MDFR03', correo_principal: 'sofia@imssb.gob.mx' },
+      { id: 104, nombre_completo: 'Dr. Carlos Ruiz', nombres: 'Carlos', apellidos: 'Ruiz', cargo: 'Urgenciólogo', unidad_medica_id: 20, activo: true, rfc: 'RUIC790404ZZ9', curp: 'RUIC790404HDFR0004', correo_principal: 'carlos@imssb.gob.mx' },
+      { id: 105, nombre_completo: 'Persona Inactiva', nombres: 'Persona', apellidos: 'Inactiva', cargo: 'Baja', unidad_medica_id: 10, activo: false, rfc: 'INAC000000XXX', curp: 'INAC000000HDFR00', correo_principal: null },
     ];
 
     const MOCK_ADSCRIPCIONES = [
@@ -244,6 +249,7 @@ async function run() {
         vigente_desde: new Date('2026-01-01T00:00:00.000Z'),
         vigente_hasta: null,
         activo: true,
+        observaciones: 'Base federalizada',
       },
       {
         id: 5002,
@@ -257,6 +263,7 @@ async function run() {
         vigente_desde: '2026-02-01',
         vigente_hasta: '2026-12-31',
         activo: true,
+        observaciones: null,
       },
       {
         id: 5003,
@@ -270,6 +277,7 @@ async function run() {
         vigente_desde: '2026-01-15',
         vigente_hasta: null,
         activo: true,
+        observaciones: 'Guardia nocturna',
       },
     ];
 
@@ -302,6 +310,47 @@ async function run() {
         return {
           rows: matched.map((u) => ({ id: u.id, nombre: u.nombre, cluesimb: u.cluesimb })),
           rowCount: matched.length,
+        };
+      }
+
+      // 3a) Consulta de ficha individual del trabajador (WHERE al.unidad_medica_id = $1 AND al.id = $2 LIMIT 1)
+      if (/FROM public\.rh_adscripcion_laboral al JOIN public\.persona p ON p\.id = al\.persona_id WHERE al\.unidad_medica_id = \$1 AND al\.id = \$2 LIMIT 1/i.test(normalized)) {
+        const unidadId = Number(params[0]);
+        const adscripcionId = Number(params[1]);
+        const foundAl = MOCK_ADSCRIPCIONES.find(
+          (al) => al.unidad_medica_id === unidadId && al.id === adscripcionId
+        );
+        if (!foundAl) {
+          return { rows: [], rowCount: 0 };
+        }
+        const foundPersona = MOCK_PERSONAS.find((per) => per.id === foundAl.persona_id);
+        if (!foundPersona) {
+          return { rows: [], rowCount: 0 };
+        }
+        return {
+          rows: [
+            {
+              adscripcion_laboral_id: foundAl.id,
+              unidad_medica_id: foundAl.unidad_medica_id,
+              matricula: foundAl.matricula,
+              puesto: foundAl.puesto,
+              turno: foundAl.turno,
+              jornada: foundAl.jornada,
+              horario: foundAl.horario,
+              vigente_desde: foundAl.vigente_desde,
+              vigente_hasta: foundAl.vigente_hasta,
+              adscripcion_activo: foundAl.activo,
+              observaciones: foundAl.observaciones ?? null,
+              persona_id: foundPersona.id,
+              nombre_completo: foundPersona.nombre_completo,
+              nombres: foundPersona.nombres ?? null,
+              apellidos: foundPersona.apellidos ?? null,
+              rfc: foundPersona.rfc,
+              curp: foundPersona.curp,
+              persona_activo: foundPersona.activo,
+            },
+          ],
+          rowCount: 1,
         };
       }
 
@@ -762,6 +811,8 @@ async function run() {
 
     const AUTH_USER_UUID = '11111111-2222-4333-8444-555555555555';
     let txAdscripciones = [];
+    let txPersonas = [];
+    let txListasAsistencia = [];
     let txAuditLogs = [];
     let txEvents = [];
     let failOnTxSql = null;
@@ -800,6 +851,8 @@ async function run() {
 
     function resetTxState() {
       txAdscripciones = MOCK_ADSCRIPCIONES.map((a) => ({ ...a }));
+      txPersonas = MOCK_PERSONAS.map((p) => ({ ...p }));
+      txListasAsistencia = [];
       txAuditLogs = [];
       txEvents = [];
       failOnTxSql = null;
@@ -810,19 +863,39 @@ async function run() {
     pool.connect = async () => {
       const clientId = nextMockClientId++;
       let stagedAdscripciones = [];
+      let stagedUpdates = new Map(); // adscripcionId -> updatedRow
+      let stagedPersonaUpdates = new Map(); // personaId -> updatedPersonaRow
       let stagedAuditLogs = [];
       let inTx = false;
+
+      function getEffectiveAdscripciones() {
+        const base = txAdscripciones.map((a) =>
+          stagedUpdates.has(a.id) ? { ...stagedUpdates.get(a.id) } : { ...a }
+        );
+        return [...base, ...stagedAdscripciones.map((a) => ({ ...a }))];
+      }
+
+      function getEffectivePersonas() {
+        return txPersonas.map((p) =>
+          stagedPersonaUpdates.has(p.id) ? { ...stagedPersonaUpdates.get(p.id) } : { ...p }
+        );
+      }
 
       return {
         async query(sql, params = []) {
           const normalized = String(sql).replace(/\s+/g, ' ').trim();
           txEvents.push({ clientId, sql: normalized, params });
 
-          // Prohibir absolutamente cualquier INSERT/UPDATE/DELETE sobre public.persona
+          // Prohibir absolutamente cualquier INSERT/DELETE sobre public.persona o modificaciones sobre snapshots de rh_lista_asistencia
           assert.equal(
-            /\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+public\.persona\b/i.test(normalized),
+            /\b(INSERT\s+INTO|DELETE\s+FROM)\s+public\.persona\b/i.test(normalized),
             false,
-            `Prohibido modificar public.persona en RH-2B.4A: ${normalized}`
+            `Prohibido insertar o eliminar en public.persona: ${normalized}`
+          );
+          assert.equal(
+            /\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+public\.rh_lista_asistencia\b/i.test(normalized),
+            false,
+            `Prohibido modificar public.rh_lista_asistencia: ${normalized}`
           );
 
           if (failOnTxSql && normalized.includes(failOnTxSql)) {
@@ -832,17 +905,33 @@ async function run() {
           if (normalized === 'BEGIN') {
             inTx = true;
             stagedAdscripciones = [];
+            stagedUpdates = new Map();
+            stagedPersonaUpdates = new Map();
             stagedAuditLogs = [];
             return { rows: [], rowCount: 0 };
           }
 
           if (normalized === 'COMMIT') {
             if (inTx) {
+              for (const [id, updatedRow] of stagedUpdates.entries()) {
+                const idx = txAdscripciones.findIndex((a) => a.id === id);
+                if (idx >= 0) {
+                  txAdscripciones[idx] = { ...updatedRow };
+                }
+              }
+              for (const [pid, updatedPersona] of stagedPersonaUpdates.entries()) {
+                const idx = txPersonas.findIndex((p) => p.id === pid);
+                if (idx >= 0) {
+                  txPersonas[idx] = { ...updatedPersona };
+                }
+              }
               txAdscripciones.push(...stagedAdscripciones);
               txAuditLogs.push(...stagedAuditLogs);
             }
             inTx = false;
             stagedAdscripciones = [];
+            stagedUpdates = new Map();
+            stagedPersonaUpdates = new Map();
             stagedAuditLogs = [];
             releasePersonaLocks(clientId);
             return { rows: [], rowCount: 0 };
@@ -851,15 +940,53 @@ async function run() {
           if (normalized === 'ROLLBACK') {
             inTx = false;
             stagedAdscripciones = [];
+            stagedUpdates = new Map();
+            stagedPersonaUpdates = new Map();
             stagedAuditLogs = [];
             releasePersonaLocks(clientId);
             return { rows: [], rowCount: 0 };
           }
 
+          if (/^SELECT id, persona_id, unidad_medica_id FROM public\.rh_adscripcion_laboral WHERE id = \$1 AND unidad_medica_id = \$2 LIMIT 1$/i.test(normalized)) {
+            const aid = Number(params[0]);
+            const uid = Number(params[1]);
+            const found = getEffectiveAdscripciones().find(
+              (a) => a.id === aid && a.unidad_medica_id === uid
+            );
+            if (!found) return { rows: [], rowCount: 0 };
+            return {
+              rows: [{ id: found.id, persona_id: found.persona_id, unidad_medica_id: found.unidad_medica_id }],
+              rowCount: 1,
+            };
+          }
+
+          if (/^SELECT al\.id AS adscripcion_laboral_id, al\.unidad_medica_id, p\.id AS persona_id, p\.rfc, p\.curp FROM public\.rh_adscripcion_laboral al JOIN public\.persona p ON p\.id = al\.persona_id WHERE al\.unidad_medica_id = \$1 AND al\.id = \$2 LIMIT 1$/i.test(normalized)) {
+            const uid = Number(params[0]);
+            const aid = Number(params[1]);
+            const foundAl = getEffectiveAdscripciones().find(
+              (a) => a.unidad_medica_id === uid && a.id === aid
+            );
+            if (!foundAl) return { rows: [], rowCount: 0 };
+            const foundPersona = getEffectivePersonas().find((p) => p.id === foundAl.persona_id);
+            if (!foundPersona) return { rows: [], rowCount: 0 };
+            return {
+              rows: [
+                {
+                  adscripcion_laboral_id: foundAl.id,
+                  unidad_medica_id: foundAl.unidad_medica_id,
+                  persona_id: foundPersona.id,
+                  rfc: foundPersona.rfc,
+                  curp: foundPersona.curp,
+                },
+              ],
+              rowCount: 1,
+            };
+          }
+
           if (/^SELECT id, nombre_completo, unidad_medica_id, activo FROM public\.persona WHERE id = \$1 FOR UPDATE$/i.test(normalized)) {
             const pid = Number(params[0]);
             await acquirePersonaLock(pid, clientId);
-            const found = MOCK_PERSONAS.find((p) => p.id === pid);
+            const found = getEffectivePersonas().find((p) => p.id === pid);
             if (!found) return { rows: [], rowCount: 0 };
             return {
               rows: [{
@@ -872,12 +999,153 @@ async function run() {
             };
           }
 
+          if (/^SELECT id, nombre_completo, nombres, apellidos, rfc, curp, activo FROM public\.persona WHERE id = \$1 FOR UPDATE$/i.test(normalized)) {
+            const pid = Number(params[0]);
+            await acquirePersonaLock(pid, clientId);
+            const found = getEffectivePersonas().find((p) => p.id === pid);
+            if (!found) return { rows: [], rowCount: 0 };
+            return {
+              rows: [{
+                id: found.id,
+                nombre_completo: found.nombre_completo,
+                nombres: found.nombres ?? null,
+                apellidos: found.apellidos ?? null,
+                rfc: found.rfc ?? null,
+                curp: found.curp ?? null,
+                activo: found.activo,
+              }],
+              rowCount: 1,
+            };
+          }
+
+          if (/^UPDATE public\.persona SET nombres = \$1, apellidos = \$2, nombre_completo = \$3, rfc = \$4, curp = \$5 WHERE id = \$6 RETURNING id, nombre_completo, nombres, apellidos, rfc, curp, activo$/i.test(normalized)) {
+            // Verificar explícitamente que jamás se actualice unidad_medica_id, correo_principal, activo ni fecha_baja
+            assert.equal(
+              /SET[^W]*(unidad_medica_id|correo_principal|activo|fecha_baja|user_id)\s*=/i.test(normalized),
+              false
+            );
+            const [nombres, apellidos, nombre_completo_in, rfc, curp, pidRaw] = params;
+            const pid = Number(pidRaw);
+            const allPersonas = getEffectivePersonas();
+            const current = allPersonas.find((p) => p.id === pid);
+            if (!current) return { rows: [], rowCount: 0 };
+
+            // Simular índices únicos parciales uq_persona_rfc y uq_persona_curp de PostgreSQL (23505)
+            if (rfc !== null) {
+              const dupRfc = allPersonas.find(
+                (p) => p.id !== pid && p.rfc && p.rfc.toUpperCase() === String(rfc).toUpperCase()
+              );
+              if (dupRfc) {
+                const pgErr = new Error('duplicate key value violates unique constraint "uq_persona_rfc"');
+                pgErr.code = '23505';
+                pgErr.constraint = 'uq_persona_rfc';
+                throw pgErr;
+              }
+            }
+            if (curp !== null) {
+              const dupCurp = allPersonas.find(
+                (p) => p.id !== pid && p.curp && p.curp.toUpperCase() === String(curp).toUpperCase()
+              );
+              if (dupCurp) {
+                const pgErr = new Error('duplicate key value violates unique constraint "uq_persona_curp"');
+                pgErr.code = '23505';
+                pgErr.constraint = 'uq_persona_curp';
+                throw pgErr;
+              }
+            }
+
+            // Simular trigger real t_persona_nombre (set_nombre_completo) de PostgreSQL:
+            // IF NEW.nombres IS NOT NULL OR NEW.apellidos IS NOT NULL THEN
+            //   NEW.nombre_completo := btrim(coalesce(NEW.nombres, '') || ' ' || coalesce(NEW.apellidos, ''));
+            // END IF;
+            let effectiveNombreCompleto = nombre_completo_in;
+            if (nombres !== null || apellidos !== null) {
+              effectiveNombreCompleto = `${nombres ?? ''} ${apellidos ?? ''}`.trim();
+            }
+
+            const updatedPersona = {
+              ...current,
+              nombres,
+              apellidos,
+              nombre_completo: effectiveNombreCompleto,
+              rfc,
+              curp,
+            };
+            if (inTx) {
+              stagedPersonaUpdates.set(pid, updatedPersona);
+            }
+            return {
+              rows: [
+                {
+                  id: updatedPersona.id,
+                  nombre_completo: updatedPersona.nombre_completo,
+                  nombres: updatedPersona.nombres,
+                  apellidos: updatedPersona.apellidos,
+                  rfc: updatedPersona.rfc,
+                  curp: updatedPersona.curp,
+                  activo: updatedPersona.activo,
+                },
+              ],
+              rowCount: 1,
+            };
+          }
+
           if (/^SELECT id, unidad_medica_id, vigente_desde, vigente_hasta, activo FROM public\.rh_adscripcion_laboral WHERE persona_id = \$1 ORDER BY id ASC FOR UPDATE$/i.test(normalized)) {
             const pid = Number(params[0]);
-            const rows = [...txAdscripciones, ...stagedAdscripciones]
-              .filter((a) => a.persona_id === pid)
-              .map((a) => ({ ...a }));
+            const rows = getEffectiveAdscripciones().filter((a) => a.persona_id === pid);
             return { rows, rowCount: rows.length };
+          }
+
+          if (/^SELECT id, persona_id, unidad_medica_id, matricula, puesto, turno, jornada, horario, vigente_desde, vigente_hasta, activo, observaciones FROM public\.rh_adscripcion_laboral WHERE persona_id = \$1 ORDER BY id ASC FOR UPDATE$/i.test(normalized)) {
+            const pid = Number(params[0]);
+            const rows = getEffectiveAdscripciones().filter((a) => a.persona_id === pid);
+            return { rows, rowCount: rows.length };
+          }
+
+          if (/^SELECT la\.id, la\.estado, pa\.fecha_inicio, pa\.fecha_fin FROM public\.rh_lista_asistencia la JOIN public\.rh_periodo_asistencia pa ON pa\.id = la\.periodo_id WHERE la\.adscripcion_laboral_id = \$1$/i.test(normalized)) {
+            const aid = Number(params[0]);
+            const rows = txListasAsistencia
+              .filter((l) => l.adscripcion_laboral_id === aid)
+              .map((l) => ({ ...l }));
+            return { rows, rowCount: rows.length };
+          }
+
+          if (/^UPDATE public\.rh_adscripcion_laboral SET matricula = \$1, puesto = \$2, turno = \$3, jornada = \$4, horario = \$5, vigente_desde = \$6, vigente_hasta = \$7, activo = \$8, observaciones = \$9, actualizado_en = NOW\(\) WHERE id = \$10 AND unidad_medica_id = \$11 RETURNING/i.test(normalized)) {
+            // Verificar explícitamente que el SQL de UPDATE jamás modifique persona_id ni unidad_medica_id
+            assert.equal(/SET[^W]*(persona_id|unidad_medica_id)\s*=/i.test(normalized), false);
+            const [
+              matricula,
+              puesto,
+              turno,
+              jornada,
+              horario,
+              vigente_desde,
+              vigente_hasta,
+              activo,
+              observaciones,
+              id,
+              unidad_medica_id,
+            ] = params;
+            const current = getEffectiveAdscripciones().find(
+              (a) => a.id === Number(id) && a.unidad_medica_id === Number(unidad_medica_id)
+            );
+            if (!current) return { rows: [], rowCount: 0 };
+            const updatedRow = {
+              ...current,
+              matricula,
+              puesto,
+              turno,
+              jornada,
+              horario,
+              vigente_desde,
+              vigente_hasta,
+              activo: Boolean(activo),
+              observaciones,
+            };
+            if (inTx) {
+              stagedUpdates.set(Number(id), updatedRow);
+            }
+            return { rows: [{ ...updatedRow }], rowCount: 1 };
           }
 
           if (/^INSERT INTO public\.rh_adscripcion_laboral/i.test(normalized)) {
@@ -1260,12 +1528,1198 @@ async function run() {
       assert.equal(txAuditLogs.length, 1);
       passed++;
     }
+
+    // =========================================================================
+    // SUITE RH-2B.4C (GET /api/rh/unidades/:unidadId/personal/:adscripcionId)
+    // =========================================================================
+
+    // 29 (Requisitos 4, 5 y 14 de RH-2B.4C): Ruta GET /unidades/:unidadId/personal/:adscripcionId registrada con requireAuth + requireRhAccess, y rechazo sin rol autorizado (403)
+    {
+      const fichaLayer = rhRouter.stack.find(
+        (l) =>
+          l.route &&
+          l.route.path === '/unidades/:unidadId/personal/:adscripcionId' &&
+          l.route.methods.get
+      );
+      assert.ok(fichaLayer, 'Debe existir GET /unidades/:unidadId/personal/:adscripcionId en rhRouter');
+      assert.equal(fichaLayer.route.stack.length, 3);
+      assert.equal(fichaLayer.route.stack[0].name, 'requireAuth');
+
+      const resNoAccess = createMockRes();
+      await controller.fichaPersonalPorUnidad(
+        { params: { unidadId: '10', adscripcionId: '5001' } },
+        resNoAccess
+      );
+      assert.equal(resNoAccess.statusCode, 403);
+      passed++;
+    }
+
+    // 30 (Requisitos 1, 9, 10, 11, 12, 14, 15, 18 y 19 de RH-2B.4C): RH GLOBAL consulta ficha autorizada, verifica enmascaramiento exacto de RFC/CURP, Cache-Control: no-store y permisos completos
+    {
+      capturedQueries = [];
+      const reqGlobal = {
+        rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+        params: { unidadId: '10', adscripcionId: '5001' },
+      };
+      const resGlobal = createMockRes();
+      await controller.fichaPersonalPorUnidad(reqGlobal, resGlobal);
+
+      assert.equal(resGlobal.statusCode, 200);
+      assert.equal(resGlobal.headers['cache-control'], 'no-store');
+
+      // RFC real en mock: 'GOMA800101ABC' (13 chars) -> '**********ABC' (10 asteriscos + últimos 3)
+      // CURP real en mock: 'GOMA800101MDFR0001' (18 chars) -> '****************01' (16 asteriscos + últimos 2)
+      assert.deepEqual(resGlobal.body, {
+        unidad: {
+          id: 10,
+          nombre: 'HOSPITAL GENERAL MEXICALI',
+          cluesimb: 'BCIMB000001',
+        },
+        personal: {
+          persona_id: 101,
+          nombre_completo: 'Dra. Ana Gómez',
+          nombres: 'Ana',
+          apellidos: 'Gómez',
+          tiene_rfc: true,
+          rfc_masked: '**********ABC',
+          tiene_curp: true,
+          curp_masked: '****************01',
+          activo: true,
+        },
+        laboral: {
+          adscripcion_laboral_id: 5001,
+          unidad_medica_id: 10,
+          matricula: 'MAT-1001',
+          puesto: 'Médico Especialista A',
+          turno: 'MATUTINO',
+          jornada: '8 HORAS',
+          horario: '07:00 - 15:00',
+          vigente_desde: '2026-01-01',
+          vigente_hasta: null,
+          activo: true,
+          observaciones: 'Base federalizada',
+        },
+        permisos: {
+          puede_editar_laboral: true,
+          puede_revelar_sensibles: true,
+          puede_editar_identificacion: true,
+        },
+      });
+
+      // Conservar longitud real y garantizar que RFC/CURP completos ni fecha de nacimiento ('800101') ni iniciales ('GOMA') aparezcan en el payload serializado
+      assert.equal(resGlobal.body.personal.rfc_masked.length, 'GOMA800101ABC'.length);
+      assert.equal(resGlobal.body.personal.curp_masked.length, 'GOMA800101MDFR0001'.length);
+      const serialized = JSON.stringify(resGlobal.body);
+      assert.equal(serialized.includes('GOMA800101ABC'), false);
+      assert.equal(serialized.includes('GOMA800101MDFR0001'), false);
+      assert.equal(serialized.includes('GOMA'), false);
+      assert.equal(serialized.includes('800101'), false);
+      assert.equal(serialized.includes('ana@imssb.gob.mx'), false);
+      passed++;
+    }
+
+    // 31 (Requisitos 2, 3, 13, 16 y 17 de RH-2B.4C): RH CLUES en su unidad autorizada, ADMIN_TIC GLOBAL y manejo de RFC/CURP NULL
+    {
+      // A) RH CLUES consulta adscripción 5002 (Enf. Luis Pérez, con rfc: null y curp: null) en unidad 10 autorizada
+      const reqClues = {
+        rhAccess: { scope: 'CLUES', clues: ['BCIMB000001'], grantedBy: 'RECURSOS_HUMANOS' },
+        params: { unidadId: '10', adscripcionId: '5002' },
+      };
+      const resClues = createMockRes();
+      await controller.fichaPersonalPorUnidad(reqClues, resClues);
+
+      assert.equal(resClues.statusCode, 200);
+      assert.equal(resClues.headers['cache-control'], 'no-store');
+      assert.deepEqual(resClues.body.personal, {
+        persona_id: 102,
+        nombre_completo: 'Enf. Luis Pérez',
+        nombres: null,
+        apellidos: null,
+        tiene_rfc: false,
+        rfc_masked: null,
+        tiene_curp: false,
+        curp_masked: null,
+        activo: true,
+      });
+      assert.deepEqual(resClues.body.laboral, {
+        adscripcion_laboral_id: 5002,
+        unidad_medica_id: 10,
+        matricula: 'MAT-1002',
+        puesto: 'Enfermero General',
+        turno: 'VESPERTINO',
+        jornada: '8 HORAS',
+        horario: '14:00 - 21:30',
+        vigente_desde: '2026-02-01',
+        vigente_hasta: '2026-12-31',
+        activo: true,
+        observaciones: null,
+      });
+      // Permisos RH CLUES: puede_editar_laboral = true, pero sensibles/identificación = false
+      assert.deepEqual(resClues.body.permisos, {
+        puede_editar_laboral: true,
+        puede_revelar_sensibles: false,
+        puede_editar_identificacion: false,
+      });
+
+      // B) ADMIN_TIC GLOBAL consulta ficha básica: todos los permisos de edición/revelación en false
+      const reqAdminTic = {
+        rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'ADMIN_TIC' },
+        params: { unidadId: '10', adscripcionId: '5001' },
+      };
+      const resAdminTic = createMockRes();
+      await controller.fichaPersonalPorUnidad(reqAdminTic, resAdminTic);
+
+      assert.equal(resAdminTic.statusCode, 200);
+      assert.equal(resAdminTic.headers['cache-control'], 'no-store');
+      assert.deepEqual(resAdminTic.body.permisos, {
+        puede_editar_laboral: false,
+        puede_revelar_sensibles: false,
+        puede_editar_identificacion: false,
+      });
+      assert.equal(resAdminTic.body.personal.rfc_masked, '**********ABC');
+      assert.equal(resAdminTic.body.personal.curp_masked, '****************01');
+      passed++;
+    }
+
+    // 32 (Requisitos 6, 7 y 8 de RH-2B.4C): RH CLUES en unidad ajena (403), adscripción inexistente (404), adscripción de otra unidad cambiando URL (404) y parámetros inválidos (400)
+    {
+      // A) RH CLUES intenta consultar unidad 20 ajena a su alcance ['BCIMB000001'] -> 403 sin tocar rh_adscripcion_laboral
+      capturedQueries = [];
+      const resForbiddenClues = createMockRes();
+      await controller.fichaPersonalPorUnidad(
+        {
+          rhAccess: { scope: 'CLUES', clues: ['BCIMB000001'], grantedBy: 'RECURSOS_HUMANOS' },
+          params: { unidadId: '20', adscripcionId: '5003' },
+        },
+        resForbiddenClues
+      );
+      assert.equal(resForbiddenClues.statusCode, 403);
+      assert.equal(
+        capturedQueries.some((q) => /FROM public\.rh_adscripcion_laboral/i.test(q.sql)),
+        false,
+        'No debe consultar rh_adscripcion_laboral si la unidad no está autorizada para el operador CLUES'
+      );
+
+      // B) Adscripción inexistente (99999) en unidad autorizada 10 -> 404
+      const resNotFound = createMockRes();
+      await controller.fichaPersonalPorUnidad(
+        {
+          rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+          params: { unidadId: '10', adscripcionId: '99999' },
+        },
+        resNotFound
+      );
+      assert.equal(resNotFound.statusCode, 404);
+
+      // C) Adscripción 5003 pertenece a la unidad 20; si se solicita bajo la unidad 10 (/unidades/10/personal/5003), devuelve 404 y no filtra datos
+      const resCrossUnit = createMockRes();
+      await controller.fichaPersonalPorUnidad(
+        {
+          rhAccess: { scope: 'CLUES', clues: ['BCIMB000001'], grantedBy: 'RECURSOS_HUMANOS' },
+          params: { unidadId: '10', adscripcionId: '5003' },
+        },
+        resCrossUnit
+      );
+      assert.equal(resCrossUnit.statusCode, 404);
+      assert.equal(JSON.stringify(resCrossUnit.body).includes('Carlos'), false);
+
+      // D) Parámetros inválidos en URL (400) sin ejecutar SQL
+      capturedQueries = [];
+      for (const badParams of [
+        { unidadId: 'abc', adscripcionId: '5001' },
+        { unidadId: '0', adscripcionId: '5001' },
+        { unidadId: '10', adscripcionId: 'xyz' },
+        { unidadId: '10', adscripcionId: '0' },
+        { unidadId: '10', adscripcionId: '-5' },
+      ]) {
+        const resBad = createMockRes();
+        await controller.fichaPersonalPorUnidad(
+          {
+            rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+            params: badParams,
+          },
+          resBad
+        );
+        assert.equal(resBad.statusCode, 400);
+      }
+      assert.equal(capturedQueries.length, 0);
+      passed++;
+    }
+
+    // =========================================================================
+    // SUITE RH-2B.4E (PATCH /api/rh/unidades/:unidadId/personal/:adscripcionId/laboral)
+    // =========================================================================
+
+    // 33 (Requisitos 3, 4 y 5 de RH-2B.4E): Ruta PATCH registrada con requireAuth + requireRhAccess; 401 sin usuario, 403 sin rol RH y 403 para ADMIN_TIC GLOBAL sin permiso de edición laboral
+    {
+      const patchLayer = rhRouter.stack.find(
+        (l) =>
+          l.route &&
+          l.route.path === '/unidades/:unidadId/personal/:adscripcionId/laboral' &&
+          l.route.methods.patch
+      );
+      assert.ok(
+        patchLayer,
+        'Debe existir PATCH /unidades/:unidadId/personal/:adscripcionId/laboral en rhRouter'
+      );
+      assert.equal(patchLayer.route.stack.length, 3);
+      assert.equal(patchLayer.route.stack[0].name, 'requireAuth');
+
+      resetTxState();
+      // 401 sin usuario autenticado
+      const resNoUser = createMockRes();
+      await controller.updateAdscripcionLaboralPorUnidad(
+        {
+          rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+          params: { unidadId: '10', adscripcionId: '5001' },
+          body: { puesto: 'Nuevo Puesto' },
+        },
+        resNoUser
+      );
+      assert.equal(resNoUser.statusCode, 401);
+
+      // 403 sin rhAccess
+      const resNoRh = createMockRes();
+      await controller.updateAdscripcionLaboralPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          params: { unidadId: '10', adscripcionId: '5001' },
+          body: { puesto: 'Nuevo Puesto' },
+        },
+        resNoRh
+      );
+      assert.equal(resNoRh.statusCode, 403);
+
+      // 403 para ADMIN_TIC GLOBAL sin rol operativo RECURSOS_HUMANOS
+      const resAdminTic = createMockRes();
+      await controller.updateAdscripcionLaboralPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'ADMIN_TIC' },
+          params: { unidadId: '10', adscripcionId: '5001' },
+          body: { puesto: 'Intento Admin TIC' },
+        },
+        resAdminTic
+      );
+      assert.equal(resAdminTic.statusCode, 403);
+      assert.equal(txEvents.length, 0, 'ADMIN_TIC no debe abrir conexión transaccional en edición laboral');
+      passed++;
+    }
+
+    // 34 (Requisitos 1, 2, 9, 18, 19 y 20 de RH-2B.4E): RH GLOBAL y RH CLUES modifican información laboral mediante PATCH parcial conservando propiedades omitidas, registrando auditoría exclusivamente de los campos modificados y sin tocar public.persona
+    {
+      resetTxState();
+
+      // A) RH GLOBAL actualiza parcialmente solo `puesto` y `observaciones` de la adscripción 5001
+      const reqPatchGlobal = {
+        user: { sub: AUTH_USER_UUID },
+        rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+        params: { unidadId: '10', adscripcionId: '5001' },
+        ip: '10.0.0.15',
+        get: (h) => (h === 'User-Agent' ? 'Mozilla/5.0 PatchTest' : undefined),
+        body: {
+          puesto: '  Médico Especialista B  ',
+          observaciones: '  Cambio de nivel autorizado  ',
+        },
+      };
+      const resPatchGlobal = createMockRes();
+      await controller.updateAdscripcionLaboralPorUnidad(reqPatchGlobal, resPatchGlobal);
+
+      assert.equal(resPatchGlobal.statusCode, 200);
+      assert.deepEqual(resPatchGlobal.body, {
+        unidad: { id: 10, nombre: 'HOSPITAL GENERAL MEXICALI', cluesimb: 'BCIMB000001' },
+        laboral: {
+          adscripcion_laboral_id: 5001,
+          unidad_medica_id: 10,
+          matricula: 'MAT-1001', // conservado
+          puesto: 'Médico Especialista B', // actualizado
+          turno: 'MATUTINO', // conservado
+          jornada: '8 HORAS', // conservado
+          horario: '07:00 - 15:00', // conservado
+          vigente_desde: '2026-01-01', // conservado
+          vigente_hasta: null, // conservado
+          activo: true, // conservado
+          observaciones: 'Cambio de nivel autorizado', // actualizado
+        },
+        campos_modificados: ['puesto', 'observaciones'],
+      });
+
+      // Verificar que no expone RFC ni CURP
+      const rawJson = JSON.stringify(resPatchGlobal.body);
+      assert.equal(rawJson.includes('GOMA'), false);
+      assert.equal(rawJson.includes('rfc'), false);
+      assert.equal(rawJson.includes('curp'), false);
+
+      // Verificar auditoría exacta en app_audit_logs
+      assert.equal(txAuditLogs.length, 1);
+      assert.deepEqual(txAuditLogs[0], {
+        user_id: AUTH_USER_UUID,
+        action: 'RH_UPDATE_ADSCRIPCION_LABORAL',
+        resource: 'rh_adscripcion_laboral:5001',
+        ip: '10.0.0.15',
+        user_agent: 'Mozilla/5.0 PatchTest',
+        payload: {
+          adscripcion_laboral_id: 5001,
+          persona_id: 101,
+          unidad_medica_id: 10,
+          campos_modificados: ['puesto', 'observaciones'],
+        },
+      });
+
+      // B) Si se envía un PATCH con los mismos valores actuales (sin cambios efectivos), devuelve 200 con campos_modificados: [] y NO inserta un nuevo registro en app_audit_logs
+      const resNoOp = createMockRes();
+      await controller.updateAdscripcionLaboralPorUnidad(reqPatchGlobal, resNoOp);
+      assert.equal(resNoOp.statusCode, 200);
+      assert.deepEqual(resNoOp.body.campos_modificados, []);
+      assert.equal(txAuditLogs.length, 1, 'No debe registrar auditoría cuando no hubo cambios efectivos');
+
+      // C) RH CLUES modifica información laboral en su unidad autorizada (unidad 10, adscripción 5002)
+      const reqPatchClues = {
+        user: { sub: AUTH_USER_UUID },
+        rhAccess: { scope: 'CLUES', clues: ['BCIMB000001'], grantedBy: 'RECURSOS_HUMANOS' },
+        params: { unidadId: '10', adscripcionId: '5002' },
+        body: {
+          horario: '14:00 - 21:00',
+          turno: 'VESPERTINO ESPECIAL',
+        },
+      };
+      const resPatchClues = createMockRes();
+      await controller.updateAdscripcionLaboralPorUnidad(reqPatchClues, resPatchClues);
+      assert.equal(resPatchClues.statusCode, 200);
+      assert.equal(resPatchClues.body.laboral.horario, '14:00 - 21:00');
+      assert.equal(resPatchClues.body.laboral.turno, 'VESPERTINO ESPECIAL');
+      assert.deepEqual(resPatchClues.body.campos_modificados, ['turno', 'horario']);
+      assert.equal(txAuditLogs.length, 2);
+      passed++;
+    }
+
+    // 35 (Requisitos 6, 7 y 8 de RH-2B.4E): RH CLUES fuera de su unidad (403), adscripción inexistente (404) y adscripción de otra unidad (404)
+    {
+      resetTxState();
+
+      // A) RH CLUES intenta modificar unidad 20 ajena a su alcance -> 403 sin abrir transacción
+      const resCluesForbidden = createMockRes();
+      await controller.updateAdscripcionLaboralPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: { scope: 'CLUES', clues: ['BCIMB000001'], grantedBy: 'RECURSOS_HUMANOS' },
+          params: { unidadId: '20', adscripcionId: '5003' },
+          body: { puesto: 'Intento ajeno' },
+        },
+        resCluesForbidden
+      );
+      assert.equal(resCluesForbidden.statusCode, 403);
+      assert.equal(txEvents.length, 0);
+
+      // B) Adscripción inexistente (99999) -> 404
+      const resMissing = createMockRes();
+      await controller.updateAdscripcionLaboralPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+          params: { unidadId: '10', adscripcionId: '99999' },
+          body: { puesto: 'No existe' },
+        },
+        resMissing
+      );
+      assert.equal(resMissing.statusCode, 404);
+
+      // C) Adscripción 5003 pertenece a la unidad 20; si se solicita editarla bajo la unidad 10 (/unidades/10/personal/5003/laboral) -> 404
+      const resWrongUnit = createMockRes();
+      await controller.updateAdscripcionLaboralPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+          params: { unidadId: '10', adscripcionId: '5003' },
+          body: { puesto: 'Cruce de unidad' },
+        },
+        resWrongUnit
+      );
+      assert.equal(resWrongUnit.statusCode, 404);
+      passed++;
+    }
+
+    // 36 (Requisitos 10, 11, 12, 13, 14 y 15 de RH-2B.4E): Rechazo de request vacío, propiedades desconocidas/prohibidas, longitudes máximas, fechas inválidas, vigencias invertidas y booleanos no estrictos (400)
+    {
+      resetTxState();
+      const badPayloads = [
+        {}, // request vacío
+        { id: 5001, puesto: 'Médico' }, // propiedad prohibida id
+        { adscripcion_laboral_id: 5001 }, // propiedad prohibida adscripcion_laboral_id
+        { persona_id: 102, puesto: 'Médico' }, // propiedad prohibida persona_id
+        { unidad_medica_id: 20, puesto: 'Médico' }, // propiedad prohibida unidad_medica_id
+        { rfc: 'GOMA800101ABC' }, // propiedad prohibida rfc
+        { curp: 'GOMA800101MDFR0001' }, // propiedad prohibida curp
+        { nombre_completo: 'Otro Nombre' }, // propiedad prohibida nombre_completo
+        { creado_en: '2026-01-01' }, // propiedad prohibida creado_en
+        { actualizado_en: '2026-01-01' }, // propiedad prohibida actualizado_en
+        { matricula: 'M'.repeat(65) }, // excede 64
+        { puesto: 'P'.repeat(161) }, // excede 160
+        { turno: 'T'.repeat(61) }, // excede 60
+        { jornada: 'J'.repeat(81) }, // excede 80
+        { horario: 'H'.repeat(121) }, // excede 120
+        { observaciones: 'O'.repeat(2001) }, // excede 2000
+        { vigente_desde: null }, // vigente_desde no puede ser null
+        { vigente_desde: '2026-02-30' }, // fecha calendario inexistente
+        { vigente_hasta: '2025-12-31' }, // anterior al vigente_desde actual (2026-01-01 de 5001)
+        { vigente_desde: '2026-10-10', vigente_hasta: '2026-10-01' }, // hasta < desde
+        { activo: 'true' }, // booleano no estricto (string)
+        { activo: 1 }, // booleano no estricto (number)
+        { activo: null }, // booleano null
+      ];
+
+      for (const badBody of badPayloads) {
+        const res = createMockRes();
+        await controller.updateAdscripcionLaboralPorUnidad(
+          {
+            user: { sub: AUTH_USER_UUID },
+            rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+            params: { unidadId: '10', adscripcionId: '5001' },
+            body: badBody,
+          },
+          res
+        );
+        assert.equal(
+          res.statusCode,
+          400,
+          `Payload inválido ${JSON.stringify(badBody)} debe devolver 400 (recibió ${res.statusCode})`
+        );
+      }
+      assert.equal(txAuditLogs.length, 0);
+      passed++;
+    }
+
+    // 37 (Requisitos 16, 17, 21 y 22 de RH-2B.4E): Detección de conflictos con otras adscripciones (409), protección de referencias históricas en rh_lista_asistencia (409), rollback si falla auditoría (500) y serialización concurrente
+    {
+      resetTxState();
+
+      // A) Conflicto con otra adscripción de la misma persona (persona 101 tiene adscripción activa 5001 desde 2026-01-01; agregamos una histórica inactiva 5900 del 2025-01-01 al 2025-06-30)
+      txAdscripciones.push({
+        id: 5900,
+        persona_id: 101,
+        unidad_medica_id: 10,
+        matricula: 'MAT-1001-ANT',
+        puesto: 'Médico General',
+        turno: 'MATUTINO',
+        jornada: '8 HORAS',
+        horario: '07:00 - 15:00',
+        vigente_desde: '2025-01-01',
+        vigente_hasta: '2025-06-30',
+        activo: false,
+        observaciones: 'Periodo previo',
+      });
+
+      // Intentar activar la adscripción histórica 5900 mientras 5001 está activa -> 409
+      const resDupActive = createMockRes();
+      await controller.updateAdscripcionLaboralPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+          params: { unidadId: '10', adscripcionId: '5900' },
+          body: { activo: true },
+        },
+        resDupActive
+      );
+      assert.equal(resDupActive.statusCode, 409);
+
+      // Intentar cambiar vigente_desde de 5001 a '2025-05-01' para que se solape con 5900 -> 409
+      const resOverlapVigencia = createMockRes();
+      await controller.updateAdscripcionLaboralPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+          params: { unidadId: '10', adscripcionId: '5001' },
+          body: { vigente_desde: '2025-05-01' },
+        },
+        resOverlapVigencia
+      );
+      assert.equal(resOverlapVigencia.statusCode, 409);
+
+      // B) Protección de referencias históricas en rh_lista_asistencia:
+      // Simulamos que la adscripción 5001 tiene una lista de asistencia en el periodo 2026-03-01 a 2026-03-15 en estado 'EN_CAPTURA'
+      txListasAsistencia.push({
+        id: 9001,
+        adscripcion_laboral_id: 5001,
+        estado: 'EN_CAPTURA',
+        fecha_inicio: '2026-03-01',
+        fecha_fin: '2026-03-15',
+      });
+
+      // 1) Mover vigente_desde a '2026-04-01' (posterior al inicio de la lista 2026-03-01) -> 409
+      const resHistDesde = createMockRes();
+      await controller.updateAdscripcionLaboralPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+          params: { unidadId: '10', adscripcionId: '5001' },
+          body: { vigente_desde: '2026-04-01' },
+        },
+        resHistDesde
+      );
+      assert.equal(resHistDesde.statusCode, 409);
+
+      // 2) Recortar vigente_hasta a '2026-02-28' (anterior al fin de la lista 2026-03-15) -> 409
+      const resHistHasta = createMockRes();
+      await controller.updateAdscripcionLaboralPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+          params: { unidadId: '10', adscripcionId: '5001' },
+          body: { vigente_hasta: '2026-02-28' },
+        },
+        resHistHasta
+      );
+      assert.equal(resHistHasta.statusCode, 409);
+
+      // 3) Desactivar adscripción (activo: false) mientras tiene lista en captura -> 409
+      const resHistDeactivate = createMockRes();
+      await controller.updateAdscripcionLaboralPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+          params: { unidadId: '10', adscripcionId: '5001' },
+          body: { activo: false },
+        },
+        resHistDeactivate
+      );
+      assert.equal(resHistDeactivate.statusCode, 409);
+
+      // C) Rollback completo si falla la inserción en app_audit_logs (500)
+      resetTxState();
+      failOnTxSql = 'INSERT INTO public.app_audit_logs';
+      const resAuditFail = createMockRes();
+      await controller.updateAdscripcionLaboralPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+          params: { unidadId: '10', adscripcionId: '5001' },
+          body: { puesto: 'Puesto que debe revertirse' },
+        },
+        resAuditFail
+      );
+      assert.equal(resAuditFail.statusCode, 500);
+      const rowAfterRollback = txAdscripciones.find((a) => a.id === 5001);
+      assert.equal(rowAfterRollback.puesto, 'Médico Especialista A', 'El rollback debe revertir el UPDATE si falla la auditoría');
+
+      // D) Concurrencia: dos ediciones simultáneas para activar dos adscripciones inactivas de la misma persona solo permiten una
+      resetTxState();
+      txAdscripciones = [
+        {
+          id: 5001,
+          persona_id: 101,
+          unidad_medica_id: 10,
+          matricula: 'MAT-1001',
+          puesto: 'Puesto 1',
+          turno: 'MATUTINO',
+          jornada: '8 HORAS',
+          horario: '07:00 - 15:00',
+          vigente_desde: '2025-01-01',
+          vigente_hasta: '2025-06-30',
+          activo: false,
+          observaciones: null,
+        },
+        {
+          id: 5900,
+          persona_id: 101,
+          unidad_medica_id: 10,
+          matricula: 'MAT-1001',
+          puesto: 'Puesto 2',
+          turno: 'MATUTINO',
+          jornada: '8 HORAS',
+          horario: '07:00 - 15:00',
+          vigente_desde: '2026-01-01',
+          vigente_hasta: null,
+          activo: false,
+          observaciones: null,
+        },
+      ];
+
+      const concurrentActivate1 = () =>
+        service.updateAdscripcionLaboral(
+          { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+          10,
+          5001,
+          { activo: true },
+          { userId: AUTH_USER_UUID }
+        );
+      const concurrentActivate2 = () =>
+        service.updateAdscripcionLaboral(
+          { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+          10,
+          5900,
+          { activo: true },
+          { userId: AUTH_USER_UUID }
+        );
+
+      const outcomes = await Promise.allSettled([concurrentActivate1(), concurrentActivate2()]);
+      const fulfilled = outcomes.filter((o) => o.status === 'fulfilled');
+      const rejected = outcomes.filter((o) => o.status === 'rejected');
+      assert.equal(fulfilled.length, 1);
+      assert.equal(rejected.length, 1);
+      assert.equal(rejected[0].reason.status, 409);
+      passed++;
+    }
+
+    // =========================================================================
+    // SUITE RH-2B.4G.1 (POST /api/rh/unidades/:unidadId/personal/:adscripcionId/revelar-identificadores)
+    // =========================================================================
+
+    // 38 (Requisitos 2, 3, 4, 5, 6 y 16 de RH-2B.4G.1): Autorización estricta de revelación sensible y verificación de que operaciones denegadas NO consultan RFC/CURP
+    {
+      const revealLayer = rhRouter.stack.find(
+        (l) =>
+          l.route &&
+          l.route.path === '/unidades/:unidadId/personal/:adscripcionId/revelar-identificadores' &&
+          l.route.methods.post
+      );
+      assert.ok(
+        revealLayer,
+        'Debe existir POST /unidades/:unidadId/personal/:adscripcionId/revelar-identificadores en rhRouter'
+      );
+      assert.equal(revealLayer.route.stack.length, 3);
+      assert.equal(revealLayer.route.stack[0].name, 'requireAuth');
+
+      resetTxState();
+      capturedQueries = [];
+
+      // 6. Sin autenticación (sin req.user.sub) -> 401
+      const resNoAuth = createMockRes();
+      await controller.revelarIdentificadoresPorUnidad(
+        {
+          rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+          params: { unidadId: '10', adscripcionId: '5001' },
+          body: {},
+        },
+        resNoAuth
+      );
+      assert.equal(resNoAuth.statusCode, 401);
+
+      // 4. Otro rol GLOBAL sin RH (p. ej. ABASTO GLOBAL -> resolveRhAccess devuelve null -> sin rhAccess) -> 403
+      const nonRhAccess = resolveRhAccess([{ code: 'ABASTO', scope: 'GLOBAL', id: null }]);
+      assert.equal(nonRhAccess, null);
+      const resNonRh = createMockRes();
+      await controller.revelarIdentificadoresPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          params: { unidadId: '10', adscripcionId: '5001' },
+          body: {},
+        },
+        resNonRh
+      );
+      assert.equal(resNonRh.statusCode, 403);
+
+      // 2. RECURSOS_HUMANOS CLUES recibe 403 incluso en su propia unidad autorizada (unidad 10)
+      const resRhClues = createMockRes();
+      await controller.revelarIdentificadoresPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: { scope: 'CLUES', clues: ['BCIMB000001'], grantedBy: 'RECURSOS_HUMANOS' },
+          params: { unidadId: '10', adscripcionId: '5001' },
+          body: {},
+        },
+        resRhClues
+      );
+      assert.equal(resRhClues.statusCode, 403);
+
+      // 3. ADMIN_TIC GLOBAL sin rol RECURSOS_HUMANOS GLOBAL recibe 403
+      const resAdminTicOnly = createMockRes();
+      await controller.revelarIdentificadoresPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'ADMIN_TIC' },
+          params: { unidadId: '10', adscripcionId: '5001' },
+          body: {},
+        },
+        resAdminTicOnly
+      );
+      assert.equal(resAdminTicOnly.statusCode, 403);
+
+      // 16. Ninguna de las operaciones denegadas abrió conexión ni consultó RFC/CURP
+      assert.equal(txEvents.length, 0);
+      assert.equal(capturedQueries.length, 0);
+      assert.equal(txAuditLogs.length, 0);
+      passed++;
+    }
+
+    // 39 (Requisitos 1, 5, 11, 12, 13 y 14 de RH-2B.4G.1): RECURSOS_HUMANOS GLOBAL (y cuenta combinada ADMIN_TIC GLOBAL + RH GLOBAL) obtiene RFC/CURP reales o null, con Cache-Control: no-store y auditoría sin valores sensibles
+    {
+      resetTxState();
+
+      // 1. RECURSOS_HUMANOS GLOBAL revela identificadores de adscripción 5001 (persona 101: Dra. Ana Gómez)
+      const reqReveal5001 = {
+        user: { sub: AUTH_USER_UUID },
+        rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+        params: { unidadId: '10', adscripcionId: '5001' },
+        ip: '192.168.1.50',
+        get: (h) => (h === 'User-Agent' ? 'Mozilla/5.0 RevealTest' : undefined),
+        body: {},
+      };
+      const resReveal5001 = createMockRes();
+      await controller.revelarIdentificadoresPorUnidad(reqReveal5001, resReveal5001);
+
+      assert.equal(resReveal5001.statusCode, 200);
+      assert.equal(resReveal5001.headers['cache-control'], 'no-store');
+      assert.deepEqual(resReveal5001.body, {
+        persona_id: 101,
+        rfc: 'GOMA800101ABC',
+        curp: 'GOMA800101MDFR0001',
+      });
+
+      // 13 y 14. Verificar auditoría obligatoria en public.app_audit_logs y que NO contenga los valores de RFC ni CURP
+      assert.equal(txAuditLogs.length, 1);
+      assert.deepEqual(txAuditLogs[0], {
+        user_id: AUTH_USER_UUID,
+        action: 'RH_REVEAL_SENSITIVE_IDS',
+        resource: 'rh_adscripcion_laboral:5001',
+        ip: '192.168.1.50',
+        user_agent: 'Mozilla/5.0 RevealTest',
+        payload: {
+          adscripcion_laboral_id: 5001,
+          persona_id: 101,
+          unidad_medica_id: 10,
+          campos_revelados: ['rfc', 'curp'],
+        },
+      });
+      const rawAuditStr = JSON.stringify(txAuditLogs[0]);
+      assert.equal(rawAuditStr.includes('GOMA800101ABC'), false);
+      assert.equal(rawAuditStr.includes('GOMA800101MDFR0001'), false);
+
+      // 5 y 11. Cuenta que combina ADMIN_TIC GLOBAL + RECURSOS_HUMANOS GLOBAL revela adscripción 5002 (persona 102 con rfc: null y curp: null)
+      const combinedAccess = resolveRhAccess([
+        { code: 'ADMIN_TIC', scope: 'GLOBAL', id: null },
+        { code: 'RECURSOS_HUMANOS', scope: 'GLOBAL', id: null },
+      ]);
+      assert.deepEqual(combinedAccess, {
+        scope: 'GLOBAL',
+        clues: [],
+        grantedBy: 'RECURSOS_HUMANOS',
+      });
+
+      const resReveal5002 = createMockRes();
+      await controller.revelarIdentificadoresPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: combinedAccess,
+          params: { unidadId: '10', adscripcionId: '5002' },
+          body: {},
+        },
+        resReveal5002
+      );
+      assert.equal(resReveal5002.statusCode, 200);
+      assert.equal(resReveal5002.headers['cache-control'], 'no-store');
+      assert.deepEqual(resReveal5002.body, {
+        persona_id: 102,
+        rfc: null,
+        curp: null,
+      });
+      assert.equal(txAuditLogs.length, 2);
+      passed++;
+    }
+
+    // 40 (Requisitos 7, 8, 9, 10 y 15 de RH-2B.4G.1): Parámetros inválidos (400), body con propiedades adicionales (400), adscripción inexistente (404), adscripción de otra unidad (404 sin revelar) y fallo de auditoría con rollback (500 sin devolver identificadores)
+    {
+      resetTxState();
+
+      // 7. Parámetros inválidos en URL -> 400
+      for (const badParams of [
+        { unidadId: 'abc', adscripcionId: '5001' },
+        { unidadId: '0', adscripcionId: '5001' },
+        { unidadId: '10', adscripcionId: 'xyz' },
+        { unidadId: '10', adscripcionId: '-1' },
+      ]) {
+        const resBadParam = createMockRes();
+        await controller.revelarIdentificadoresPorUnidad(
+          {
+            user: { sub: AUTH_USER_UUID },
+            rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+            params: badParams,
+            body: {},
+          },
+          resBadParam
+        );
+        assert.equal(resBadParam.statusCode, 400);
+      }
+
+      // 8. Body con propiedades adicionales o no objeto vacío -> 400
+      for (const badBody of [
+        { persona_id: 101 },
+        { user_id: AUTH_USER_UUID },
+        { rfc: 'GOMA800101ABC' },
+        { curp: 'GOMA800101MDFR0001' },
+        { extra: true },
+        [],
+        null,
+      ]) {
+        const resBadBody = createMockRes();
+        await controller.revelarIdentificadoresPorUnidad(
+          {
+            user: { sub: AUTH_USER_UUID },
+            rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+            params: { unidadId: '10', adscripcionId: '5001' },
+            body: badBody,
+          },
+          resBadBody
+        );
+        assert.equal(resBadBody.statusCode, 400);
+      }
+      assert.equal(txEvents.length, 0, 'Requests 400 no deben abrir conexión transaccional');
+
+      // 9. Adscripción inexistente (99999) -> 404 con ROLLBACK y sin auditoría
+      const resNotFound = createMockRes();
+      await controller.revelarIdentificadoresPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+          params: { unidadId: '10', adscripcionId: '99999' },
+          body: {},
+        },
+        resNotFound
+      );
+      assert.equal(resNotFound.statusCode, 404);
+      assert.equal(txAuditLogs.length, 0);
+
+      // 10. Adscripción perteneciente a otra unidad (5003 es de unidad 20, solicitada bajo unidad 10) -> 404 sin revelar RFC/CURP
+      const resOtherUnit = createMockRes();
+      await controller.revelarIdentificadoresPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+          params: { unidadId: '10', adscripcionId: '5003' },
+          body: {},
+        },
+        resOtherUnit
+      );
+      assert.equal(resOtherUnit.statusCode, 404);
+      assert.equal(JSON.stringify(resOtherUnit.body).includes('RUIC790404'), false);
+      assert.equal(txAuditLogs.length, 0);
+
+      // 15. Si falla el INSERT en public.app_audit_logs -> ROLLBACK, responde 500 y NO devuelve los identificadores completos
+      resetTxState();
+      failOnTxSql = 'INSERT INTO public.app_audit_logs';
+      const resAuditFail = createMockRes();
+      await controller.revelarIdentificadoresPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+          params: { unidadId: '10', adscripcionId: '5001' },
+          body: {},
+        },
+        resAuditFail
+      );
+      assert.equal(resAuditFail.statusCode, 500);
+      assert.equal(JSON.stringify(resAuditFail.body).includes('GOMA800101ABC'), false);
+      assert.equal(JSON.stringify(resAuditFail.body).includes('GOMA800101MDFR0001'), false);
+      assert.ok(txEvents.some((e) => e.sql === 'ROLLBACK'));
+      assert.equal(txAuditLogs.length, 0);
+      passed++;
+    }
+
+    // =========================================================================
+    // SUITE RH-2B.4G.2 (PATCH /api/rh/unidades/:unidadId/personal/:adscripcionId/identificacion)
+    // =========================================================================
+
+    // 41 (Requisitos 4, 5, 6, 7 y 8 de RH-2B.4G.2): Ruta PATCH /identificacion protegida; 401 sin usuario, 403 para RH CLUES y ADMIN_TIC GLOBAL sin RH, y 404 para adscripción inexistente o ajena
+    {
+      const patchIdLayer = rhRouter.stack.find(
+        (l) =>
+          l.route &&
+          l.route.path === '/unidades/:unidadId/personal/:adscripcionId/identificacion' &&
+          l.route.methods.patch
+      );
+      assert.ok(
+        patchIdLayer,
+        'Debe existir PATCH /unidades/:unidadId/personal/:adscripcionId/identificacion en rhRouter'
+      );
+      assert.equal(patchIdLayer.route.stack.length, 3);
+      assert.equal(patchIdLayer.route.stack[0].name, 'requireAuth');
+
+      resetTxState();
+      capturedQueries = [];
+
+      // 7. Usuario no autenticado -> 401
+      const resNoAuth = createMockRes();
+      await controller.updateIdentificacionPersonalPorUnidad(
+        {
+          rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+          params: { unidadId: '10', adscripcionId: '5001' },
+          body: { rfc: 'GOMA800101ZZ9' },
+        },
+        resNoAuth
+      );
+      assert.equal(resNoAuth.statusCode, 401);
+
+      // 4. RH CLUES no edita identificación (recibe 403 incluso en su propia unidad 10)
+      const resClues = createMockRes();
+      await controller.updateIdentificacionPersonalPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: { scope: 'CLUES', clues: ['BCIMB000001'], grantedBy: 'RECURSOS_HUMANOS' },
+          params: { unidadId: '10', adscripcionId: '5001' },
+          body: { rfc: 'GOMA800101ZZ9' },
+        },
+        resClues
+      );
+      assert.equal(resClues.statusCode, 403);
+
+      // 5. ADMIN_TIC GLOBAL sin RH GLOBAL recibe 403
+      const resAdminTic = createMockRes();
+      await controller.updateIdentificacionPersonalPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'ADMIN_TIC' },
+          params: { unidadId: '10', adscripcionId: '5001' },
+          body: { rfc: 'GOMA800101ZZ9' },
+        },
+        resAdminTic
+      );
+      assert.equal(resAdminTic.statusCode, 403);
+      assert.equal(txEvents.length, 0, 'Operadores sin permiso no deben abrir transacción');
+
+      // 8. Adscripción inexistente (99999) o perteneciente a otra unidad (5003 de unidad 20 consultada bajo unidad 10) -> 404
+      for (const wrongAdsId of ['99999', '5003']) {
+        const res404 = createMockRes();
+        await controller.updateIdentificacionPersonalPorUnidad(
+          {
+            user: { sub: AUTH_USER_UUID },
+            rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+            params: { unidadId: '10', adscripcionId: wrongAdsId },
+            body: { rfc: 'GOMA800101ZZ9' },
+          },
+          res404
+        );
+        assert.equal(res404.statusCode, 404);
+      }
+      assert.equal(txAuditLogs.length, 0);
+      passed++;
+    }
+
+    // 42 (Requisitos 1, 2, 3, 6, 9, 10, 11, 12, 19, 20, 21, 22, 23, 24, 26, 27 y 28 de RH-2B.4G.2): Edición parcial de RFC, CURP, nombres/apellidos y nombre_completo sin heurísticas; normalización de vacíos/null; enmascaramiento en respuesta; Cache-Control: no-store y auditoría limpia
+    {
+      resetTxState();
+
+      // A) RH GLOBAL (incluyendo cuenta combinada ADMIN_TIC GLOBAL + RH GLOBAL) edita RFC, CURP, nombres y apellidos en adscripción 5001 (persona 101)
+      const combinedAccess = resolveRhAccess([
+        { code: 'ADMIN_TIC', scope: 'GLOBAL', id: null },
+        { code: 'RECURSOS_HUMANOS', scope: 'GLOBAL', id: null },
+      ]);
+
+      const reqUpdate5001 = {
+        user: { sub: AUTH_USER_UUID },
+        rhAccess: combinedAccess,
+        params: { unidadId: '10', adscripcionId: '5001' },
+        ip: '10.10.1.99',
+        get: (h) => (h === 'User-Agent' ? 'Mozilla/5.0 IdPatchTest' : undefined),
+        body: {
+          nombres: '  Ana   María  ',
+          apellidos: '  Gómez   López  ',
+          rfc: '  gola800101xy9  ',
+          curp: '  gola800101mdfrpn08  ',
+        },
+      };
+      const resUpdate5001 = createMockRes();
+      await controller.updateIdentificacionPersonalPorUnidad(reqUpdate5001, resUpdate5001);
+
+      assert.equal(resUpdate5001.statusCode, 200);
+      assert.equal(resUpdate5001.headers['cache-control'], 'no-store');
+      assert.deepEqual(resUpdate5001.body, {
+        unidad: { id: 10, nombre: 'HOSPITAL GENERAL MEXICALI', cluesimb: 'BCIMB000001' },
+        personal: {
+          persona_id: 101,
+          nombre_completo: 'Ana María Gómez López', // sincronizado con trigger t_persona_nombre
+          nombres: 'Ana María',
+          apellidos: 'Gómez López',
+          tiene_rfc: true,
+          rfc_masked: '**********XY9',
+          tiene_curp: true,
+          curp_masked: '****************08',
+          activo: true,
+        },
+        campos_modificados: ['nombres', 'apellidos', 'nombre_completo', 'rfc', 'curp'],
+      });
+
+      // 27. Nunca devuelve RFC ni CURP completos en la respuesta del PATCH
+      const rawBody5001 = JSON.stringify(resUpdate5001.body);
+      assert.equal(rawBody5001.includes('GOLA800101XY9'), false);
+      assert.equal(rawBody5001.includes('GOLA800101MDFRPN08'), false);
+
+      // 21 y 22. Verificar que no se modificó persona.unidad_medica_id ni rh_adscripcion_laboral
+      const updatedPersona101 = txPersonas.find((p) => p.id === 101);
+      assert.equal(updatedPersona101.unidad_medica_id, 10);
+      assert.equal(updatedPersona101.correo_principal, 'ana@imssb.gob.mx');
+      assert.equal(updatedPersona101.rfc, 'GOLA800101XY9');
+      assert.equal(updatedPersona101.curp, 'GOLA800101MDFRPN08');
+
+      // 23 y 24. Verificar auditoría en app_audit_logs (solo nombres de campos e IDs, sin valores sensibles)
+      assert.equal(txAuditLogs.length, 1);
+      assert.deepEqual(txAuditLogs[0], {
+        user_id: AUTH_USER_UUID,
+        action: 'RH_UPDATE_PERSONA_IDENTIFICACION',
+        resource: 'persona:101',
+        ip: '10.10.1.99',
+        user_agent: 'Mozilla/5.0 IdPatchTest',
+        payload: {
+          adscripcion_laboral_id: 5001,
+          persona_id: 101,
+          unidad_medica_id: 10,
+          campos_modificados: ['nombres', 'apellidos', 'nombre_completo', 'rfc', 'curp'],
+        },
+      });
+      const rawAudit = JSON.stringify(txAuditLogs[0]);
+      assert.equal(rawAudit.includes('GOLA800101XY9'), false);
+      assert.equal(rawAudit.includes('GOLA800101MDFRPN08'), false);
+      assert.equal(rawAudit.includes('Ana María'), false);
+
+      // 26. Enviar nuevamente los mismos valores no genera UPDATE ni nueva fila de auditoría
+      const resNoOp = createMockRes();
+      await controller.updateIdentificacionPersonalPorUnidad(reqUpdate5001, resNoOp);
+      assert.equal(resNoOp.statusCode, 200);
+      assert.deepEqual(resNoOp.body.campos_modificados, []);
+      assert.equal(txAuditLogs.length, 1);
+
+      // B) 9, 10, 11 y 12. PATCH parcial: enviar `rfc: ""` y `curp: null` limpia explícitamente los identificadores a SQL NULL sin alterar nombres ni apellidos omitidos
+      const resClearIds = createMockRes();
+      await controller.updateIdentificacionPersonalPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+          params: { unidadId: '10', adscripcionId: '5001' },
+          body: { rfc: '   ', curp: null },
+        },
+        resClearIds
+      );
+      assert.equal(resClearIds.statusCode, 200);
+      assert.equal(resClearIds.body.personal.nombres, 'Ana María');
+      assert.equal(resClearIds.body.personal.apellidos, 'Gómez López');
+      assert.equal(resClearIds.body.personal.tiene_rfc, false);
+      assert.equal(resClearIds.body.personal.rfc_masked, null);
+      assert.equal(resClearIds.body.personal.tiene_curp, false);
+      assert.equal(resClearIds.body.personal.curp_masked, null);
+      assert.deepEqual(resClearIds.body.campos_modificados, ['rfc', 'curp']);
+
+      // C) 20. Registro legado con solo `nombre_completo` (persona 102 en adscripción 5002 tiene `nombres: null, apellidos: null`):
+      // permite actualizar `nombre_completo` directamente sin dividirlo mediante heurísticas
+      const resLegacyName = createMockRes();
+      await controller.updateIdentificacionPersonalPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+          params: { unidadId: '10', adscripcionId: '5002' },
+          body: { nombre_completo: '  Enf. Luis Alberto Pérez  ' },
+        },
+        resLegacyName
+      );
+      assert.equal(resLegacyName.statusCode, 200);
+      assert.equal(resLegacyName.body.personal.nombre_completo, 'Enf. Luis Alberto Pérez');
+      assert.equal(resLegacyName.body.personal.nombres, null);
+      assert.equal(resLegacyName.body.personal.apellidos, null);
+      assert.deepEqual(resLegacyName.body.campos_modificados, ['nombre_completo']);
+      passed++;
+    }
+
+    // 43 (Requisitos 13, 14, 15, 16, 17, 18 y 25 de RH-2B.4G.2): Rechazo de máscaras con asteriscos, RFC/CURP inválidos, body vacío o propiedades prohibidas (400); detección de RFC/CURP duplicados (409 sin revelar propietario); y rollback si falla auditoría (500)
+    {
+      resetTxState();
+
+      const invalidPayloads = [
+        {}, // body vacío
+        { rfc: '**********ABC' }, // máscara con asteriscos
+        { curp: '****************01' }, // máscara con asteriscos
+        { rfc: 'GOMA8001*1ABC' }, // asterisco parcial
+        { rfc: 'INVALIDO123' }, // formato RFC inválido
+        { rfc: 'GOMA800230ABC' }, // fecha imposible (30 de febrero) en RFC
+        { rfc: 'GOM800101ABC' }, // 12 caracteres (persona moral no permitida para trabajador físico)
+        { curp: 'GOMA800101MDFR01' }, // 16 caracteres (longitud distinta de 18)
+        { curp: 'GOMA800231MDFR0001' }, // fecha imposible (31 de febrero) en CURP
+        { nombres: null, apellidos: null }, // intento de borrar simultáneamente nombres y apellidos en persona 101 que ya los tenía
+        { nombres: 'Ana', nombre_completo: 'Nombre Inconsistente Con Trigger' }, // discrepancia con trigger t_persona_nombre
+        { nombre_completo: '' }, // nombre_completo vacío
+        { nombre_completo: null }, // nombre_completo null
+        { nombres: 'N'.repeat(151) }, // excede 150
+        { apellidos: 'A'.repeat(151) }, // excede 150
+        { persona_id: 999, rfc: 'GOMA800101ABC' }, // propiedad prohibida persona_id
+        { unidad_medica_id: 20 }, // propiedad prohibida unidad_medica_id
+        { correo_principal: 'otro@imssb.gob.mx' }, // propiedad prohibida correo_principal
+        { activo: false }, // propiedad prohibida activo
+      ];
+
+      for (const badBody of invalidPayloads) {
+        const resBad = createMockRes();
+        await controller.updateIdentificacionPersonalPorUnidad(
+          {
+            user: { sub: AUTH_USER_UUID },
+            rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+            params: { unidadId: '10', adscripcionId: '5001' },
+            body: badBody,
+          },
+          resBad
+        );
+        assert.equal(
+          resBad.statusCode,
+          400,
+          `Payload inválido ${JSON.stringify(badBody)} debe devolver 400 (recibió ${resBad.statusCode})`
+        );
+      }
+
+      // 16, 17 y 18. RFC duplicado o CURP duplicada (pertenecientes a persona 104: RUIC790404ZZ9 / RUIC790404HDFR0004) -> 409 sin revelar propietario ni valor
+      const resDupRfc = createMockRes();
+      await controller.updateIdentificacionPersonalPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+          params: { unidadId: '10', adscripcionId: '5001' },
+          body: { rfc: 'RUIC790404ZZ9' },
+        },
+        resDupRfc
+      );
+      assert.equal(resDupRfc.statusCode, 409);
+      assert.equal(JSON.stringify(resDupRfc.body).includes('Carlos'), false);
+      assert.equal(JSON.stringify(resDupRfc.body).includes('104'), false);
+      assert.equal(JSON.stringify(resDupRfc.body).includes('RUIC790404ZZ9'), false);
+
+      const resDupCurp = createMockRes();
+      await controller.updateIdentificacionPersonalPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+          params: { unidadId: '10', adscripcionId: '5001' },
+          body: { curp: 'RUIC790404HDFR0004' },
+        },
+        resDupCurp
+      );
+      assert.equal(resDupCurp.statusCode, 409);
+      assert.equal(JSON.stringify(resDupCurp.body).includes('Carlos'), false);
+      assert.equal(JSON.stringify(resDupCurp.body).includes('RUIC790404HDFR0004'), false);
+
+      // 25. Si falla la inserción en public.app_audit_logs -> ROLLBACK completo revirtiendo la modificación en public.persona
+      resetTxState();
+      failOnTxSql = 'INSERT INTO public.app_audit_logs';
+      const resAuditFail = createMockRes();
+      await controller.updateIdentificacionPersonalPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' },
+          params: { unidadId: '10', adscripcionId: '5001' },
+          body: { rfc: 'GOMA800101ZZ9' },
+        },
+        resAuditFail
+      );
+      assert.equal(resAuditFail.statusCode, 500);
+      assert.equal(
+        txPersonas.find((p) => p.id === 101).rfc,
+        'GOMA800101ABC',
+        'El rollback debe revertir el UPDATE de public.persona si falla la auditoría'
+      );
+      assert.ok(txEvents.some((e) => e.sql === 'ROLLBACK'));
+      passed++;
+    }
   } finally {
     pool.query = originalQuery;
     pool.connect = originalConnect;
   }
 
-  console.log(`RH-API.1 + RH-2B.1 + RH-2B.4A TESTS PASSED: ${passed}/28`);
+  console.log(
+    `RH-API.1 + RH-2B.1 + RH-2B.4A + RH-2B.4C + RH-2B.4E + RH-2B.4G.1 + RH-2B.4G.2 TESTS PASSED: ${passed}/43`
+  );
 }
 
 run().catch((err) => {

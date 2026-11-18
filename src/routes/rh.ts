@@ -21,6 +21,34 @@ router.get(
 );
 
 router.get(
+  '/unidades/:unidadId/personal/:adscripcionId',
+  requireAuth,
+  requireRhAccess(),
+  controller.fichaPersonalPorUnidad.bind(controller)
+);
+
+router.patch(
+  '/unidades/:unidadId/personal/:adscripcionId/laboral',
+  requireAuth,
+  requireRhAccess(),
+  controller.updateAdscripcionLaboralPorUnidad.bind(controller)
+);
+
+router.post(
+  '/unidades/:unidadId/personal/:adscripcionId/revelar-identificadores',
+  requireAuth,
+  requireRhAccess(),
+  controller.revelarIdentificadoresPorUnidad.bind(controller)
+);
+
+router.patch(
+  '/unidades/:unidadId/personal/:adscripcionId/identificacion',
+  requireAuth,
+  requireRhAccess(),
+  controller.updateIdentificacionPersonalPorUnidad.bind(controller)
+);
+
+router.get(
   '/unidades/:unidadId/personas-candidatas',
   requireAuth,
   requireRhAccess(),

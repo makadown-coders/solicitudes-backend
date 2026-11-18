@@ -100,6 +100,75 @@ export interface RhCreateAdscripcionResult {
   activo: boolean;
 }
 
+export interface RhTrabajadorFichaPersonal {
+  persona_id: number;
+  nombre_completo: string;
+  nombres: string | null;
+  apellidos: string | null;
+  tiene_rfc: boolean;
+  rfc_masked: string | null;
+  tiene_curp: boolean;
+  curp_masked: string | null;
+  activo: boolean;
+}
+
+export interface RhTrabajadorFichaLaboral {
+  adscripcion_laboral_id: number;
+  unidad_medica_id: number;
+  matricula: string | null;
+  puesto: string | null;
+  turno: string | null;
+  jornada: string | null;
+  horario: string | null;
+  vigente_desde: string;
+  vigente_hasta: string | null;
+  activo: boolean;
+  observaciones: string | null;
+}
+
+export interface RhTrabajadorFichaPermisos {
+  puede_editar_laboral: boolean;
+  puede_revelar_sensibles: boolean;
+  puede_editar_identificacion: boolean;
+}
+
+export interface RhTrabajadorFichaResult {
+  unidad: RhUnidadAutorizada;
+  personal: RhTrabajadorFichaPersonal;
+  laboral: RhTrabajadorFichaLaboral;
+  permisos: RhTrabajadorFichaPermisos;
+}
+
+export interface RhUpdateAdscripcionLaboralInput {
+  matricula?: string | null;
+  puesto?: string | null;
+  turno?: string | null;
+  jornada?: string | null;
+  horario?: string | null;
+  vigente_desde?: string;
+  vigente_hasta?: string | null;
+  activo?: boolean;
+  observaciones?: string | null;
+}
+
+export interface RhUpdateAdscripcionLaboralResult {
+  unidad: RhUnidadAutorizada;
+  laboral: RhTrabajadorFichaLaboral;
+  campos_modificados: string[];
+}
+
+export interface RhRevealIdentificadoresResult {
+  persona_id: number;
+  rfc: string | null;
+  curp: string | null;
+}
+
+export interface RhUpdatePersonaIdentificacionResult {
+  unidad: RhUnidadAutorizada;
+  personal: RhTrabajadorFichaPersonal;
+  campos_modificados: string[];
+}
+
 export class RhHttpError extends Error {
   constructor(
     public readonly status: 400 | 401 | 403 | 404 | 409,
@@ -178,6 +247,102 @@ function normalizeOptionalVarchar(
   return trimmed;
 }
 
+const RFC_PERSONA_FISICA_REGEX =
+  /^[A-ZÑ&]{4}(\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])([A-Z\d]{3})?$/;
+
+const CURP_REGEX =
+  /^[A-Z][AEIOUX][A-Z]{2}(\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])[HMX][A-Z]{2}[A-Z\d]{3}[A-Z\d]\d$/;
+
+function isValidTwoDigitMonthDay(mmStr: string, ddStr: string): boolean {
+  const month = Number(mmStr);
+  const day = Number(ddStr);
+  if (month < 1 || month > 12 || day < 1 || day > 31) {
+    return false;
+  }
+  // Usar año bisiesto de referencia (2000) para permitir 29 de febrero en validación de MM-DD
+  // y rechazar días imposibles como 30/31 de febrero o 31 de abril/junio/septiembre/noviembre
+  const dt = new Date(Date.UTC(2000, month - 1, day));
+  return dt.getUTCMonth() + 1 === month && dt.getUTCDate() === day;
+}
+
+function normalizeAndValidateRfc(raw: unknown): string | null {
+  if (raw === null) {
+    return null;
+  }
+  if (typeof raw !== 'string') {
+    throw new RhHttpError(400, 'El campo "rfc" debe ser una cadena de texto o null');
+  }
+  const clean = raw.trim().toUpperCase();
+  if (clean.length === 0) {
+    return null;
+  }
+  if (clean.includes('*')) {
+    throw new RhHttpError(
+      400,
+      'No se permite guardar un RFC enmascarado con asteriscos; envía el RFC completo o null'
+    );
+  }
+  const match = RFC_PERSONA_FISICA_REGEX.exec(clean);
+  if (!match || !isValidTwoDigitMonthDay(match[2], match[3])) {
+    throw new RhHttpError(
+      400,
+      'El campo "rfc" no cumple con el formato estructural válido de persona física (10 o 13 caracteres)'
+    );
+  }
+  return clean;
+}
+
+function normalizeAndValidateCurp(raw: unknown): string | null {
+  if (raw === null) {
+    return null;
+  }
+  if (typeof raw !== 'string') {
+    throw new RhHttpError(400, 'El campo "curp" debe ser una cadena de texto o null');
+  }
+  const clean = raw.trim().toUpperCase();
+  if (clean.length === 0) {
+    return null;
+  }
+  if (clean.includes('*')) {
+    throw new RhHttpError(
+      400,
+      'No se permite guardar una CURP enmascarada con asteriscos; envía la CURP completa o null'
+    );
+  }
+  const match = CURP_REGEX.exec(clean);
+  if (!match || !isValidTwoDigitMonthDay(match[2], match[3])) {
+    throw new RhHttpError(
+      400,
+      'El campo "curp" debe tener exactamente 18 caracteres con estructura oficial válida'
+    );
+  }
+  return clean;
+}
+
+function normalizeCollapsedPersonNamePart(
+  raw: unknown,
+  fieldLabel: string,
+  maxLength: number
+): string | null {
+  if (raw === null) {
+    return null;
+  }
+  if (typeof raw !== 'string') {
+    throw new RhHttpError(400, `El campo "${fieldLabel}" debe ser una cadena de texto o null`);
+  }
+  const collapsed = raw.trim().replace(/\s+/g, ' ');
+  if (collapsed.length === 0) {
+    return null;
+  }
+  if (collapsed.length > maxLength) {
+    throw new RhHttpError(
+      400,
+      `El campo "${fieldLabel}" no puede exceder ${maxLength} caracteres`
+    );
+  }
+  return collapsed;
+}
+
 function dateRangesOverlap(
   startA: string,
   endA: string | null,
@@ -187,6 +352,43 @@ function dateRangesOverlap(
   const effectiveEndA = endA ?? '9999-12-31';
   const effectiveEndB = endB ?? '9999-12-31';
   return startA <= effectiveEndB && startB <= effectiveEndA;
+}
+
+/**
+ * Enmascara un identificador sensible (RFC o CURP) preservando su longitud real
+ * y mostrando únicamente los últimos `visibleTailChars` caracteres (3 para RFC, 2 para CURP).
+ * Si el valor es nulo, vacío o demasiado corto para preservar el enmascaramiento sin exponer
+ * iniciales/fecha, oculta la totalidad de caracteres o devuelve null según corresponda.
+ */
+function maskSensitiveIdentifier(
+  raw: unknown,
+  visibleTailChars: number
+): { exists: boolean; masked: string | null } {
+  if (raw === null || raw === undefined) {
+    return { exists: false, masked: null };
+  }
+  const clean = String(raw).trim();
+  if (clean.length === 0) {
+    return { exists: false, masked: null };
+  }
+  if (clean.length <= visibleTailChars) {
+    return { exists: true, masked: '*'.repeat(clean.length) };
+  }
+  const hiddenCount = clean.length - visibleTailChars;
+  return {
+    exists: true,
+    masked: '*'.repeat(hiddenCount) + clean.slice(-visibleTailChars),
+  };
+}
+
+function buildEffectiveFichaPermisos(access: RhAccessContext): RhTrabajadorFichaPermisos {
+  const isRhOperativo = access.grantedBy === 'RECURSOS_HUMANOS';
+  const isRhGlobal = isRhOperativo && access.scope === 'GLOBAL';
+  return {
+    puede_editar_laboral: isRhOperativo && (access.scope === 'GLOBAL' || access.scope === 'CLUES'),
+    puede_revelar_sensibles: isRhGlobal,
+    puede_editar_identificacion: isRhGlobal,
+  };
 }
 
 export default class RhService {
@@ -783,6 +985,1062 @@ export default class RhService {
       } catch {
         // Ignore rollback failure to preserve original error
       }
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Consulta protegida de solo lectura de la ficha individual de un trabajador adscrito
+   * (`GET /api/rh/unidades/:unidadId/personal/:adscripcionId`).
+   *
+   * - Verifica que `unidadMedicaId` pertenezca al alcance autorizado del operador mediante `assertUnidadAutorizada()`.
+   * - Exige que la adscripción exista y pertenezca exactamente a la unidad solicitada
+   *   (`al.id = $2 AND al.unidad_medica_id = $1`), evitando el acceso cruzado entre unidades.
+   * - Nunca expone RFC ni CURP completos; aplica enmascaramiento antes de construir el DTO de respuesta.
+   * - Calcula los permisos efectivos (`puede_editar_laboral`, `puede_revelar_sensibles`, `puede_editar_identificacion`)
+   *   a partir de `access`.
+   */
+  async getFichaPersonalAdscripcion(
+    access: RhAccessContext,
+    unidadMedicaId: number,
+    adscripcionLaboralId: number
+  ): Promise<RhTrabajadorFichaResult> {
+    if (!Number.isInteger(adscripcionLaboralId) || adscripcionLaboralId <= 0) {
+      throw new RhHttpError(400, 'Identificador de adscripción laboral inválido');
+    }
+
+    const unidad = await this.assertUnidadAutorizada(access, unidadMedicaId);
+
+    const { rows } = await pool.query<{
+      adscripcion_laboral_id: number;
+      unidad_medica_id: number;
+      matricula: string | null;
+      puesto: string | null;
+      turno: string | null;
+      jornada: string | null;
+      horario: string | null;
+      vigente_desde: unknown;
+      vigente_hasta: unknown;
+      adscripcion_activo: boolean;
+      observaciones: string | null;
+      persona_id: number;
+      nombre_completo: string;
+      nombres: string | null;
+      apellidos: string | null;
+      rfc: string | null;
+      curp: string | null;
+      persona_activo: boolean;
+    }>(
+      `SELECT
+         al.id AS adscripcion_laboral_id,
+         al.unidad_medica_id,
+         al.matricula,
+         al.puesto,
+         al.turno,
+         al.jornada,
+         al.horario,
+         al.vigente_desde,
+         al.vigente_hasta,
+         al.activo AS adscripcion_activo,
+         al.observaciones,
+         p.id AS persona_id,
+         p.nombre_completo,
+         p.nombres,
+         p.apellidos,
+         p.rfc,
+         p.curp,
+         p.activo AS persona_activo
+       FROM public.rh_adscripcion_laboral al
+       JOIN public.persona p
+         ON p.id = al.persona_id
+      WHERE al.unidad_medica_id = $1
+        AND al.id = $2
+      LIMIT 1`,
+      [unidad.id, adscripcionLaboralId]
+    );
+
+    const row = rows[0];
+    if (!row) {
+      throw new RhHttpError(
+        404,
+        'Adscripción laboral no encontrada en la unidad de trabajo solicitada'
+      );
+    }
+
+    const rfcInfo = maskSensitiveIdentifier(row.rfc, 3);
+    const curpInfo = maskSensitiveIdentifier(row.curp, 2);
+
+    return {
+      unidad,
+      personal: {
+        persona_id: Number(row.persona_id),
+        nombre_completo: String(row.nombre_completo ?? ''),
+        nombres: row.nombres != null ? String(row.nombres) : null,
+        apellidos: row.apellidos != null ? String(row.apellidos) : null,
+        tiene_rfc: rfcInfo.exists,
+        rfc_masked: rfcInfo.masked,
+        tiene_curp: curpInfo.exists,
+        curp_masked: curpInfo.masked,
+        activo: Boolean(row.persona_activo),
+      },
+      laboral: {
+        adscripcion_laboral_id: Number(row.adscripcion_laboral_id),
+        unidad_medica_id: Number(row.unidad_medica_id),
+        matricula: row.matricula != null ? String(row.matricula) : null,
+        puesto: row.puesto != null ? String(row.puesto) : null,
+        turno: row.turno != null ? String(row.turno) : null,
+        jornada: row.jornada != null ? String(row.jornada) : null,
+        horario: row.horario != null ? String(row.horario) : null,
+        vigente_desde: formatDateOnly(row.vigente_desde) ?? '',
+        vigente_hasta: formatDateOnly(row.vigente_hasta),
+        activo: Boolean(row.adscripcion_activo),
+        observaciones: row.observaciones != null ? String(row.observaciones) : null,
+      },
+      permisos: buildEffectiveFichaPermisos(access),
+    };
+  }
+
+  /**
+   * Actualización parcial y auditada de una adscripción laboral existente
+   * (`PATCH /api/rh/unidades/:unidadId/personal/:adscripcionId/laboral`).
+   *
+   * Reglas de seguridad, integridad histórica y concurrencia:
+   * - Exclusivo para cuentas con rol operativo `RECURSOS_HUMANOS` (`GLOBAL` o `CLUES` autorizado).
+   *   Las cuentas que solo tienen `ADMIN_TIC GLOBAL` reciben HTTP 403.
+   * - Nunca modifica `public.persona` ni las columnas `id`, `persona_id` o `unidad_medica_id` de `rh_adscripcion_laboral`.
+   * - Bloquea la fila de `public.persona` (`FOR UPDATE`) y todas las adscripciones de la persona (`ORDER BY id ASC FOR UPDATE`)
+   *   respetando el mismo orden de bloqueo que `createAdscripcionLaboral` para evitar interbloqueos y serializar ediciones.
+   * - Verifica que las nuevas fechas de vigencia o la desactivación (`activo = false`) no contradigan
+   *   listas de asistencia ya registradas en `public.rh_lista_asistencia` para la adscripción.
+   * - Verifica que el estado y rango resultante no duplique otra adscripción activa ni se solape con otras adscripciones de la misma persona.
+   * - Registra `RH_UPDATE_ADSCRIPCION_LABORAL` en `public.app_audit_logs` dentro de la misma transacción únicamente cuando existen cambios efectivos.
+   */
+  async updateAdscripcionLaboral(
+    access: RhAccessContext,
+    unidadMedicaId: number,
+    adscripcionLaboralId: number,
+    patch: Record<string, unknown>,
+    auditMeta: RhAuditMeta
+  ): Promise<RhUpdateAdscripcionLaboralResult> {
+    if (access.grantedBy !== 'RECURSOS_HUMANOS') {
+      throw new RhHttpError(
+        403,
+        'Solo el personal operativo con rol RECURSOS_HUMANOS puede modificar información laboral'
+      );
+    }
+
+    const rawUserId = typeof auditMeta?.userId === 'string' ? auditMeta.userId.trim() : '';
+    if (!UUID_REGEX.test(rawUserId)) {
+      throw new RhHttpError(401, 'Unauthorized');
+    }
+
+    if (!Number.isInteger(adscripcionLaboralId) || adscripcionLaboralId <= 0) {
+      throw new RhHttpError(400, 'Identificador de adscripción laboral inválido');
+    }
+
+    const unidad = await this.assertUnidadAutorizada(access, unidadMedicaId);
+
+    const hasOwn = (k: string): boolean => Object.prototype.hasOwnProperty.call(patch, k);
+
+    const parsedPatch: {
+      matricula?: string | null;
+      puesto?: string | null;
+      turno?: string | null;
+      jornada?: string | null;
+      horario?: string | null;
+      vigente_desde?: string;
+      vigente_hasta?: string | null;
+      activo?: boolean;
+      observaciones?: string | null;
+    } = {};
+
+    if (hasOwn('matricula')) {
+      parsedPatch.matricula = normalizeOptionalVarchar(patch.matricula, 'matricula', 64);
+    }
+    if (hasOwn('puesto')) {
+      parsedPatch.puesto = normalizeOptionalVarchar(patch.puesto, 'puesto', 160);
+    }
+    if (hasOwn('turno')) {
+      parsedPatch.turno = normalizeOptionalVarchar(patch.turno, 'turno', 60);
+    }
+    if (hasOwn('jornada')) {
+      parsedPatch.jornada = normalizeOptionalVarchar(patch.jornada, 'jornada', 80);
+    }
+    if (hasOwn('horario')) {
+      parsedPatch.horario = normalizeOptionalVarchar(patch.horario, 'horario', 120);
+    }
+    if (hasOwn('observaciones')) {
+      parsedPatch.observaciones = normalizeOptionalVarchar(
+        patch.observaciones,
+        'observaciones',
+        2000
+      );
+    }
+    if (hasOwn('vigente_desde')) {
+      if (patch.vigente_desde === null || patch.vigente_desde === undefined) {
+        throw new RhHttpError(400, 'El campo "vigente_desde" no puede ser nulo');
+      }
+      parsedPatch.vigente_desde = parseStrictIsoDate(patch.vigente_desde, 'vigente_desde');
+    }
+    if (hasOwn('vigente_hasta')) {
+      if (patch.vigente_hasta === null || patch.vigente_hasta === undefined) {
+        parsedPatch.vigente_hasta = null;
+      } else if (typeof patch.vigente_hasta === 'string' && patch.vigente_hasta.trim() === '') {
+        parsedPatch.vigente_hasta = null;
+      } else {
+        parsedPatch.vigente_hasta = parseStrictIsoDate(patch.vigente_hasta, 'vigente_hasta');
+      }
+    }
+    if (hasOwn('activo')) {
+      if (typeof patch.activo !== 'boolean') {
+        throw new RhHttpError(400, 'El campo "activo" debe ser un booleano real (true o false)');
+      }
+      parsedPatch.activo = patch.activo;
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // 1) Localizar la adscripción en la unidad solicitada para obtener persona_id
+      const targetLookup = await client.query<{
+        id: number;
+        persona_id: number;
+        unidad_medica_id: number;
+      }>(
+        `SELECT id, persona_id, unidad_medica_id
+           FROM public.rh_adscripcion_laboral
+          WHERE id = $1
+            AND unidad_medica_id = $2
+          LIMIT 1`,
+        [adscripcionLaboralId, unidad.id]
+      );
+
+      if (!targetLookup.rowCount) {
+        throw new RhHttpError(
+          404,
+          'Adscripción laboral no encontrada en la unidad de trabajo solicitada'
+        );
+      }
+
+      const personaId = Number(targetLookup.rows[0].persona_id);
+
+      // 2) Bloquear la fila de public.persona con FOR UPDATE (mismo orden de bloqueo que createAdscripcionLaboral)
+      const personaRes = await client.query<{
+        id: number;
+        nombre_completo: string;
+        unidad_medica_id: number | null;
+        activo: boolean;
+      }>(
+        `SELECT id, nombre_completo, unidad_medica_id, activo
+           FROM public.persona
+          WHERE id = $1
+            FOR UPDATE`,
+        [personaId]
+      );
+
+      if (!personaRes.rowCount) {
+        throw new RhHttpError(404, 'La persona vinculada a la adscripción no existe en el directorio');
+      }
+
+      const persona = personaRes.rows[0];
+
+      // 3) Bloquear todas las adscripciones de la persona en rh_adscripcion_laboral (ORDER BY id ASC FOR UPDATE)
+      const allAdscripcionesRes = await client.query<{
+        id: number;
+        persona_id: number;
+        unidad_medica_id: number;
+        matricula: string | null;
+        puesto: string | null;
+        turno: string | null;
+        jornada: string | null;
+        horario: string | null;
+        vigente_desde: unknown;
+        vigente_hasta: unknown;
+        activo: boolean;
+        observaciones: string | null;
+      }>(
+        `SELECT
+           id,
+           persona_id,
+           unidad_medica_id,
+           matricula,
+           puesto,
+           turno,
+           jornada,
+           horario,
+           vigente_desde,
+           vigente_hasta,
+           activo,
+           observaciones
+         FROM public.rh_adscripcion_laboral
+         WHERE persona_id = $1
+         ORDER BY id ASC
+           FOR UPDATE`,
+        [personaId]
+      );
+
+      const currentRow = allAdscripcionesRes.rows.find(
+        (r) => Number(r.id) === adscripcionLaboralId && Number(r.unidad_medica_id) === unidad.id
+      );
+
+      if (!currentRow) {
+        throw new RhHttpError(
+          404,
+          'Adscripción laboral no encontrada en la unidad de trabajo solicitada'
+        );
+      }
+
+      const currentMatricula = currentRow.matricula != null ? String(currentRow.matricula) : null;
+      const currentPuesto = currentRow.puesto != null ? String(currentRow.puesto) : null;
+      const currentTurno = currentRow.turno != null ? String(currentRow.turno) : null;
+      const currentJornada = currentRow.jornada != null ? String(currentRow.jornada) : null;
+      const currentHorario = currentRow.horario != null ? String(currentRow.horario) : null;
+      const currentDesde = formatDateOnly(currentRow.vigente_desde) ?? '';
+      const currentHasta = formatDateOnly(currentRow.vigente_hasta);
+      const currentActivo = Boolean(currentRow.activo);
+      const currentObservaciones =
+        currentRow.observaciones != null ? String(currentRow.observaciones) : null;
+
+      // 4) Aplicar semántica de PATCH parcial conservando propiedades omitidas
+      const finalMatricula = hasOwn('matricula') ? parsedPatch.matricula! : currentMatricula;
+      const finalPuesto = hasOwn('puesto') ? parsedPatch.puesto! : currentPuesto;
+      const finalTurno = hasOwn('turno') ? parsedPatch.turno! : currentTurno;
+      const finalJornada = hasOwn('jornada') ? parsedPatch.jornada! : currentJornada;
+      const finalHorario = hasOwn('horario') ? parsedPatch.horario! : currentHorario;
+      const finalDesde = hasOwn('vigente_desde') ? parsedPatch.vigente_desde! : currentDesde;
+      const finalHasta = hasOwn('vigente_hasta') ? parsedPatch.vigente_hasta! : currentHasta;
+      const finalActivo = hasOwn('activo') ? parsedPatch.activo! : currentActivo;
+      const finalObservaciones = hasOwn('observaciones')
+        ? parsedPatch.observaciones!
+        : currentObservaciones;
+
+      if (!finalDesde) {
+        throw new RhHttpError(400, 'La fecha "vigente_desde" final es obligatoria');
+      }
+
+      if (finalHasta !== null && finalHasta < finalDesde) {
+        throw new RhHttpError(
+          400,
+          'La fecha "vigente_hasta" debe ser igual o posterior a "vigente_desde"'
+        );
+      }
+
+      // Si se intenta activar una adscripción de una persona inactiva en el directorio -> 409
+      if (finalActivo && persona.activo !== true) {
+        throw new RhHttpError(
+          409,
+          'No es posible mantener o activar una adscripción laboral para una persona inactiva en el directorio'
+        );
+      }
+
+      // 5) Verificar conflictos contra las demás adscripciones de la misma persona (excluyendo la propia adscripción editada)
+      for (const other of allAdscripcionesRes.rows) {
+        if (Number(other.id) === adscripcionLaboralId) {
+          continue;
+        }
+        const otherUnidadId = Number(other.unidad_medica_id);
+        const otherDesde = formatDateOnly(other.vigente_desde) ?? '0001-01-01';
+        const otherHasta = formatDateOnly(other.vigente_hasta);
+        const otherActivo = Boolean(other.activo);
+
+        if (finalActivo && otherActivo && otherUnidadId === unidad.id) {
+          throw new RhHttpError(
+            409,
+            'La persona ya cuenta con otra adscripción laboral activa en esta unidad de trabajo'
+          );
+        }
+
+        if (finalActivo && otherActivo && otherUnidadId !== unidad.id) {
+          throw new RhHttpError(
+            409,
+            'La persona cuenta con otra adscripción laboral activa en otra unidad de trabajo'
+          );
+        }
+
+        if (dateRangesOverlap(finalDesde, finalHasta, otherDesde, otherHasta)) {
+          throw new RhHttpError(
+            409,
+            otherUnidadId === unidad.id
+              ? 'El periodo de vigencia resultante se solapa con otra adscripción registrada para la persona en esta unidad'
+              : 'El periodo de vigencia resultante se solapa con una adscripción registrada en otra unidad de trabajo'
+          );
+        }
+      }
+
+      // 6) Protección de integridad histórica frente a listas de asistencia registradas (public.rh_lista_asistencia)
+      const vigenciaChanged = finalDesde !== currentDesde || finalHasta !== currentHasta;
+      const deactivating = currentActivo && !finalActivo;
+
+      if (vigenciaChanged || deactivating) {
+        const listasRes = await client.query<{
+          id: number;
+          estado: string;
+          fecha_inicio: unknown;
+          fecha_fin: unknown;
+        }>(
+          `SELECT
+             la.id,
+             la.estado,
+             pa.fecha_inicio,
+             pa.fecha_fin
+           FROM public.rh_lista_asistencia la
+           JOIN public.rh_periodo_asistencia pa
+             ON pa.id = la.periodo_id
+          WHERE la.adscripcion_laboral_id = $1`,
+          [adscripcionLaboralId]
+        );
+
+        for (const lista of listasRes.rows) {
+          const periodoInicio = formatDateOnly(lista.fecha_inicio);
+          const periodoFin = formatDateOnly(lista.fecha_fin);
+
+          // Si el nuevo rango de vigencia deja fuera un periodo con lista de asistencia registrada -> 409
+          if (periodoInicio && finalDesde > periodoInicio) {
+            throw new RhHttpError(
+              409,
+              'No se puede modificar "vigente_desde" a una fecha posterior a un periodo con lista de asistencia ya registrada para esta adscripción'
+            );
+          }
+
+          if (periodoFin && finalHasta !== null && finalHasta < periodoFin) {
+            throw new RhHttpError(
+              409,
+              'No se puede modificar "vigente_hasta" a una fecha anterior al cierre de un periodo con lista de asistencia ya registrada para esta adscripción'
+            );
+          }
+
+          // Si se desactiva la adscripción mientras tiene una lista de asistencia activa/en captura (no cerrada) sin fecha de término válida -> 409
+          const estadoUpper = String(lista.estado ?? '').trim().toUpperCase();
+          if (
+            deactivating &&
+            (estadoUpper === 'BORRADOR' || estadoUpper === 'ABIERTA' || estadoUpper === 'EN_CAPTURA')
+          ) {
+            throw new RhHttpError(
+              409,
+              'No se puede desactivar la adscripción laboral mientras exista una lista de asistencia en captura asociada a ella'
+            );
+          }
+        }
+      }
+
+      // 7) Determinar los campos efectivamente modificados
+      const camposModificados: string[] = [];
+      if (finalMatricula !== currentMatricula) camposModificados.push('matricula');
+      if (finalPuesto !== currentPuesto) camposModificados.push('puesto');
+      if (finalTurno !== currentTurno) camposModificados.push('turno');
+      if (finalJornada !== currentJornada) camposModificados.push('jornada');
+      if (finalHorario !== currentHorario) camposModificados.push('horario');
+      if (finalDesde !== currentDesde) camposModificados.push('vigente_desde');
+      if (finalHasta !== currentHasta) camposModificados.push('vigente_hasta');
+      if (finalActivo !== currentActivo) camposModificados.push('activo');
+      if (finalObservaciones !== currentObservaciones) camposModificados.push('observaciones');
+
+      // Si no hubo cambios efectivos, no ejecutar UPDATE ni registrar auditoría engañosa
+      if (camposModificados.length === 0) {
+        await client.query('COMMIT');
+        return {
+          unidad,
+          laboral: {
+            adscripcion_laboral_id: adscripcionLaboralId,
+            unidad_medica_id: unidad.id,
+            matricula: currentMatricula,
+            puesto: currentPuesto,
+            turno: currentTurno,
+            jornada: currentJornada,
+            horario: currentHorario,
+            vigente_desde: currentDesde,
+            vigente_hasta: currentHasta,
+            activo: currentActivo,
+            observaciones: currentObservaciones,
+          },
+          campos_modificados: [],
+        };
+      }
+
+      // 8) Ejecutar UPDATE exclusivamente sobre las columnas laborales permitidas de rh_adscripcion_laboral
+      const updateRes = await client.query<{
+        id: number;
+        unidad_medica_id: number;
+        matricula: string | null;
+        puesto: string | null;
+        turno: string | null;
+        jornada: string | null;
+        horario: string | null;
+        vigente_desde: unknown;
+        vigente_hasta: unknown;
+        activo: boolean;
+        observaciones: string | null;
+      }>(
+        `UPDATE public.rh_adscripcion_laboral
+            SET matricula = $1,
+                puesto = $2,
+                turno = $3,
+                jornada = $4,
+                horario = $5,
+                vigente_desde = $6,
+                vigente_hasta = $7,
+                activo = $8,
+                observaciones = $9,
+                actualizado_en = NOW()
+          WHERE id = $10
+            AND unidad_medica_id = $11
+          RETURNING
+            id,
+            unidad_medica_id,
+            matricula,
+            puesto,
+            turno,
+            jornada,
+            horario,
+            vigente_desde,
+            vigente_hasta,
+            activo,
+            observaciones`,
+        [
+          finalMatricula,
+          finalPuesto,
+          finalTurno,
+          finalJornada,
+          finalHorario,
+          finalDesde,
+          finalHasta,
+          finalActivo,
+          finalObservaciones,
+          adscripcionLaboralId,
+          unidad.id,
+        ]
+      );
+
+      const updated = updateRes.rows[0];
+
+      // 9) Registrar evento en public.app_audit_logs dentro de la misma transacción (sin RFC, CURP ni datos sensibles)
+      const auditPayload = {
+        adscripcion_laboral_id: adscripcionLaboralId,
+        persona_id: personaId,
+        unidad_medica_id: unidad.id,
+        campos_modificados: camposModificados,
+      };
+
+      await client.query(
+        `INSERT INTO public.app_audit_logs (user_id, action, resource, ip, user_agent, payload)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+        [
+          rawUserId,
+          'RH_UPDATE_ADSCRIPCION_LABORAL',
+          `rh_adscripcion_laboral:${adscripcionLaboralId}`,
+          auditMeta.ip ?? null,
+          auditMeta.userAgent ?? null,
+          JSON.stringify(auditPayload),
+        ]
+      );
+
+      await client.query('COMMIT');
+
+      return {
+        unidad,
+        laboral: {
+          adscripcion_laboral_id: Number(updated.id),
+          unidad_medica_id: Number(updated.unidad_medica_id),
+          matricula: updated.matricula != null ? String(updated.matricula) : null,
+          puesto: updated.puesto != null ? String(updated.puesto) : null,
+          turno: updated.turno != null ? String(updated.turno) : null,
+          jornada: updated.jornada != null ? String(updated.jornada) : null,
+          horario: updated.horario != null ? String(updated.horario) : null,
+          vigente_desde: formatDateOnly(updated.vigente_desde) ?? finalDesde,
+          vigente_hasta: formatDateOnly(updated.vigente_hasta),
+          activo: Boolean(updated.activo),
+          observaciones: updated.observaciones != null ? String(updated.observaciones) : null,
+        },
+        campos_modificados: camposModificados,
+      };
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // Ignore rollback failure to preserve original error
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Revelación explícita, autorizada y auditada de RFC y CURP completos de un trabajador adscrito
+   * (`POST /api/rh/unidades/:unidadId/personal/:adscripcionId/revelar-identificadores`).
+   *
+   * Reglas estrictas de seguridad y auditoría:
+   * - Exclusivo cuando `access.grantedBy === 'RECURSOS_HUMANOS' && access.scope === 'GLOBAL'`.
+   *   Rechaza con HTTP 403 a `RECURSOS_HUMANOS CLUES` y `ADMIN_TIC GLOBAL` antes de abrir conexión
+   *   o consultar valores sensibles.
+   * - Verifica que `unidadMedicaId` exista y esté activa (`assertUnidadAutorizada`).
+   * - Dentro de una transacción (`BEGIN` / `COMMIT` / `ROLLBACK`), consulta `rfc` y `curp` exigiendo
+   *   `al.unidad_medica_id = $1 AND al.id = $2`. Si la adscripción no existe o pertenece a otra unidad,
+   *   hace `ROLLBACK` y responde HTTP 404 sin filtrar información.
+   * - Inserta obligatoriamente el registro `RH_REVEAL_SENSITIVE_IDS` en `public.app_audit_logs`
+   *   antes de hacer `COMMIT` y antes de devolver los identificadores. El payload de auditoría
+   *   incluye únicamente metadatos y `campos_revelados: ["rfc", "curp"]` (nunca los valores de RFC/CURP).
+   */
+  async revelarIdentificadoresSensiblesAdscripcion(
+    access: RhAccessContext,
+    unidadMedicaId: number,
+    adscripcionLaboralId: number,
+    auditMeta: RhAuditMeta
+  ): Promise<RhRevealIdentificadoresResult> {
+    if (access.grantedBy !== 'RECURSOS_HUMANOS' || access.scope !== 'GLOBAL') {
+      throw new RhHttpError(
+        403,
+        'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para revelar identificadores sensibles'
+      );
+    }
+
+    const rawUserId = typeof auditMeta?.userId === 'string' ? auditMeta.userId.trim() : '';
+    if (!UUID_REGEX.test(rawUserId)) {
+      throw new RhHttpError(401, 'Unauthorized');
+    }
+
+    if (!Number.isInteger(adscripcionLaboralId) || adscripcionLaboralId <= 0) {
+      throw new RhHttpError(400, 'Identificador de adscripción laboral inválido');
+    }
+
+    const unidad = await this.assertUnidadAutorizada(access, unidadMedicaId);
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const { rows } = await client.query<{
+        adscripcion_laboral_id: number;
+        unidad_medica_id: number;
+        persona_id: number;
+        rfc: string | null;
+        curp: string | null;
+      }>(
+        `SELECT
+           al.id AS adscripcion_laboral_id,
+           al.unidad_medica_id,
+           p.id AS persona_id,
+           p.rfc,
+           p.curp
+         FROM public.rh_adscripcion_laboral al
+         JOIN public.persona p
+           ON p.id = al.persona_id
+        WHERE al.unidad_medica_id = $1
+          AND al.id = $2
+        LIMIT 1`,
+        [unidad.id, adscripcionLaboralId]
+      );
+
+      const row = rows[0];
+      if (!row) {
+        throw new RhHttpError(
+          404,
+          'Adscripción laboral no encontrada en la unidad de trabajo solicitada'
+        );
+      }
+
+      const personaId = Number(row.persona_id);
+
+      const auditPayload = {
+        adscripcion_laboral_id: adscripcionLaboralId,
+        persona_id: personaId,
+        unidad_medica_id: unidad.id,
+        campos_revelados: ['rfc', 'curp'],
+      };
+
+      await client.query(
+        `INSERT INTO public.app_audit_logs (user_id, action, resource, ip, user_agent, payload)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+        [
+          rawUserId,
+          'RH_REVEAL_SENSITIVE_IDS',
+          `rh_adscripcion_laboral:${adscripcionLaboralId}`,
+          auditMeta.ip ?? null,
+          auditMeta.userAgent ?? null,
+          JSON.stringify(auditPayload),
+        ]
+      );
+
+      await client.query('COMMIT');
+
+      const rfcClean =
+        row.rfc !== null && row.rfc !== undefined && String(row.rfc).trim().length > 0
+          ? String(row.rfc).trim()
+          : null;
+      const curpClean =
+        row.curp !== null && row.curp !== undefined && String(row.curp).trim().length > 0
+          ? String(row.curp).trim()
+          : null;
+
+      return {
+        persona_id: personaId,
+        rfc: rfcClean,
+        curp: curpClean,
+      };
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // Ignore rollback failure to preserve original error
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Actualización protegida, parcial y auditada de los datos de identificación personal
+   * (`PATCH /api/rh/unidades/:unidadId/personal/:adscripcionId/identificacion`).
+   *
+   * Reglas estrictas de seguridad, integridad del trigger `t_persona_nombre` y auditoría:
+   * - Exclusivo cuando `access.grantedBy === 'RECURSOS_HUMANOS' && access.scope === 'GLOBAL'`.
+   *   Rechaza con HTTP 403 a `RECURSOS_HUMANOS CLUES` y `ADMIN_TIC GLOBAL` antes de abrir conexión
+   *   o consultar valores sensibles.
+   * - Exige que la adscripción exista y pertenezca exactamente a la unidad solicitada (`al.id = $1 AND al.unidad_medica_id = $2`).
+   * - Bloquea la fila de `public.persona` con `SELECT ... FOR UPDATE`.
+   * - Propiedades aceptadas: `nombres`, `apellidos`, `nombre_completo`, `rfc`, `curp`.
+   * - Respeta el trigger `t_persona_nombre` (`BEFORE INSERT OR UPDATE OF nombres, apellidos` -> `set_nombre_completo()`):
+   *   - Si el registro tiene o tendrá `nombres` o `apellidos` no nulos, `nombre_completo` se sincroniza automáticamente
+   *     como `btrim(coalesce(nombres, '') || ' ' || coalesce(apellidos, ''))`. Si el cliente envía además `nombre_completo`
+   *     con un valor discrepante, se rechaza con HTTP 400 para evitar ambigüedad.
+   *   - Si el registro solo tiene `nombre_completo` (`nombres IS NULL` y `apellidos IS NULL`), se permite editar
+   *     `nombre_completo` directamente sin heurísticas de división, o bien poblar `nombres` y `apellidos`.
+   *   - Nunca permite vaciar simultáneamente `nombres` y `apellidos` en un registro que ya los tenía poblados.
+   * - Si PostgreSQL devuelve `23505` (`uq_persona_rfc` o `uq_persona_curp`), hace `ROLLBACK` y responde HTTP 409
+   *   sin revelar el valor ni la persona propietaria.
+   * - Registra `RH_UPDATE_PERSONA_IDENTIFICACION` en `public.app_audit_logs` dentro de la misma transacción
+   *   incluyendo únicamente los nombres de los campos efectivamente modificados (nunca valores de RFC/CURP).
+   * - Devuelve siempre `rfc_masked` y `curp_masked` (nunca los valores completos).
+   */
+  async updatePersonaIdentificacionAdscripcion(
+    access: RhAccessContext,
+    unidadMedicaId: number,
+    adscripcionLaboralId: number,
+    patch: Record<string, unknown>,
+    auditMeta: RhAuditMeta
+  ): Promise<RhUpdatePersonaIdentificacionResult> {
+    if (access.grantedBy !== 'RECURSOS_HUMANOS' || access.scope !== 'GLOBAL') {
+      throw new RhHttpError(
+        403,
+        'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para modificar datos de identificación personal'
+      );
+    }
+
+    const rawUserId = typeof auditMeta?.userId === 'string' ? auditMeta.userId.trim() : '';
+    if (!UUID_REGEX.test(rawUserId)) {
+      throw new RhHttpError(401, 'Unauthorized');
+    }
+
+    if (!Number.isInteger(adscripcionLaboralId) || adscripcionLaboralId <= 0) {
+      throw new RhHttpError(400, 'Identificador de adscripción laboral inválido');
+    }
+
+    const unidad = await this.assertUnidadAutorizada(access, unidadMedicaId);
+
+    const hasOwn = (k: string): boolean => Object.prototype.hasOwnProperty.call(patch, k);
+
+    const parsedPatch: {
+      nombres?: string | null;
+      apellidos?: string | null;
+      nombre_completo?: string;
+      rfc?: string | null;
+      curp?: string | null;
+    } = {};
+
+    if (hasOwn('nombres')) {
+      parsedPatch.nombres = normalizeCollapsedPersonNamePart(patch.nombres, 'nombres', 150);
+    }
+    if (hasOwn('apellidos')) {
+      parsedPatch.apellidos = normalizeCollapsedPersonNamePart(patch.apellidos, 'apellidos', 150);
+    }
+    if (hasOwn('nombre_completo')) {
+      if (patch.nombre_completo === null || patch.nombre_completo === undefined) {
+        throw new RhHttpError(400, 'El campo "nombre_completo" no puede ser nulo');
+      }
+      const normNombreCompleto = normalizeCollapsedPersonNamePart(
+        patch.nombre_completo,
+        'nombre_completo',
+        150
+      );
+      if (!normNombreCompleto) {
+        throw new RhHttpError(400, 'El campo "nombre_completo" no puede estar vacío');
+      }
+      parsedPatch.nombre_completo = normNombreCompleto;
+    }
+    if (hasOwn('rfc')) {
+      parsedPatch.rfc = normalizeAndValidateRfc(patch.rfc);
+    }
+    if (hasOwn('curp')) {
+      parsedPatch.curp = normalizeAndValidateCurp(patch.curp);
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // 1) Verificar que la adscripción exista y pertenezca exactamente a la unidad solicitada
+      const targetLookup = await client.query<{
+        id: number;
+        persona_id: number;
+        unidad_medica_id: number;
+      }>(
+        `SELECT id, persona_id, unidad_medica_id
+           FROM public.rh_adscripcion_laboral
+          WHERE id = $1
+            AND unidad_medica_id = $2
+          LIMIT 1`,
+        [adscripcionLaboralId, unidad.id]
+      );
+
+      if (!targetLookup.rowCount) {
+        throw new RhHttpError(
+          404,
+          'Adscripción laboral no encontrada en la unidad de trabajo solicitada'
+        );
+      }
+
+      const personaId = Number(targetLookup.rows[0].persona_id);
+
+      // 2) Bloquear la fila de public.persona con FOR UPDATE
+      const personaRes = await client.query<{
+        id: number;
+        nombre_completo: string;
+        nombres: string | null;
+        apellidos: string | null;
+        rfc: string | null;
+        curp: string | null;
+        activo: boolean;
+      }>(
+        `SELECT id, nombre_completo, nombres, apellidos, rfc, curp, activo
+           FROM public.persona
+          WHERE id = $1
+            FOR UPDATE`,
+        [personaId]
+      );
+
+      if (!personaRes.rowCount) {
+        throw new RhHttpError(404, 'La persona vinculada a la adscripción no existe en el directorio');
+      }
+
+      const currentPersona = personaRes.rows[0];
+      const currentNombres =
+        currentPersona.nombres != null && String(currentPersona.nombres).trim() !== ''
+          ? String(currentPersona.nombres).trim()
+          : null;
+      const currentApellidos =
+        currentPersona.apellidos != null && String(currentPersona.apellidos).trim() !== ''
+          ? String(currentPersona.apellidos).trim()
+          : null;
+      const currentNombreCompleto = String(currentPersona.nombre_completo ?? '').trim();
+      const currentRfc =
+        currentPersona.rfc != null && String(currentPersona.rfc).trim() !== ''
+          ? String(currentPersona.rfc).trim().toUpperCase()
+          : null;
+      const currentCurp =
+        currentPersona.curp != null && String(currentPersona.curp).trim() !== ''
+          ? String(currentPersona.curp).trim().toUpperCase()
+          : null;
+
+      // 3) Resolver semántica de nombres/apellidos/nombre_completo compatible con el trigger t_persona_nombre
+      const finalNombres = hasOwn('nombres') ? parsedPatch.nombres! : currentNombres;
+      const finalApellidos = hasOwn('apellidos') ? parsedPatch.apellidos! : currentApellidos;
+      const finalRfc = hasOwn('rfc') ? parsedPatch.rfc! : currentRfc;
+      const finalCurp = hasOwn('curp') ? parsedPatch.curp! : currentCurp;
+
+      const hadStructuredNames = currentNombres !== null || currentApellidos !== null;
+      const willHaveStructuredNames = finalNombres !== null || finalApellidos !== null;
+
+      // Prohibir borrar simultáneamente nombres y apellidos cuando ya estaban registrados
+      if (hadStructuredNames && !willHaveStructuredNames) {
+        throw new RhHttpError(
+          400,
+          'No se permite eliminar simultáneamente "nombres" y "apellidos" en un registro que ya cuenta con nombre estructurado'
+        );
+      }
+
+      let finalNombreCompleto = currentNombreCompleto;
+
+      if (willHaveStructuredNames) {
+        const derivedFull = `${finalNombres ?? ''} ${finalApellidos ?? ''}`.trim();
+        if (!derivedFull) {
+          throw new RhHttpError(400, 'El nombre resultante del trabajador no puede quedar vacío');
+        }
+        if (derivedFull.length > 150) {
+          throw new RhHttpError(
+            400,
+            'La combinación de "nombres" y "apellidos" no puede exceder 150 caracteres en "nombre_completo"'
+          );
+        }
+        if (hasOwn('nombre_completo') && parsedPatch.nombre_completo !== derivedFull) {
+          throw new RhHttpError(
+            400,
+            'Cuando "nombres" o "apellidos" están registrados, "nombre_completo" se sincroniza automáticamente a partir de ellos y no puede enviarse con un valor distinto'
+          );
+        }
+        finalNombreCompleto = derivedFull;
+      } else {
+        // Caso legado donde nombres IS NULL y apellidos IS NULL
+        if (hasOwn('nombre_completo')) {
+          finalNombreCompleto = parsedPatch.nombre_completo!;
+        }
+        if (!finalNombreCompleto) {
+          throw new RhHttpError(400, 'El campo "nombre_completo" no puede quedar vacío');
+        }
+      }
+
+      // 4) Determinar los campos efectivamente modificados
+      const camposModificados: string[] = [];
+      if (finalNombres !== currentNombres) {
+        camposModificados.push('nombres');
+      }
+      if (finalApellidos !== currentApellidos) {
+        camposModificados.push('apellidos');
+      }
+      if (finalNombreCompleto !== currentNombreCompleto) {
+        camposModificados.push('nombre_completo');
+      }
+      if (finalRfc !== currentRfc) {
+        camposModificados.push('rfc');
+      }
+      if (finalCurp !== currentCurp) {
+        camposModificados.push('curp');
+      }
+
+      // Si no hubo cambios efectivos, no ejecutar UPDATE ni registrar auditoría ficticia
+      if (camposModificados.length === 0) {
+        await client.query('COMMIT');
+        const rfcInfoNoOp = maskSensitiveIdentifier(currentRfc, 3);
+        const curpInfoNoOp = maskSensitiveIdentifier(currentCurp, 2);
+        return {
+          unidad,
+          personal: {
+            persona_id: personaId,
+            nombre_completo: currentNombreCompleto,
+            nombres: currentNombres,
+            apellidos: currentApellidos,
+            tiene_rfc: rfcInfoNoOp.exists,
+            rfc_masked: rfcInfoNoOp.masked,
+            tiene_curp: curpInfoNoOp.exists,
+            curp_masked: curpInfoNoOp.masked,
+            activo: Boolean(currentPersona.activo),
+          },
+          campos_modificados: [],
+        };
+      }
+
+      // 5) Ejecutar UPDATE exclusivamente sobre las columnas de identificación permitidas en public.persona
+      //    (Nunca modifica unidad_medica_id, correo_principal, activo, fecha_baja ni user_id)
+      const updateRes = await client.query<{
+        id: number;
+        nombre_completo: string;
+        nombres: string | null;
+        apellidos: string | null;
+        rfc: string | null;
+        curp: string | null;
+        activo: boolean;
+      }>(
+        `UPDATE public.persona
+            SET nombres = $1,
+                apellidos = $2,
+                nombre_completo = $3,
+                rfc = $4,
+                curp = $5
+          WHERE id = $6
+          RETURNING
+            id,
+            nombre_completo,
+            nombres,
+            apellidos,
+            rfc,
+            curp,
+            activo`,
+        [
+          finalNombres,
+          finalApellidos,
+          finalNombreCompleto,
+          finalRfc,
+          finalCurp,
+          personaId,
+        ]
+      );
+
+      const updatedPersona = updateRes.rows[0];
+
+      // 6) Registrar auditoría obligatoria en public.app_audit_logs dentro de la misma transacción
+      //    (sin valores anteriores ni nuevos de RFC, CURP o nombres)
+      const auditPayload = {
+        adscripcion_laboral_id: adscripcionLaboralId,
+        persona_id: personaId,
+        unidad_medica_id: unidad.id,
+        campos_modificados: camposModificados,
+      };
+
+      await client.query(
+        `INSERT INTO public.app_audit_logs (user_id, action, resource, ip, user_agent, payload)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+        [
+          rawUserId,
+          'RH_UPDATE_PERSONA_IDENTIFICACION',
+          `persona:${personaId}`,
+          auditMeta.ip ?? null,
+          auditMeta.userAgent ?? null,
+          JSON.stringify(auditPayload),
+        ]
+      );
+
+      await client.query('COMMIT');
+
+      const rfcInfo = maskSensitiveIdentifier(updatedPersona.rfc, 3);
+      const curpInfo = maskSensitiveIdentifier(updatedPersona.curp, 2);
+
+      return {
+        unidad,
+        personal: {
+          persona_id: Number(updatedPersona.id),
+          nombre_completo: String(updatedPersona.nombre_completo ?? ''),
+          nombres: updatedPersona.nombres != null ? String(updatedPersona.nombres) : null,
+          apellidos: updatedPersona.apellidos != null ? String(updatedPersona.apellidos) : null,
+          tiene_rfc: rfcInfo.exists,
+          rfc_masked: rfcInfo.masked,
+          tiene_curp: curpInfo.exists,
+          curp_masked: curpInfo.masked,
+          activo: Boolean(updatedPersona.activo),
+        },
+        campos_modificados: camposModificados,
+      };
+    } catch (err: any) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // Ignore rollback failure to preserve original error
+      }
+
+      // Mapear violación de unicidad PostgreSQL 23505 (uq_persona_rfc / uq_persona_curp) a HTTP 409
+      // sin exponer el valor duplicado ni el registro propietario
+      if (err && typeof err === 'object' && err.code === '23505') {
+        const constraint = String(err.constraint ?? '').toLowerCase();
+        if (constraint.includes('rfc')) {
+          throw new RhHttpError(
+            409,
+            'El RFC proporcionado ya se encuentra registrado en otra persona del directorio institucional'
+          );
+        }
+        if (constraint.includes('curp')) {
+          throw new RhHttpError(
+            409,
+            'La CURP proporcionada ya se encuentra registrada en otra persona del directorio institucional'
+          );
+        }
+        throw new RhHttpError(
+          409,
+          'Uno de los identificadores proporcionados (RFC o CURP) ya se encuentra registrado en el directorio institucional'
+        );
+      }
+
       throw err;
     } finally {
       client.release();

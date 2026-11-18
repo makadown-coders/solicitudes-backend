@@ -74,6 +74,26 @@ const ALLOWED_CREATE_ADSCRIPCION_KEYS: ReadonlySet<string> = new Set([
   'vigente_hasta',
 ]);
 
+const ALLOWED_UPDATE_ADSCRIPCION_KEYS: ReadonlySet<string> = new Set([
+  'matricula',
+  'puesto',
+  'turno',
+  'jornada',
+  'horario',
+  'vigente_desde',
+  'vigente_hasta',
+  'activo',
+  'observaciones',
+]);
+
+const ALLOWED_UPDATE_IDENTIFICACION_KEYS: ReadonlySet<string> = new Set([
+  'nombres',
+  'apellidos',
+  'nombre_completo',
+  'rfc',
+  'curp',
+]);
+
 export default class RhController {
   private readonly service = new RhService();
 
@@ -232,6 +252,290 @@ export default class RhController {
       }
       console.error('Error en POST /api/rh/unidades/:unidadId/adscripciones:', err);
       res.status(500).json({ error: 'Error interno al registrar la adscripción laboral' });
+    }
+  }
+
+  async fichaPersonalPorUnidad(req: RhAuthenticatedRequest, res: Response): Promise<void> {
+    if (!req.rhAccess) {
+      res.status(403).json({ error: 'Permiso insuficiente' });
+      return;
+    }
+
+    const unidadId = parseUnidadIdParam(req.params?.unidadId);
+    if (unidadId === null) {
+      res.status(400).json({ error: 'Identificador de unidad de trabajo inválido' });
+      return;
+    }
+
+    const adscripcionId = parseUnidadIdParam(req.params?.adscripcionId);
+    if (adscripcionId === null) {
+      res.status(400).json({ error: 'Identificador de adscripción laboral inválido' });
+      return;
+    }
+
+    try {
+      const result = await this.service.getFichaPersonalAdscripcion(
+        req.rhAccess,
+        unidadId,
+        adscripcionId
+      );
+      if (typeof res.set === 'function') {
+        res.set('Cache-Control', 'no-store');
+      }
+      res.status(200).json(result);
+    } catch (err) {
+      if (err instanceof RhHttpError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      console.error('Error en GET /api/rh/unidades/:unidadId/personal/:adscripcionId:', err);
+      res.status(500).json({ error: 'Error interno al consultar la ficha del trabajador' });
+    }
+  }
+
+  async updateAdscripcionLaboralPorUnidad(
+    req: RhAuthenticatedRequest,
+    res: Response
+  ): Promise<void> {
+    if (typeof req.user?.sub !== 'string' || !req.user.sub.trim()) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    if (!req.rhAccess) {
+      res.status(403).json({ error: 'Permiso insuficiente' });
+      return;
+    }
+
+    if (req.rhAccess.grantedBy !== 'RECURSOS_HUMANOS') {
+      res.status(403).json({
+        error: 'Solo el personal operativo con rol RECURSOS_HUMANOS puede modificar información laboral',
+      });
+      return;
+    }
+
+    const unidadId = parseUnidadIdParam(req.params?.unidadId);
+    if (unidadId === null) {
+      res.status(400).json({ error: 'Identificador de unidad de trabajo inválido' });
+      return;
+    }
+
+    const adscripcionId = parseUnidadIdParam(req.params?.adscripcionId);
+    if (adscripcionId === null) {
+      res.status(400).json({ error: 'Identificador de adscripción laboral inválido' });
+      return;
+    }
+
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      res.status(400).json({ error: 'Payload inválido' });
+      return;
+    }
+
+    const keys = Object.keys(body);
+    if (keys.length === 0) {
+      res.status(400).json({
+        error: 'Debe especificar al menos una propiedad laboral permitida para actualizar',
+      });
+      return;
+    }
+
+    for (const key of keys) {
+      if (!ALLOWED_UPDATE_ADSCRIPCION_KEYS.has(key)) {
+        res.status(400).json({ error: `Propiedad no permitida: ${key}` });
+        return;
+      }
+    }
+
+    try {
+      const userAgent =
+        typeof req.get === 'function' ? req.get('User-Agent') ?? null : null;
+      const ip = typeof req.ip === 'string' ? req.ip : null;
+
+      const updated = await this.service.updateAdscripcionLaboral(
+        req.rhAccess,
+        unidadId,
+        adscripcionId,
+        body as Record<string, unknown>,
+        {
+          userId: req.user.sub.trim(),
+          ip,
+          userAgent,
+        }
+      );
+
+      res.status(200).json(updated);
+    } catch (err) {
+      if (err instanceof RhHttpError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      console.error('Error en PATCH /api/rh/unidades/:unidadId/personal/:adscripcionId/laboral:', err);
+      res.status(500).json({ error: 'Error interno al actualizar la información laboral' });
+    }
+  }
+
+  async revelarIdentificadoresPorUnidad(
+    req: RhAuthenticatedRequest,
+    res: Response
+  ): Promise<void> {
+    if (typeof req.user?.sub !== 'string' || !req.user.sub.trim()) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    if (!req.rhAccess) {
+      res.status(403).json({ error: 'Permiso insuficiente' });
+      return;
+    }
+
+    if (req.rhAccess.grantedBy !== 'RECURSOS_HUMANOS' || req.rhAccess.scope !== 'GLOBAL') {
+      res.status(403).json({
+        error:
+          'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para revelar identificadores sensibles',
+      });
+      return;
+    }
+
+    const unidadId = parseUnidadIdParam(req.params?.unidadId);
+    if (unidadId === null) {
+      res.status(400).json({ error: 'Identificador de unidad de trabajo inválido' });
+      return;
+    }
+
+    const adscripcionId = parseUnidadIdParam(req.params?.adscripcionId);
+    if (adscripcionId === null) {
+      res.status(400).json({ error: 'Identificador de adscripción laboral inválido' });
+      return;
+    }
+
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      res.status(400).json({ error: 'Payload inválido: se requiere un objeto JSON vacío {}' });
+      return;
+    }
+
+    const keys = Object.keys(body);
+    if (keys.length > 0) {
+      res.status(400).json({
+        error: `Propiedad no permitida en revelación de identificadores: ${keys[0]}`,
+      });
+      return;
+    }
+
+    try {
+      const userAgent =
+        typeof req.get === 'function' ? req.get('User-Agent') ?? null : null;
+      const ip = typeof req.ip === 'string' ? req.ip : null;
+
+      const revealed = await this.service.revelarIdentificadoresSensiblesAdscripcion(
+        req.rhAccess,
+        unidadId,
+        adscripcionId,
+        {
+          userId: req.user.sub.trim(),
+          ip,
+          userAgent,
+        }
+      );
+
+      if (typeof res.set === 'function') {
+        res.set('Cache-Control', 'no-store');
+      }
+      res.status(200).json(revealed);
+    } catch (err) {
+      if (err instanceof RhHttpError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      console.error('Error en POST /api/rh/unidades/:unidadId/personal/:adscripcionId/revelar-identificadores');
+      res.status(500).json({ error: 'Error interno al revelar identificadores del trabajador' });
+    }
+  }
+
+  async updateIdentificacionPersonalPorUnidad(
+    req: RhAuthenticatedRequest,
+    res: Response
+  ): Promise<void> {
+    if (typeof req.user?.sub !== 'string' || !req.user.sub.trim()) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    if (!req.rhAccess) {
+      res.status(403).json({ error: 'Permiso insuficiente' });
+      return;
+    }
+
+    if (req.rhAccess.grantedBy !== 'RECURSOS_HUMANOS' || req.rhAccess.scope !== 'GLOBAL') {
+      res.status(403).json({
+        error:
+          'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para modificar datos de identificación personal',
+      });
+      return;
+    }
+
+    const unidadId = parseUnidadIdParam(req.params?.unidadId);
+    if (unidadId === null) {
+      res.status(400).json({ error: 'Identificador de unidad de trabajo inválido' });
+      return;
+    }
+
+    const adscripcionId = parseUnidadIdParam(req.params?.adscripcionId);
+    if (adscripcionId === null) {
+      res.status(400).json({ error: 'Identificador de adscripción laboral inválido' });
+      return;
+    }
+
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      res.status(400).json({ error: 'Payload inválido' });
+      return;
+    }
+
+    const keys = Object.keys(body);
+    if (keys.length === 0) {
+      res.status(400).json({
+        error: 'Debe especificar al menos una propiedad de identificación permitida para actualizar',
+      });
+      return;
+    }
+
+    for (const key of keys) {
+      if (!ALLOWED_UPDATE_IDENTIFICACION_KEYS.has(key)) {
+        res.status(400).json({ error: `Propiedad no permitida: ${key}` });
+        return;
+      }
+    }
+
+    try {
+      const userAgent =
+        typeof req.get === 'function' ? req.get('User-Agent') ?? null : null;
+      const ip = typeof req.ip === 'string' ? req.ip : null;
+
+      const updated = await this.service.updatePersonaIdentificacionAdscripcion(
+        req.rhAccess,
+        unidadId,
+        adscripcionId,
+        body as Record<string, unknown>,
+        {
+          userId: req.user.sub.trim(),
+          ip,
+          userAgent,
+        }
+      );
+
+      if (typeof res.set === 'function') {
+        res.set('Cache-Control', 'no-store');
+      }
+      res.status(200).json(updated);
+    } catch (err) {
+      if (err instanceof RhHttpError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      console.error('Error en PATCH /api/rh/unidades/:unidadId/personal/:adscripcionId/identificacion');
+      res.status(500).json({ error: 'Error interno al actualizar la identificación del trabajador' });
     }
   }
 }

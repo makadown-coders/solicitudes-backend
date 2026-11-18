@@ -91,4 +91,32 @@ router.patch(
   controller.updatePersonaEstado.bind(controller)
 );
 
+router.patch(
+  '/personas/:personaId/general',
+  requireAuth,
+  requireRhAccess(),
+  controller.updatePersonaGeneral.bind(controller)
+);
+
+router.get(
+  '/personas/:personaId/comisiones',
+  requireAuth,
+  requireRhAccess(),
+  controller.listComisionesPersona.bind(controller)
+);
+
+router.post(
+  '/personas/:personaId/comisiones',
+  requireAuth,
+  requireRhAccess(),
+  controller.createComisionPersona.bind(controller)
+);
+
+router.patch(
+  '/personas/:personaId/comisiones/:comisionId/concluir',
+  requireAuth,
+  requireRhAccess(),
+  controller.concluirComisionPersona.bind(controller)
+);
+
 export default router;

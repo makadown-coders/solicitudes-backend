@@ -8,21 +8,30 @@ export async function analizar(input: Consulta) {
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
     const {rows:[{corte}]}=await client.query("SELECT (now() AT TIME ZONE 'America/Tijuana')::date::text AS corte");
     const {rows:almacenes}=await client.query<Almacen>(`
-      SELECT u.id,u.nombre,ARRAY(SELECT DISTINCT upper(trim(a.alias_dash))
+      WITH zonas_institucionales(zona, cluesimb) AS (
+        VALUES ('AZM','BCIMB001405'), ('AZT','BCIMB001335'), ('AZE','BCIMB001340')
+      )
+      SELECT u.id,u.nombre,ARRAY(SELECT z.zona FROM zonas_institucionales z
+        WHERE z.cluesimb=upper(trim(u.cluesimb))
+        UNION SELECT upper(trim(a.alias_dash))
         FROM public.unidad_medica_alias a WHERE a.unidad_medica_id=u.id
         AND upper(trim(a.alias_dash)) IN ('AZM','AZT','AZE')
         UNION SELECT upper(trim(a.alias_sas)) FROM public.unidad_medica_alias a
         WHERE a.unidad_medica_id=u.id AND upper(trim(a.alias_sas)) IN ('AZM','AZT','AZE')) zonas
       FROM public.unidad_medica u WHERE EXISTS (SELECT 1 FROM public.v_unidad_medica_detalle v
         WHERE v.id=u.id AND upper(trim(v.tipo_unidad))='ALMACENES') ORDER BY u.nombre,u.id`);
-    const ventanas=input.ventanas.map(v=>{
-      const matches=almacenes.filter(a=>a.zonas.includes(v.zona));
-      const almacenId=v.almacenId ?? (matches.length===1?matches[0].id:undefined);
-      if(almacenId && !almacenes.some(a=>a.id===almacenId)) throw new RangeError('Almacén fuera de catálogo.');
-      return {...v,almacenId};
+    const pendientes = input.ventanas.filter(v => {
+      const candidatos = almacenes.filter(a => a.zonas.includes(v.zona));
+      return candidatos.length !== 1 || candidatos[0].zonas.length !== 1;
     });
-    const ids=ventanas.map(v=>v.almacenId).filter(Boolean);
-    if(new Set(ids).size!==ids.length) throw new RangeError('Cada ventana debe corresponder a un almacén distinto.');
+    if (pendientes.length) {
+      const zonas = pendientes.map(v => v.zona).join(', ');
+      throw new RangeError('Revise la configuración del catálogo para '+zonas+
+        '. Cada zona debe corresponder a un único almacén institucional.');
+    }
+    const ventanas = input.ventanas.map(({zona, desde, hasta}) => ({
+      zona, desde, hasta, almacenId: almacenes.find(a => a.zonas.includes(zona))!.id
+    }));
     const {rows:centros}=await client.query<Centro>(`
       WITH catalogo AS (SELECT id,nombre,activo,upper(trim(cluesimb)) clues,
         count(*) OVER (PARTITION BY upper(trim(cluesimb)))=1 unico FROM public.unidad_medica)
@@ -47,15 +56,17 @@ export async function analizar(input: Consulta) {
     const {rows:salidas}=await client.query<Despacho>(`
       WITH ventanas AS (SELECT * FROM jsonb_to_recordset($1::jsonb) AS v("almacenId" int,desde date,hasta date)),
       diario AS (SELECT s.fecha_entregado::date dia,s.unidad_origen_id origen,s.unidad_destino_id destino,
-        upper(trim(s.clave_cnis)) clave,s.tipo,s.movto,sum(s.cantidad)::float8 cantidad,
-        bool_or(s.cantidad IS NULL OR s.cantidad<=0) dudoso,
+        upper(trim(s.clave_cnis)) clave,
+        sum(s.cantidad) FILTER (WHERE s.cantidad::text NOT IN ('NaN','Infinity','-Infinity'))::float8 cantidad,
+        count(*) FILTER (WHERE s.cantidad IS NULL OR s.cantidad::text IN ('NaN','Infinity','-Infinity'))::int invalidas,
         string_agg(DISTINCT nullif(trim(s.descripcion),''),E'\\n') descripcion
         FROM public.salida s WHERE EXISTS (SELECT 1 FROM ventanas v
           WHERE (s.unidad_origen_id=v."almacenId" OR NOT EXISTS
             (SELECT 1 FROM public.unidad_medica u WHERE u.id=s.unidad_origen_id))
-          AND s.fecha_entregado>=v.desde AND s.fecha_entregado<least(v.hasta,$2::date)+1)
-        GROUP BY s.fecha_entregado::date,s.unidad_origen_id,s.unidad_destino_id,upper(trim(s.clave_cnis)),s.tipo,s.movto)
-      SELECT d.dia::text,o.id origen,d.destino,d.clave,d.tipo::text tipo,d.movto::text movto,d.cantidad,d.dudoso,d.descripcion,
+          AND ((s.fecha_entregado>=v.desde AND s.fecha_entregado<least(v.hasta,$2::date)+1)
+            OR (s.fecha_entregado IS NULL AND s.unidad_origen_id=v."almacenId")))
+        GROUP BY s.fecha_entregado::date,s.unidad_origen_id,s.unidad_destino_id,upper(trim(s.clave_cnis)))
+      SELECT d.dia::text,o.id origen,d.destino,d.clave,d.cantidad,d.invalidas,d.descripcion,
         nullif(trim(u.cluesimb),'') IS NOT NULL identificado,
         EXISTS(SELECT 1 FROM public.v_unidad_medica_detalle v WHERE v.id=d.destino
           AND upper(trim(v.tipo_unidad))='CENTRO DE SALUD') centro

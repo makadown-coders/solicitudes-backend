@@ -114,6 +114,34 @@ const ALLOWED_LIST_PERSONAS_QUERY_KEYS: ReadonlySet<string> = new Set([
   'unidadId',
 ]);
 
+const ALLOWED_UPDATE_PERSONA_GENERAL_KEYS: ReadonlySet<string> = new Set([
+  'cargo',
+  'correo_principal',
+  'unidad_medica_id',
+]);
+
+const ALLOWED_CREATE_COMISION_KEYS: ReadonlySet<string> = new Set([
+  'adscripcion_origen_id',
+  'unidad_destino_id',
+  'area_destino_texto',
+  'fecha_inicio',
+  'fecha_fin',
+  'motivo',
+  'oficio_referencia',
+  'observaciones',
+]);
+
+const ALLOWED_CONCLUIR_COMISION_KEYS: ReadonlySet<string> = new Set([
+  'fecha_fin',
+  'observaciones',
+]);
+
+const ALLOWED_LIST_COMISIONES_QUERY_KEYS: ReadonlySet<string> = new Set([
+  'estado',
+  'page',
+  'pageSize',
+]);
+
 export default class RhController {
   private readonly service = new RhService();
 
@@ -801,6 +829,299 @@ export default class RhController {
       }
       console.error('Error en GET /api/rh/personas');
       res.status(500).json({ error: 'Error interno al consultar el padrón institucional' });
+    }
+  }
+
+  async updatePersonaGeneral(req: RhAuthenticatedRequest, res: Response): Promise<void> {
+    if (typeof req.user?.sub !== 'string' || !req.user.sub.trim()) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    if (!req.rhAccess) {
+      res.status(403).json({ error: 'Permiso insuficiente' });
+      return;
+    }
+
+    if (req.rhAccess.grantedBy !== 'RECURSOS_HUMANOS' || req.rhAccess.scope !== 'GLOBAL') {
+      res.status(403).json({
+        error:
+          'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para editar datos generales del padrón institucional',
+      });
+      return;
+    }
+
+    const personaId = parseUnidadIdParam(req.params?.personaId);
+    if (personaId === null) {
+      res.status(400).json({ error: 'Identificador de persona inválido' });
+      return;
+    }
+
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      res.status(400).json({ error: 'Payload inválido' });
+      return;
+    }
+
+    const keys = Object.keys(body);
+    if (keys.length === 0) {
+      res.status(400).json({
+        error:
+          'Debe especificar al menos una propiedad general permitida para actualizar (cargo, correo_principal o unidad_medica_id)',
+      });
+      return;
+    }
+
+    for (const key of keys) {
+      if (!ALLOWED_UPDATE_PERSONA_GENERAL_KEYS.has(key)) {
+        res.status(400).json({ error: `Propiedad no permitida: ${key}` });
+        return;
+      }
+    }
+
+    try {
+      const userAgent =
+        typeof req.get === 'function' ? req.get('User-Agent') ?? null : null;
+      const ip = typeof req.ip === 'string' ? req.ip : null;
+
+      const updated = await this.service.updatePersonaGeneralDatos(
+        req.rhAccess,
+        personaId,
+        body as Record<string, unknown>,
+        {
+          userId: req.user.sub.trim(),
+          ip,
+          userAgent,
+        }
+      );
+
+      if (typeof res.set === 'function') {
+        res.set('Cache-Control', 'no-store');
+      }
+      res.status(200).json(updated);
+    } catch (err) {
+      if (err instanceof RhHttpError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      console.error('Error en PATCH /api/rh/personas/:personaId/general');
+      res.status(500).json({ error: 'Error interno al actualizar datos generales de la persona' });
+    }
+  }
+
+  async listComisionesPersona(req: RhAuthenticatedRequest, res: Response): Promise<void> {
+    if (!req.rhAccess) {
+      res.status(403).json({ error: 'Permiso insuficiente' });
+      return;
+    }
+
+    if (req.rhAccess.grantedBy !== 'RECURSOS_HUMANOS' || req.rhAccess.scope !== 'GLOBAL') {
+      res.status(403).json({
+        error:
+          'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para consultar comisiones laborales',
+      });
+      return;
+    }
+
+    const personaId = parseUnidadIdParam(req.params?.personaId);
+    if (personaId === null) {
+      res.status(400).json({ error: 'Identificador de persona inválido' });
+      return;
+    }
+
+    const query = (req.query ?? {}) as Record<string, unknown>;
+    for (const key of Object.keys(query)) {
+      if (!ALLOWED_LIST_COMISIONES_QUERY_KEYS.has(key)) {
+        res.status(400).json({ error: `Parámetro de consulta no permitido: ${key}` });
+        return;
+      }
+    }
+
+    const parsedPagination = parsePaginationAndSearchQuery(query);
+    if (!parsedPagination.ok) {
+      res.status(400).json({ error: parsedPagination.error });
+      return;
+    }
+
+    if (isInvalidNonStringQuery(query.estado)) {
+      res.status(400).json({ error: 'Parámetro estado inválido' });
+      return;
+    }
+
+    let estado: 'todas' | 'vigentes' | 'futuras' | 'concluidas' = 'todas';
+    const rawEstado = extractSingleStringQuery(query.estado);
+    if (rawEstado !== null && rawEstado.trim() !== '') {
+      const norm = rawEstado.trim().toLowerCase();
+      if (norm !== 'todas' && norm !== 'vigentes' && norm !== 'futuras' && norm !== 'concluidas') {
+        res.status(400).json({
+          error: 'El parámetro "estado" debe ser "todas", "vigentes", "futuras" o "concluidas"',
+        });
+        return;
+      }
+      estado = norm;
+    }
+
+    try {
+      const result = await this.service.listComisionesPorPersona(req.rhAccess, personaId, {
+        estado,
+        page: parsedPagination.page,
+        pageSize: parsedPagination.pageSize,
+      });
+
+      if (typeof res.set === 'function') {
+        res.set('Cache-Control', 'no-store');
+      }
+      res.status(200).json(result);
+    } catch (err) {
+      if (err instanceof RhHttpError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      console.error('Error en GET /api/rh/personas/:personaId/comisiones');
+      res.status(500).json({ error: 'Error interno al consultar las comisiones laborales' });
+    }
+  }
+
+  async createComisionPersona(req: RhAuthenticatedRequest, res: Response): Promise<void> {
+    if (typeof req.user?.sub !== 'string' || !req.user.sub.trim()) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    if (!req.rhAccess) {
+      res.status(403).json({ error: 'Permiso insuficiente' });
+      return;
+    }
+
+    if (req.rhAccess.grantedBy !== 'RECURSOS_HUMANOS' || req.rhAccess.scope !== 'GLOBAL') {
+      res.status(403).json({
+        error:
+          'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para registrar comisiones laborales',
+      });
+      return;
+    }
+
+    const personaId = parseUnidadIdParam(req.params?.personaId);
+    if (personaId === null) {
+      res.status(400).json({ error: 'Identificador de persona inválido' });
+      return;
+    }
+
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      res.status(400).json({ error: 'Payload inválido' });
+      return;
+    }
+
+    for (const key of Object.keys(body)) {
+      if (!ALLOWED_CREATE_COMISION_KEYS.has(key)) {
+        res.status(400).json({ error: `Propiedad no permitida: ${key}` });
+        return;
+      }
+    }
+
+    try {
+      const userAgent =
+        typeof req.get === 'function' ? req.get('User-Agent') ?? null : null;
+      const ip = typeof req.ip === 'string' ? req.ip : null;
+
+      const created = await this.service.createComisionLaboral(
+        req.rhAccess,
+        personaId,
+        body as Record<string, unknown>,
+        {
+          userId: req.user.sub.trim(),
+          ip,
+          userAgent,
+        }
+      );
+
+      if (typeof res.set === 'function') {
+        res.set('Cache-Control', 'no-store');
+      }
+      res.status(201).json(created);
+    } catch (err) {
+      if (err instanceof RhHttpError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      console.error('Error en POST /api/rh/personas/:personaId/comisiones');
+      res.status(500).json({ error: 'Error interno al registrar la comisión laboral' });
+    }
+  }
+
+  async concluirComisionPersona(req: RhAuthenticatedRequest, res: Response): Promise<void> {
+    if (typeof req.user?.sub !== 'string' || !req.user.sub.trim()) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    if (!req.rhAccess) {
+      res.status(403).json({ error: 'Permiso insuficiente' });
+      return;
+    }
+
+    if (req.rhAccess.grantedBy !== 'RECURSOS_HUMANOS' || req.rhAccess.scope !== 'GLOBAL') {
+      res.status(403).json({
+        error:
+          'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para concluir comisiones laborales',
+      });
+      return;
+    }
+
+    const personaId = parseUnidadIdParam(req.params?.personaId);
+    if (personaId === null) {
+      res.status(400).json({ error: 'Identificador de persona inválido' });
+      return;
+    }
+
+    const comisionId = parseUnidadIdParam(req.params?.comisionId);
+    if (comisionId === null) {
+      res.status(400).json({ error: 'Identificador de comisión inválido' });
+      return;
+    }
+
+    const body = req.body ?? {};
+    if (typeof body !== 'object' || Array.isArray(body)) {
+      res.status(400).json({ error: 'Payload inválido' });
+      return;
+    }
+
+    for (const key of Object.keys(body)) {
+      if (!ALLOWED_CONCLUIR_COMISION_KEYS.has(key)) {
+        res.status(400).json({ error: `Propiedad no permitida: ${key}` });
+        return;
+      }
+    }
+
+    try {
+      const userAgent =
+        typeof req.get === 'function' ? req.get('User-Agent') ?? null : null;
+      const ip = typeof req.ip === 'string' ? req.ip : null;
+
+      const updated = await this.service.concluirComisionLaboral(
+        req.rhAccess,
+        personaId,
+        comisionId,
+        body as Record<string, unknown>,
+        {
+          userId: req.user.sub.trim(),
+          ip,
+          userAgent,
+        }
+      );
+
+      if (typeof res.set === 'function') {
+        res.set('Cache-Control', 'no-store');
+      }
+      res.status(200).json(updated);
+    } catch (err) {
+      if (err instanceof RhHttpError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      console.error('Error en PATCH /api/rh/personas/:personaId/comisiones/:comisionId/concluir');
+      res.status(500).json({ error: 'Error interno al concluir la comisión laboral' });
     }
   }
 }

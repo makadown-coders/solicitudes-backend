@@ -3098,7 +3098,7 @@ async function run() {
       const adminRoutes = rhRouter.stack.filter(
         (l) => l.route && l.route.path !== '/mi-contexto'
       );
-      assert.equal(adminRoutes.length, 11);
+      assert.equal(adminRoutes.length, 15);
       for (const layer of adminRoutes) {
         assert.equal(
           layer.route.stack.length,
@@ -3999,13 +3999,689 @@ async function run() {
       );
       passed++;
     }
+
+    // =========================================================================
+    // SUITE RH-4A.2A: PATCH /api/rh/personas/:personaId/general
+    // =========================================================================
+
+    const generalStore = [
+      {
+        id: 401,
+        nombres: 'Persona',
+        apellidos: 'General Activa',
+        nombre_completo: 'Persona General Activa',
+        cargo: 'Auxiliar',
+        correo_principal: 'antes@imssbienestar.gob.mx',
+        unidad_medica_id: 10,
+        rfc: 'PGAX800101AB1',
+        curp: 'PGAX800101MDFR0001',
+        activo: true,
+        fecha_baja: null,
+      },
+      {
+        id: 402,
+        nombres: 'Persona',
+        apellidos: 'General Inactiva',
+        nombre_completo: 'Persona General Inactiva',
+        cargo: 'Previo',
+        correo_principal: null,
+        unidad_medica_id: null,
+        rfc: null,
+        curp: null,
+        activo: false,
+        fecha_baja: '2026-01-20',
+      },
+    ];
+    let simulateGeneralAuditFail = false;
+    const generalTxEvents = [];
+    const generalAuditLogs = [];
+    const generalSqlLog = [];
+
+    pool.connect = async () => ({
+      query: async (sql, params = []) => {
+        const s = String(sql).trim();
+        generalSqlLog.push(s);
+        if (s === 'BEGIN' || s === 'COMMIT' || s === 'ROLLBACK') {
+          generalTxEvents.push(s);
+          return { rows: [], rowCount: 0 };
+        }
+        if (s.includes('FROM public.persona') && s.includes('FOR UPDATE')) {
+          const pId = Number(params[0]);
+          const found = generalStore.find((p) => p.id === pId);
+          return { rows: found ? [{ ...found }] : [], rowCount: found ? 1 : 0 };
+        }
+        if (s.includes('FROM public.unidad_medica') && s.includes('WHERE id = $1')) {
+          const umId = Number(params[0]);
+          // 10, 20, 177 (OFICINA CENTRAL CLUES N/A) son activas; 999 inexistente; 888 inactiva
+          const valid = [10, 20, 177].includes(umId);
+          return { rows: valid ? [{ id: umId }] : [], rowCount: valid ? 1 : 0 };
+        }
+        if (s.startsWith('UPDATE public.persona')) {
+          const pId = Number(params[params.length - 1]);
+          const found = generalStore.find((p) => p.id === pId);
+          let idx = 0;
+          if (s.includes('cargo = $')) found.cargo = params[idx++];
+          if (s.includes('correo_principal = $')) found.correo_principal = params[idx++];
+          if (s.includes('unidad_medica_id = $')) found.unidad_medica_id = params[idx++];
+          return { rows: [{ ...found }], rowCount: 1 };
+        }
+        if (s.includes('INSERT INTO public.app_audit_logs')) {
+          if (simulateGeneralAuditFail) {
+            throw new Error('Simulated audit failure on RH_UPDATE_PERSONA_GENERAL');
+          }
+          generalAuditLogs.push({
+            user_id: params[0],
+            action: params[1],
+            resource: params[2],
+            payload: JSON.parse(params[5]),
+          });
+          return { rows: [], rowCount: 1 };
+        }
+        throw new Error(`Unexpected SQL in RH-4A.2A mock: ${s}`);
+      },
+      release: () => {},
+    });
+
+    // 55 (RH-4A.2A #15-#23): Autorización exclusiva RH GLOBAL y rechazo de body vacío o propiedades no permitidas
+    {
+      for (const roleCtx of [
+        undefined,
+        { scope: 'CLUES', clues: ['BCIMB000001'], grantedBy: 'RECURSOS_HUMANOS' },
+        { scope: 'GLOBAL', clues: [], grantedBy: 'ADMIN_TIC' },
+      ]) {
+        const resDenied = createMockRes();
+        await controller.updatePersonaGeneral(
+          { user: { sub: AUTH_USER_UUID }, rhAccess: roleCtx, params: { personaId: '401' }, body: { cargo: 'Nuevo' } },
+          resDenied
+        );
+        assert.equal(resDenied.statusCode, 403);
+      }
+
+      const rhGlobal = { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' };
+      const resEmpty = createMockRes();
+      await controller.updatePersonaGeneral(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '401' }, body: {} },
+        resEmpty
+      );
+      assert.equal(resEmpty.statusCode, 400);
+
+      for (const badBody of [
+        { rfc: 'PGAX800101ZZ9' },
+        { curp: 'PGAX800101MDFR0009' },
+        { activo: false },
+        { puesto: 'Médico' },
+        { nombres: 'Otro' },
+        { campo_desconocido: 'x' },
+      ]) {
+        const resBad = createMockRes();
+        await controller.updatePersonaGeneral(
+          { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '401' }, body: badBody },
+          resBad
+        );
+        assert.equal(resBad.statusCode, 400);
+      }
+      passed++;
+    }
+
+    // 56 (RH-4A.2A #1-#14, #24, #26, #27, #28): Actualización parcial/múltiple, limpieza, Oficina Central (177), persona inactiva, errores 400/404, idempotencia, auditoría sin correo/RFC/CURP y cero cambios a rh_adscripcion_laboral
+    {
+      const rhGlobal = { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' };
+
+      // Errores de validación: correo inválido, cargo > 100, persona inexistente, unidad inexistente/inactiva
+      const resBadEmail = createMockRes();
+      await controller.updatePersonaGeneral(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '401' }, body: { correo_principal: 'no-es-correo' } },
+        resBadEmail
+      );
+      assert.equal(resBadEmail.statusCode, 400);
+
+      const resLongCargo = createMockRes();
+      await controller.updatePersonaGeneral(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '401' }, body: { cargo: 'A'.repeat(101) } },
+        resLongCargo
+      );
+      assert.equal(resLongCargo.statusCode, 400);
+
+      const resNotFound = createMockRes();
+      await controller.updatePersonaGeneral(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '9999' }, body: { cargo: 'X' } },
+        resNotFound
+      );
+      assert.equal(resNotFound.statusCode, 404);
+
+      const resBadUnidad = createMockRes();
+      await controller.updatePersonaGeneral(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '401' }, body: { unidad_medica_id: 999 } },
+        resBadUnidad
+      );
+      assert.equal(resBadUnidad.statusCode, 404);
+
+      // Actualización múltiple incluyendo OFICINA CENTRAL (177)
+      const resMulti = createMockRes();
+      await controller.updatePersonaGeneral(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: rhGlobal,
+          params: { personaId: '401' },
+          body: {
+            cargo: 'Coordinador Estatal',
+            correo_principal: '  NUEVO@IMSSBIENESTAR.GOB.MX ',
+            unidad_medica_id: 177,
+          },
+        },
+        resMulti
+      );
+      assert.equal(resMulti.statusCode, 200);
+      assert.equal(resMulti.headers['cache-control'], 'no-store');
+      assert.equal(resMulti.body.idempotente, false);
+      assert.equal(resMulti.body.persona.cargo, 'Coordinador Estatal');
+      assert.equal(resMulti.body.persona.correo_principal, 'nuevo@imssbienestar.gob.mx');
+      assert.equal(resMulti.body.persona.unidad_medica_id, 177);
+      assert.equal(resMulti.body.persona.rfc_masked, '**********AB1');
+      assert.equal(JSON.stringify(resMulti.body).includes('PGAX800101AB1'), false);
+
+      // Auditoría sin correo ni RFC/CURP
+      assert.equal(generalAuditLogs.length, 1);
+      assert.equal(generalAuditLogs[0].action, 'RH_UPDATE_PERSONA_GENERAL');
+      assert.equal(JSON.stringify(generalAuditLogs[0]).includes('nuevo@imssbienestar.gob.mx'), false);
+      assert.equal(JSON.stringify(generalAuditLogs[0]).includes('PGAX800101AB1'), false);
+
+      // Petición idempotente no duplica auditoría
+      const resIdemp = createMockRes();
+      await controller.updatePersonaGeneral(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '401' }, body: { cargo: 'Coordinador Estatal' } },
+        resIdemp
+      );
+      assert.equal(resIdemp.statusCode, 200);
+      assert.equal(resIdemp.body.idempotente, true);
+      assert.equal(generalAuditLogs.length, 1);
+
+      // Limpiar campos opcionales (null) y permitir corrección en persona inactiva (402) sin reactivarla
+      const resClear = createMockRes();
+      await controller.updatePersonaGeneral(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '402' }, body: { cargo: null, unidad_medica_id: null } },
+        resClear
+      );
+      assert.equal(resClear.statusCode, 200);
+      assert.equal(resClear.body.persona.cargo, null);
+      assert.equal(resClear.body.persona.activo, false);
+
+      // Cero modificaciones a rh_adscripcion_laboral
+      assert.equal(generalSqlLog.some((q) => q.includes('rh_adscripcion_laboral')), false);
+      passed++;
+    }
+
+    // 57 (RH-4A.2A #25): Fallo de auditoría ejecuta ROLLBACK y responde 500
+    {
+      const rhGlobal = { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' };
+      simulateGeneralAuditFail = true;
+      generalTxEvents.length = 0;
+
+      const resFail = createMockRes();
+      await controller.updatePersonaGeneral(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '401' }, body: { cargo: 'Otro Cargo' } },
+        resFail
+      );
+      assert.equal(resFail.statusCode, 500);
+      assert.equal(generalTxEvents.includes('ROLLBACK'), true);
+      assert.equal(generalTxEvents.includes('COMMIT'), false);
+      simulateGeneralAuditFail = false;
+      passed++;
+    }
+
+    // =========================================================================
+    // SUITE RH-4A.3A: Comisiones laborales (GET / POST / PATCH concluir)
+    // =========================================================================
+
+    const comisionesPersonas = new Map([
+      [501, { id: 501, activo: true }],
+      [502, { id: 502, activo: false }],
+      [503, { id: 503, activo: true }],
+    ]);
+
+    const comisionesAdscripciones = new Map([
+      [701, { id: 701, persona_id: 501, activa: true }],
+      [702, { id: 702, persona_id: 503, activa: true }],
+    ]);
+
+    const comisionesUnidades = new Map([
+      [12, { id: 12, nombre: 'HOSPITAL GENERAL MEXICALI', cluesimb: 'BCIMB000012' }],
+      [177, { id: 177, nombre: 'OFICINA CENTRAL', cluesimb: 'N/A' }],
+    ]);
+
+    let nextComisionId = 900;
+    const comisionesRows = [];
+    const comisionAuditLogs = [];
+    const comisionTxEvents = [];
+    const comisionSqlLog = [];
+    let simulateComisionAuditFail = false;
+
+    const toDateStr = (val) => (val ? String(val).slice(0, 10) : null);
+
+    const runComisionQuery = async (text, params = []) => {
+      const sql = String(text);
+      comisionSqlLog.push(sql);
+
+      if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') {
+        comisionTxEvents.push(sql);
+        return { rows: [], rowCount: 0 };
+      }
+
+      if (sql.includes('FROM public.persona') && sql.includes('WHERE id = $1')) {
+        const p = comisionesPersonas.get(Number(params[0]));
+        return { rows: p ? [{ ...p }] : [], rowCount: p ? 1 : 0 };
+      }
+
+      if (sql.includes('FROM public.rh_adscripcion_laboral') && sql.includes('WHERE id = $1')) {
+        const a = comisionesAdscripciones.get(Number(params[0]));
+        return { rows: a ? [{ ...a }] : [], rowCount: a ? 1 : 0 };
+      }
+
+      if (sql.includes('FROM public.unidad_medica') && sql.includes('WHERE id = $1')) {
+        const u = comisionesUnidades.get(Number(params[0]));
+        return { rows: u ? [{ ...u }] : [], rowCount: u ? 1 : 0 };
+      }
+
+      // Active comisiones FOR UPDATE (overlap check in createComisionLaboral)
+      if (sql.includes('FROM public.rh_comision_laboral') && sql.includes('activo = TRUE') && sql.includes('FOR UPDATE')) {
+        const personaId = Number(params[0]);
+        const active = comisionesRows.filter((c) => c.persona_id === personaId && c.activo);
+        return { rows: active.map((c) => ({ ...c })), rowCount: active.length };
+      }
+
+      // INSERT INTO public.rh_comision_laboral
+      if (sql.includes('INSERT INTO public.rh_comision_laboral')) {
+        const id = ++nextComisionId;
+        const row = {
+          id,
+          persona_id: Number(params[0]),
+          adscripcion_origen_id: params[1] ?? null,
+          unidad_destino_id: params[2] ?? null,
+          area_destino_texto: params[3] ?? null,
+          fecha_inicio: String(params[4]),
+          fecha_fin: params[5] ? String(params[5]) : null,
+          motivo: params[6] ?? null,
+          oficio_referencia: params[7] ?? null,
+          observaciones: params[8] ?? null,
+          activo: true,
+          created_by: params[9] ?? null,
+          updated_by: params[9] ?? null,
+          created_at: '2026-11-18T15:00:00.000Z',
+          updated_at: '2026-11-18T15:00:00.000Z',
+          current_date_iso: '2026-11-18',
+        };
+        comisionesRows.push(row);
+        return { rows: [{ ...row }], rowCount: 1 };
+      }
+
+      // SELECT single comision FOR UPDATE (concluir)
+      if (sql.includes('FROM public.rh_comision_laboral') && sql.includes('FOR UPDATE')) {
+        const comisionId = Number(params[0]);
+        const personaId = Number(params[1]);
+        const found = comisionesRows.find((c) => c.id === comisionId && c.persona_id === personaId);
+        return { rows: found ? [{ ...found, current_date_iso: '2026-11-18' }] : [], rowCount: found ? 1 : 0 };
+      }
+
+      // UPDATE public.rh_comision_laboral (concluir)
+      if (sql.includes('UPDATE public.rh_comision_laboral')) {
+        const finalFechaFin = String(params[0]);
+        const finalObs = params[1] ?? null;
+        const updatedBy = params[2] ?? null;
+        const comisionId = Number(params[3]);
+        const personaId = Number(params[4]);
+        const found = comisionesRows.find((c) => c.id === comisionId && c.persona_id === personaId);
+        if (!found) return { rows: [], rowCount: 0 };
+        found.fecha_fin = finalFechaFin;
+        found.activo = false;
+        found.observaciones = finalObs;
+        found.updated_by = updatedBy;
+        found.updated_at = '2026-11-18T16:00:00.000Z';
+        return { rows: [{ ...found, current_date_iso: '2026-11-18' }], rowCount: 1 };
+      }
+
+      // SELECT list comisiones with JOIN unidad_medica (supports COUNT and paginated list + estado filters)
+      if (sql.includes('FROM public.rh_comision_laboral c')) {
+        const personaId = Number(params[0]);
+        const today = '2026-11-18';
+        let items = comisionesRows
+          .filter((c) => c.persona_id === personaId)
+          .filter((c) => {
+            if (sql.includes('AND c.fecha_inicio > CURRENT_DATE')) {
+              return c.activo && c.fecha_inicio > today;
+            }
+            if (sql.includes('AND c.fecha_inicio <= CURRENT_DATE')) {
+              return c.activo && c.fecha_inicio <= today && (c.fecha_fin === null || c.fecha_fin >= today);
+            }
+            if (sql.includes('AND (c.activo = FALSE')) {
+              return !c.activo || (c.fecha_fin !== null && c.fecha_fin < today);
+            }
+            return true;
+          })
+          .map((c, _idx, arr) => {
+            const u = c.unidad_destino_id ? comisionesUnidades.get(c.unidad_destino_id) : null;
+            return {
+              ...c,
+              unidad_destino_nombre: u ? u.nombre : null,
+              unidad_destino_cluesimb: u ? u.cluesimb : null,
+              current_date_iso: today,
+              total: String(arr.length),
+            };
+          });
+        return { rows: items, rowCount: items.length };
+      }
+
+      // INSERT INTO public.app_audit_logs
+      if (sql.includes('INSERT INTO public.app_audit_logs')) {
+        if (simulateComisionAuditFail) {
+          throw new Error('Simulated comision audit failure');
+        }
+        comisionAuditLogs.push({
+          actor: params[0],
+          action: params[1],
+          entity: params[2],
+          entityId: params[3],
+          metadata: params[4],
+        });
+        return { rows: [{ id: comisionAuditLogs.length }], rowCount: 1 };
+      }
+
+      throw new Error(`Unexpected SQL in RH-4A.3A test: ${sql}`);
+    };
+
+    pool.query = runComisionQuery;
+    pool.connect = async () => ({
+      query: runComisionQuery,
+      release: () => {},
+    });
+
+    // 58 (RH-4A.3A): Autorización, registro válido (unidad médica, Oficina Central 177, área administrativa, sin adscripción origen), validaciones 400/404/409, superposición, auditoría RH_CREATE_COMISION y cero mutaciones a rh_adscripcion_laboral
+    {
+      const rhGlobal = { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' };
+      const rhClues = { scope: 'CLUES', clues: ['BCIMB000012'], grantedBy: 'RECURSOS_HUMANOS' };
+      const adminTic = { scope: 'GLOBAL', clues: [], grantedBy: 'ADMIN_TIC' };
+
+      // Denegaciones 403
+      for (const badAccess of [rhClues, adminTic, undefined]) {
+        const resGet = createMockRes();
+        await controller.listComisionesPersona(
+          { user: { sub: AUTH_USER_UUID }, rhAccess: badAccess, params: { personaId: '501' }, query: {} },
+          resGet
+        );
+        assert.equal(resGet.statusCode, 403);
+
+        const resPost = createMockRes();
+        await controller.createComisionPersona(
+          { user: { sub: AUTH_USER_UUID }, rhAccess: badAccess, params: { personaId: '501' }, body: { unidad_destino_id: 12, fecha_inicio: '2026-11-01' } },
+          resPost
+        );
+        assert.equal(resPost.statusCode, 403);
+
+        const resPatch = createMockRes();
+        await controller.concluirComisionPersona(
+          { user: { sub: AUTH_USER_UUID }, rhAccess: badAccess, params: { personaId: '501', comisionId: '901' }, body: { fecha_fin: '2026-11-18' } },
+          resPatch
+        );
+        assert.equal(resPatch.statusCode, 403);
+      }
+
+      // Rechazo destino vacío -> 400
+      const resNoDest = createMockRes();
+      await controller.createComisionPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '501' }, body: { fecha_inicio: '2026-11-01' } },
+        resNoDest
+      );
+      assert.equal(resNoDest.statusCode, 400);
+
+      // Rechazo fecha_fin < fecha_inicio -> 400
+      const resBadDates = createMockRes();
+      await controller.createComisionPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '501' }, body: { unidad_destino_id: 12, fecha_inicio: '2026-11-20', fecha_fin: '2026-11-10' } },
+        resBadDates
+      );
+      assert.equal(resBadDates.statusCode, 400);
+
+      // Rechazo campo no permitido -> 400
+      const resBadField = createMockRes();
+      await controller.createComisionPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '501' }, body: { unidad_destino_id: 12, fecha_inicio: '2026-11-01', activa: false } },
+        resBadField
+      );
+      assert.equal(resBadField.statusCode, 400);
+
+      // Persona inexistente -> 404
+      const resNoPersona = createMockRes();
+      await controller.createComisionPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '9999' }, body: { unidad_destino_id: 12, fecha_inicio: '2026-11-01' } },
+        resNoPersona
+      );
+      assert.equal(resNoPersona.statusCode, 404);
+
+      // Persona inactiva -> 409
+      const resInactive = createMockRes();
+      await controller.createComisionPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '502' }, body: { unidad_destino_id: 12, fecha_inicio: '2026-11-01' } },
+        resInactive
+      );
+      assert.equal(resInactive.statusCode, 409);
+
+      // Adscripción origen perteneciente a otra persona -> 409
+      const resWrongAds = createMockRes();
+      await controller.createComisionPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '501' }, body: { adscripcion_origen_id: 702, unidad_destino_id: 12, fecha_inicio: '2026-11-01' } },
+        resWrongAds
+      );
+      assert.equal(resWrongAds.statusCode, 409);
+
+      // Registro válido con unidad médica (vigente) y adscripcion_origen_id propia -> 201
+      const resCreate1 = createMockRes();
+      await controller.createComisionPersona(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: rhGlobal,
+          params: { personaId: '501' },
+          body: {
+            adscripcion_origen_id: 701,
+            unidad_destino_id: 12,
+            motivo: 'Refuerzo temporal',
+            oficio_referencia: 'OF-RH-2026-001',
+            fecha_inicio: '2026-11-01',
+            fecha_fin: '2026-12-31',
+          },
+        },
+        resCreate1
+      );
+      assert.equal(resCreate1.statusCode, 201);
+      assert.equal(resCreate1.headers['cache-control'], 'no-store');
+      assert.equal(resCreate1.body.unidad_destino_id, 12);
+      assert.equal(resCreate1.body.unidad_destino_cluesimb, 'BCIMB000012');
+      assert.equal(resCreate1.body.estado_vigencia, 'VIGENTE');
+
+      // Superposición con comisión activa -> 409
+      const resOverlap = createMockRes();
+      await controller.createComisionPersona(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: rhGlobal,
+          params: { personaId: '501' },
+          body: { unidad_destino_id: 177, fecha_inicio: '2026-12-01' },
+        },
+        resOverlap
+      );
+      assert.equal(resOverlap.statusCode, 409);
+
+      // Registro válido futura en Oficina Central (177, cluesimb='N/A') sin adscripcion_origen_id -> 201
+      const resCreate2 = createMockRes();
+      await controller.createComisionPersona(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: rhGlobal,
+          params: { personaId: '501' },
+          body: {
+            unidad_destino_id: 177,
+            area_destino_texto: 'Coordinación Estatal',
+            fecha_inicio: '2027-01-15',
+          },
+        },
+        resCreate2
+      );
+      assert.equal(resCreate2.statusCode, 201);
+      assert.equal(resCreate2.body.unidad_destino_id, 177);
+      assert.equal(resCreate2.body.unidad_destino_cluesimb, 'N/A');
+      assert.equal(resCreate2.body.estado_vigencia, 'FUTURA');
+
+      // Registro válido en área administrativa sin CLUES (solo area_destino_texto) -> 201
+      const resCreate3 = createMockRes();
+      await controller.createComisionPersona(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: rhGlobal,
+          params: { personaId: '503' },
+          body: {
+            area_destino_texto: 'Subdirección de Recursos Humanos',
+            fecha_inicio: '2026-10-01',
+            fecha_fin: '2026-10-31',
+          },
+        },
+        resCreate3
+      );
+      assert.equal(resCreate3.statusCode, 201);
+      assert.equal(resCreate3.body.unidad_destino_id, null);
+      assert.equal(resCreate3.body.area_destino_texto, 'Subdirección de Recursos Humanos');
+      assert.equal(resCreate3.body.estado_vigencia, 'CONCLUIDA');
+
+      // Verificar auditoría RH_CREATE_COMISION y cero mutaciones a rh_adscripcion_laboral
+      assert.equal(comisionAuditLogs.filter((l) => l.action === 'RH_CREATE_COMISION').length, 3);
+      assert.equal(
+        comisionSqlLog.some((q) => /(INSERT|UPDATE|DELETE)\s+.*rh_adscripcion_laboral/i.test(q)),
+        false
+      );
+      passed++;
+    }
+
+    // 59 (RH-4A.3A): Consulta de historial y filtros (todas, vigentes, futuras, concluidas) + persona sin comisiones + persona inexistente
+    {
+      const rhGlobal = { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' };
+
+      const resAll = createMockRes();
+      await controller.listComisionesPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '501' }, query: { estado: 'todas' } },
+        resAll
+      );
+      assert.equal(resAll.statusCode, 200);
+      assert.equal(resAll.headers['cache-control'], 'no-store');
+      assert.equal(resAll.body.items.length, 2);
+
+      const resVig = createMockRes();
+      await controller.listComisionesPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '501' }, query: { estado: 'vigentes' } },
+        resVig
+      );
+      assert.equal(resVig.statusCode, 200);
+      assert.equal(resVig.body.items.length, 1);
+      assert.equal(resVig.body.items[0].estado_vigencia, 'VIGENTE');
+
+      const resFut = createMockRes();
+      await controller.listComisionesPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '501' }, query: { estado: 'futuras' } },
+        resFut
+      );
+      assert.equal(resFut.statusCode, 200);
+      assert.equal(resFut.body.items.length, 1);
+      assert.equal(resFut.body.items[0].estado_vigencia, 'FUTURA');
+
+      const resConc = createMockRes();
+      await controller.listComisionesPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '503' }, query: { estado: 'concluidas' } },
+        resConc
+      );
+      assert.equal(resConc.statusCode, 200);
+      assert.equal(resConc.body.items.length, 1);
+      assert.equal(resConc.body.items[0].estado_vigencia, 'CONCLUIDA');
+
+      // Persona sin comisiones (502) -> 200 items=[]
+      const resEmpty = createMockRes();
+      await controller.listComisionesPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '502' }, query: {} },
+        resEmpty
+      );
+      assert.equal(resEmpty.statusCode, 200);
+      assert.equal(resEmpty.body.items.length, 0);
+
+      // Persona inexistente -> 404
+      const res404 = createMockRes();
+      await controller.listComisionesPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '9999' }, query: {} },
+        res404
+      );
+      assert.equal(res404.statusCode, 404);
+      passed++;
+    }
+
+    // 60 (RH-4A.3A): Conclusión válida, idempotencia sin duplicar auditoría, comisión ajena (404), fecha anterior al inicio (400) y ROLLBACK si falla auditoría (500)
+    {
+      const rhGlobal = { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' };
+      const targetId = comisionesRows[0].id; // persona 501, fecha_inicio 2026-11-01
+
+      // Comisión ajena (persona 503 intentando concluir comisión de 501) -> 404
+      const resWrongOwner = createMockRes();
+      await controller.concluirComisionPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '503', comisionId: String(targetId) }, body: { fecha_fin: '2026-11-18' } },
+        resWrongOwner
+      );
+      assert.equal(resWrongOwner.statusCode, 404);
+
+      // Fecha anterior al inicio -> 400
+      const resBeforeStart = createMockRes();
+      await controller.concluirComisionPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '501', comisionId: String(targetId) }, body: { fecha_fin: '2026-10-15' } },
+        resBeforeStart
+      );
+      assert.equal(resBeforeStart.statusCode, 400);
+
+      // Conclusión válida -> 200, idempotente=false, auditoría RH_CONCLUIR_COMISION
+      const auditBefore = comisionAuditLogs.filter((l) => l.action === 'RH_CONCLUIR_COMISION').length;
+      const resConcluir = createMockRes();
+      await controller.concluirComisionPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '501', comisionId: String(targetId) }, body: { fecha_fin: '2026-11-18', observaciones: 'Cierre anticipado' } },
+        resConcluir
+      );
+      assert.equal(resConcluir.statusCode, 200);
+      assert.equal(resConcluir.body.idempotente, false);
+      assert.equal(resConcluir.body.comision.activo, false);
+      assert.equal(resConcluir.body.comision.estado_vigencia, 'CONCLUIDA');
+      assert.equal(comisionAuditLogs.filter((l) => l.action === 'RH_CONCLUIR_COMISION').length, auditBefore + 1);
+
+      // Conclusión idempotente -> 200, idempotente=true, NO duplica auditoría
+      const resIdemp = createMockRes();
+      await controller.concluirComisionPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '501', comisionId: String(targetId) }, body: { fecha_fin: '2026-11-18' } },
+        resIdemp
+      );
+      assert.equal(resIdemp.statusCode, 200);
+      assert.equal(resIdemp.body.idempotente, true);
+      assert.equal(comisionAuditLogs.filter((l) => l.action === 'RH_CONCLUIR_COMISION').length, auditBefore + 1);
+
+      // Fallo de auditoría en creación dispara ROLLBACK y devuelve 500
+      simulateComisionAuditFail = true;
+      comisionTxEvents.length = 0;
+      const resAuditFail = createMockRes();
+      await controller.createComisionPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '503' }, body: { area_destino_texto: 'Prueba Rollback', fecha_inicio: '2027-02-01' } },
+        resAuditFail
+      );
+      assert.equal(resAuditFail.statusCode, 500);
+      assert.equal(comisionTxEvents.includes('ROLLBACK'), true);
+      assert.equal(comisionTxEvents.includes('COMMIT'), false);
+      simulateComisionAuditFail = false;
+      passed++;
+    }
   } finally {
     pool.query = originalQuery;
     pool.connect = originalConnect;
   }
 
   console.log(
-    `RH-API.1 + RH-2B.1 + RH-2B.4A + RH-2B.4C + RH-2B.4E + RH-2B.4G.1 + RH-2B.4G.2 + RH-2B.4G.2A + RH-2C.2 + RH-4A.1A + RH-4A.1A.1 TESTS PASSED: ${passed}/54`
+    `RH-API.1 + RH-2B.1 + RH-2B.4A + RH-2B.4C + RH-2B.4E + RH-2B.4G.1 + RH-2B.4G.2 + RH-2B.4G.2A + RH-2C.2 + RH-4A.1A + RH-4A.1A.1 + RH-4A.2A + RH-4A.3A TESTS PASSED: ${passed}/60`
   );
 }
 

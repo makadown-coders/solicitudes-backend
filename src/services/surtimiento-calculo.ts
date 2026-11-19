@@ -1,4 +1,5 @@
-import { Almacen, Cabecera, Centro, Consulta, Despacho, Detalle, Fila, Informe } from '../models/solicitudes/primer-nivel/Surtimiento';
+import { Almacen, Cabecera, Centro, Consulta, Despacho, Detalle, Fila, Informe, SustitucionPotencial } from '../models/solicitudes/primer-nivel/Surtimiento';
+import { HomologoEdgeRow } from '../models/homologos/HomologoEdgeRow';
 
 const meses = 'enero febrero marzo abril mayo junio julio agosto septiembre octubre noviembre diciembre'.split(' ');
 export function mesPedido(texto: string): string | null {
@@ -31,7 +32,7 @@ export function conciliar(q: Consulta, corte: string, centros: Centro[], almacen
   function fila(u: Centro, clave: string): Fila {
     const key = JSON.stringify([u.clues,clave]);
     let f=filas.get(key);
-    if (!f) { f={tieneMovimiento:false,solicitudIds:[],clues:u.clues,nombre:u.nombre,municipio:u.municipio,clave,descripcion:'',medida:'',presentacionSas:'',solicitado:null,surtido:0,pendiente:null,excedente:null,cobertura:null,relacion:null,estado:'',validar:false}; filas.set(key,f); }
+    if (!f) { f={tieneMovimiento:false,solicitudIds:[],clues:u.clues,nombre:u.nombre,municipio:u.municipio,clave,descripcion:'',solicitado:null,surtido:0,pendiente:null,excedente:null,cobertura:null,relacion:null,estado:''}; filas.set(key,f); }
     return f;
   }
   const conDetalle = new Set<string>();
@@ -43,14 +44,11 @@ export function conciliar(q: Consulta, corte: string, centros: Centro[], almacen
     f.solicitudIds.push(d.id); // El servicio entrega un detalle agregado por cabecera y clave.
     f.solicitado = (f.solicitado ?? 0) + d.cantidad;
     f.descripcion = d.descripcion;
-    if (f.medida && d.medidas && f.medida !== d.medidas) f.estado='Unidades de medida por validar';
-    if (d.medidas) f.medida=d.medidas;
     if (d.invalido || !d.clave) f.estado='Detalle de solicitud por validar';
   }
   for (const [id,clues] of cabPorId) if (!conDetalle.has(id)) avisos.add(clues+' · Pedido sin renglones: '+id);
   const conSalida = new Set<Fila>();
   const observadas = new Set<number>();
-  const comparables=new Set(q.presentaciones);
   const origenDudoso=new Set<string>();
   const ultimaFecha=new Map<number,string>();
   for (const s of salidas) {
@@ -70,7 +68,6 @@ export function conciliar(q: Consulta, corte: string, centros: Centro[], almacen
     const f=fila(u,s.clave);
     f.tieneMovimiento=true;
     if (!f.descripcion) f.descripcion=s.descripcion;
-    if (s.descripcion && !f.presentacionSas.split('\n').includes(s.descripcion)) f.presentacionSas += (f.presentacionSas?'\n':'')+s.descripcion;
     if (s.invalidas) {
       avisos.add(u.clues+' · '+s.clave+' · '+s.dia+' · almacén '+s.origen+' · cantidades inválidas excluidas: '+s.invalidas);
       f.estado='Cantidad SAS por validar';
@@ -90,19 +87,68 @@ export function conciliar(q: Consulta, corte: string, centros: Centro[], almacen
     else if(origenDudoso.has(JSON.stringify([centrosPorClues.get(f.clues)?.id,f.clave]))) f.estado='Almacén de origen por validar';
     if (!grupos.has(f.clues) && periodoDudoso.has(f.clues) && !f.estado) f.estado='Periodo del pedido por validar';
     if (f.solicitado===null && !f.estado) f.estado='Salida sin solicitud identificada';
-    if (!f.estado && faltan) f.estado=conSalida.has(f)?'Información SAS incompleta':'Sin salida registrada al corte · información incompleta';
     if (!f.estado && f.solicitado===0) f.estado='Solicitud en cero';
-    if (!f.estado && f.surtido!==0) {
-      f.validar=true;
-      if (!comparables.has(JSON.stringify([f.clues,f.clave]))) f.estado='Presentación por validar';
-    }
     if (!f.estado && f.solicitado!==null && f.solicitado>0) {
       f.pendiente=Math.max(f.solicitado-f.surtido,0); f.excedente=Math.max(f.surtido-f.solicitado,0);
-      f.relacion=100*f.surtido/f.solicitado; f.cobertura=Math.min(f.relacion,100);
+      f.relacion=100*f.surtido/f.solicitado; f.cobertura=100*Math.min(Math.max(f.surtido,0),f.solicitado)/f.solicitado;
       f.estado=!conSalida.has(f)?(parcial?'Sin salida registrada al corte · ventana parcial':'Sin salida registrada al corte'):f.surtido===0?'Surtido neto cero':f.surtido<0?'Surtido neto negativo':f.excedente?'Excedente':f.pendiente?'Parcial':'Cubierta';
     }
+    if (faltan && f.cobertura!==null) f.estado+=' · información SAS incompleta';
     if (f.estado.includes('validar') || f.estado==='CLUES ambigua') avisos.add(f.clues+' · '+f.clave+' · '+f.estado);
     (f.solicitado===null?sinSolicitud:filasPedido).push(f);
   }
-  return {corte,almacenes,filas:filasPedido,sinSolicitud,incidencias:[...avisos],ventanas:q.ventanas};
+  return {corte,almacenes,filas:filasPedido,sinSolicitud,incidencias:[...avisos],ventanas:q.ventanas,sustituciones:[]};
+}
+
+export function detectarSustituciones(informe: Informe, relaciones: HomologoEdgeRow[]): SustitucionPotencial[] {
+  const faltantes = informe.filas.filter(f => f.pendiente !== null && f.pendiente > 0 && !!f.clave);
+  const salidas = new Map<string,Fila>();
+  for (const f of informe.sinSolicitud) {
+    if (f.clave && Number.isFinite(f.surtido) && f.surtido > 0) {
+      salidas.set(JSON.stringify([f.clues,f.clave]),f);
+    }
+  }
+
+  const directas = relaciones.filter(r => r.direccion === 'FORWARD' && Number.isFinite(Number(r.factor)) && Number(r.factor) > 0);
+  const candidatos: Array<{faltante:Fila;salida:Fila;factor:number}> = [];
+  const vistos = new Set<string>();
+  for (const faltante of faltantes) {
+    for (const relacion of directas) {
+      if (relacion.claveConsultada !== faltante.clave) continue;
+      const salida = salidas.get(JSON.stringify([faltante.clues,relacion.candidato]));
+      if (!salida) continue;
+      const id = JSON.stringify([faltante.clues,faltante.clave,relacion.candidato]);
+      if (vistos.has(id)) continue;
+      vistos.add(id);
+      candidatos.push({faltante,salida,factor:Number(relacion.factor)});
+    }
+  }
+
+  const porFaltante = new Map<string,Set<string>>();
+  const porSustituta = new Map<string,Set<string>>();
+  for (const c of candidatos) {
+    const idFaltante=JSON.stringify([c.faltante.clues,c.faltante.clave]);
+    const idSustituta=JSON.stringify([c.faltante.clues,c.salida.clave]);
+    const sustitutas=porFaltante.get(idFaltante)??new Set<string>(); sustitutas.add(c.salida.clave); porFaltante.set(idFaltante,sustitutas);
+    const solicitudes=porSustituta.get(idSustituta)??new Set<string>(); solicitudes.add(c.faltante.clave); porSustituta.set(idSustituta,solicitudes);
+  }
+
+  return candidatos.map(({faltante,salida,factor}) => {
+    const multiples=(porFaltante.get(JSON.stringify([faltante.clues,faltante.clave]))?.size??0)>1;
+    const compartida=(porSustituta.get(JSON.stringify([faltante.clues,salida.clave]))?.size??0)>1;
+    const cantidadEquivalente=salida.surtido/factor;
+    const estado = multiples && compartida ? 'Múltiples candidatos y sustituta compartida'
+      : multiples ? 'Múltiples candidatos'
+      : compartida ? 'Sustituta para varios faltantes'
+      : 'Relación única';
+    return {
+      municipio:faltante.municipio,nombre:faltante.nombre,clues:faltante.clues,
+      claveSolicitada:faltante.clave,descripcionSolicitada:faltante.descripcion,
+      pendienteDirecto:faltante.pendiente!,claveSustituta:salida.clave,
+      descripcionSas:salida.descripcion,cantidadSustituta:salida.surtido,factor,
+      cantidadEquivalente,potencialAplicable:Math.min(faltante.pendiente!,cantidadEquivalente),
+      estado,ambigua:multiples||compartida
+    };
+  }).sort((a,b)=>a.municipio.localeCompare(b.municipio)||a.nombre.localeCompare(b.nombre)||
+    a.claveSolicitada.localeCompare(b.claveSolicitada)||a.claveSustituta.localeCompare(b.claveSustituta));
 }

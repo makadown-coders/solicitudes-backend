@@ -1,6 +1,7 @@
 import { pool } from '../db/pool';
 import { Almacen, Cabecera, Centro, Consulta, Despacho, Detalle } from '../models/solicitudes/primer-nivel/Surtimiento';
-import { conciliar, mesPedido } from './surtimiento-calculo';
+import { conciliar, detectarSustituciones, mesPedido } from './surtimiento-calculo';
+import HomologosService from './homologos.service';
 
 export async function analizar(input: Consulta) {
   const client=await pool.connect();
@@ -46,8 +47,7 @@ export async function analizar(input: Consulta) {
       WHERE upper(trim(b.cluesimb))=ANY($1::text[]) ORDER BY b.created_at,b.id`,[centros.map(c=>c.clues)]);
     const {rows:detalle}=await client.query<Detalle>(`
       WITH d AS (SELECT solicitud_id::text id,upper(trim(clave)) clave,sum(cantidad)::float8 cantidad,
-        bool_or(cantidad IS NULL OR cantidad<0) OR count(DISTINCT nullif(upper(trim(unidad_medida)),''))>1 invalido,
-        string_agg(DISTINCT nullif(trim(unidad_medida),''),', ') medidas
+        bool_or(cantidad IS NULL OR cantidad<0) invalido
         FROM public.solicitud_bitacora_detalle WHERE solicitud_id=ANY($1::uuid[])
         GROUP BY solicitud_id,upper(trim(clave)))
       SELECT d.*,coalesce(i.descripcion,'') descripcion FROM d LEFT JOIN LATERAL
@@ -72,7 +72,14 @@ export async function analizar(input: Consulta) {
           AND upper(trim(v.tipo_unidad))='CENTRO DE SALUD') centro
       FROM diario d LEFT JOIN public.unidad_medica u ON u.id=d.destino
       LEFT JOIN public.unidad_medica o ON o.id=d.origen`,[JSON.stringify(ventanas),corte]);
+    const informe=conciliar({...input,ventanas},corte,centros,almacenes,cab,detalle,salidas);
+    const clavesFaltantes=Array.from(new Set(informe.filas
+      .filter(f=>f.pendiente!==null && f.pendiente>0 && !!f.clave).map(f=>f.clave)));
+    const relaciones=clavesFaltantes.length
+      ? await new HomologosService().batchForward(clavesFaltantes)
+      : [];
+    informe.sustituciones=detectarSustituciones(informe,relaciones);
     await client.query('COMMIT');
-    return conciliar({...input,ventanas},corte,centros,almacenes,cab,detalle,salidas);
+    return informe;
   } catch(error){await client.query('ROLLBACK');throw error;} finally {client.release();}
 }

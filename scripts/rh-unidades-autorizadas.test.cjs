@@ -4675,13 +4675,209 @@ async function run() {
       simulateComisionAuditFail = false;
       passed++;
     }
+
+    // =========================================================================
+    // SUITE RH-4A.3A.1: Integridad, concurrencia (verificación de bloqueo SQL),
+    //                   intervalos, vigencia y conclusión con fecha futura
+    // =========================================================================
+
+    // 61 (RH-4A.3A.1 #1-#6): Bloqueo SQL sobre public.persona FOR UPDATE (con y sin comisiones previas) + intervalos abiertos, contenidos, parciales y consecutivos
+    {
+      const rhGlobal = { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' };
+      comisionesPersonas.set(504, { id: 504, activo: true });
+      comisionesPersonas.set(505, { id: 505, activo: true });
+
+      // 1) Verificar que createComisionLaboral emite SELECT ... FROM public.persona WHERE id = $1 FOR UPDATE
+      // incluso cuando la persona (504) no tiene comisiones previas
+      comisionSqlLog.length = 0;
+      const resFirst = createMockRes();
+      await controller.createComisionPersona(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: rhGlobal,
+          params: { personaId: '504' },
+          body: { unidad_destino_id: 12, fecha_inicio: '2026-11-01', fecha_fin: '2026-11-15' },
+        },
+        resFirst
+      );
+      assert.equal(resFirst.statusCode, 201);
+      assert.equal(
+        comisionSqlLog.some((q) => /FROM public\.persona WHERE id = \$1 FOR UPDATE/i.test(q)),
+        true
+      );
+      assert.equal(
+        comisionSqlLog.some((q) => /FROM public\.rh_comision_laboral[\s\S]*FOR UPDATE/i.test(q)),
+        true
+      );
+
+      // 2) Intervalo completamente contenido (2026-11-05..2026-11-10 dentro de 2026-11-01..2026-11-15) -> 409
+      const resContained = createMockRes();
+      await controller.createComisionPersona(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: rhGlobal,
+          params: { personaId: '504' },
+          body: { unidad_destino_id: 177, fecha_inicio: '2026-11-05', fecha_fin: '2026-11-10' },
+        },
+        resContained
+      );
+      assert.equal(resContained.statusCode, 409);
+
+      // 3) Intervalo parcialmente superpuesto (2026-11-15..2026-11-30 toca el día 15) -> 409
+      const resPartial = createMockRes();
+      await controller.createComisionPersona(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: rhGlobal,
+          params: { personaId: '504' },
+          body: { unidad_destino_id: 177, fecha_inicio: '2026-11-15', fecha_fin: '2026-11-30' },
+        },
+        resPartial
+      );
+      assert.equal(resPartial.statusCode, 409);
+
+      // 4) Intervalo consecutivo sin superposición (2026-11-16..2026-11-30) -> 201
+      const resConsecutive = createMockRes();
+      await controller.createComisionPersona(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: rhGlobal,
+          params: { personaId: '504' },
+          body: { unidad_destino_id: 177, fecha_inicio: '2026-11-16', fecha_fin: '2026-11-30' },
+        },
+        resConsecutive
+      );
+      assert.equal(resConsecutive.statusCode, 201);
+
+      // 5) Intervalo abierto (fecha_fin = null) en persona 505 y rechazo de cualquier alta posterior -> 409
+      const resOpen = createMockRes();
+      await controller.createComisionPersona(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: rhGlobal,
+          params: { personaId: '505' },
+          body: { area_destino_texto: 'Dirección Médica', fecha_inicio: '2026-11-01' },
+        },
+        resOpen
+      );
+      assert.equal(resOpen.statusCode, 201);
+      assert.equal(resOpen.body.fecha_fin, null);
+      assert.equal(resOpen.body.estado_vigencia, 'VIGENTE');
+
+      const resAfterOpen = createMockRes();
+      await controller.createComisionPersona(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: rhGlobal,
+          params: { personaId: '505' },
+          body: { area_destino_texto: 'Otra Área', fecha_inicio: '2027-06-01', fecha_fin: '2027-06-30' },
+        },
+        resAfterOpen
+      );
+      assert.equal(resAfterOpen.statusCode, 409);
+
+      // Verificar cero mutaciones a rh_adscripcion_laboral
+      assert.equal(
+        comisionSqlLog.some((q) => /(INSERT|UPDATE|DELETE)\s+.*rh_adscripcion_laboral/i.test(q)),
+        false
+      );
+      passed++;
+    }
+
+    // 62 (RH-4A.3A.1 #7-#15): Vigencia (futura, vigente, terminada por fecha con activo=true, concluida administrativamente) + conclusión con fecha futura e idempotencia
+    {
+      const rhGlobal = { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' };
+
+      // Persona 504 tiene:
+      // - 2026-11-01..2026-11-15 (activo=true, fecha_fin < 2026-11-18 -> CONCLUIDA por fecha)
+      // - 2026-11-16..2026-11-30 (activo=true, vigente hoy 2026-11-18 -> VIGENTE)
+      // Agregamos una futura: 2026-12-01..2026-12-31 -> FUTURA
+      const resFutCreate = createMockRes();
+      await controller.createComisionPersona(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: rhGlobal,
+          params: { personaId: '504' },
+          body: { unidad_destino_id: 12, fecha_inicio: '2026-12-01', fecha_fin: '2026-12-31' },
+        },
+        resFutCreate
+      );
+      assert.equal(resFutCreate.statusCode, 201);
+      assert.equal(resFutCreate.body.estado_vigencia, 'FUTURA');
+
+      // Verificar filtros sobre persona 504
+      const resVig504 = createMockRes();
+      await controller.listComisionesPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '504' }, query: { estado: 'vigentes' } },
+        resVig504
+      );
+      assert.equal(resVig504.statusCode, 200);
+      assert.equal(resVig504.body.items.length, 1);
+      assert.equal(resVig504.body.items[0].fecha_inicio, '2026-11-16');
+      assert.equal(resVig504.body.items[0].estado_vigencia, 'VIGENTE');
+
+      const resFut504 = createMockRes();
+      await controller.listComisionesPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '504' }, query: { estado: 'futuras' } },
+        resFut504
+      );
+      assert.equal(resFut504.statusCode, 200);
+      assert.equal(resFut504.body.items.length, 1);
+      assert.equal(resFut504.body.items[0].estado_vigencia, 'FUTURA');
+
+      const resConc504 = createMockRes();
+      await controller.listComisionesPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '504' }, query: { estado: 'concluidas' } },
+        resConc504
+      );
+      assert.equal(resConc504.statusCode, 200);
+      assert.equal(resConc504.body.items.length, 1);
+      assert.equal(resConc504.body.items[0].activo, true);
+      assert.equal(resConc504.body.items[0].estado_vigencia, 'CONCLUIDA');
+
+      // Conclusión administrativa con fecha futura sobre la comisión abierta de persona 505
+      const openComision = comisionesRows.find((c) => c.persona_id === 505);
+      const auditCountBefore = comisionAuditLogs.length;
+      const resConcluirFuture = createMockRes();
+      await controller.concluirComisionPersona(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: rhGlobal,
+          params: { personaId: '505', comisionId: String(openComision.id) },
+          body: { fecha_fin: '2026-12-15', observaciones: 'Cierre programado' },
+        },
+        resConcluirFuture
+      );
+      assert.equal(resConcluirFuture.statusCode, 200);
+      assert.equal(resConcluirFuture.body.idempotente, false);
+      assert.equal(resConcluirFuture.body.comision.activo, false);
+      assert.equal(resConcluirFuture.body.comision.fecha_fin, '2026-12-15');
+      assert.equal(resConcluirFuture.body.comision.estado_vigencia, 'CONCLUIDA');
+      assert.equal(comisionAuditLogs.length, auditCountBefore + 1);
+
+      // Repetición idempotente -> no duplica auditoría
+      const resConcluirRepeat = createMockRes();
+      await controller.concluirComisionPersona(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: rhGlobal,
+          params: { personaId: '505', comisionId: String(openComision.id) },
+          body: { fecha_fin: '2026-12-15' },
+        },
+        resConcluirRepeat
+      );
+      assert.equal(resConcluirRepeat.statusCode, 200);
+      assert.equal(resConcluirRepeat.body.idempotente, true);
+      assert.equal(comisionAuditLogs.length, auditCountBefore + 1);
+      passed++;
+    }
   } finally {
     pool.query = originalQuery;
     pool.connect = originalConnect;
   }
 
   console.log(
-    `RH-API.1 + RH-2B.1 + RH-2B.4A + RH-2B.4C + RH-2B.4E + RH-2B.4G.1 + RH-2B.4G.2 + RH-2B.4G.2A + RH-2C.2 + RH-4A.1A + RH-4A.1A.1 + RH-4A.2A + RH-4A.3A TESTS PASSED: ${passed}/60`
+    `RH-API.1 + RH-2B.1 + RH-2B.4A + RH-2B.4C + RH-2B.4E + RH-2B.4G.1 + RH-2B.4G.2 + RH-2B.4G.2A + RH-2C.2 + RH-4A.1A + RH-4A.1A.1 + RH-4A.2A + RH-4A.3A + RH-4A.3A.1 TESTS PASSED: ${passed}/62`
   );
 }
 

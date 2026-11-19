@@ -13,8 +13,7 @@ export async function analizarSurtimiento(req: Request,res: Response) {
     !Array.isArray(q.ventanas) || !q.ventanas.length || q.ventanas.length>3 ||
     !q.ventanas.every((v:Ventana)=>v && ['AZM','AZT','AZE'].includes(v.zona) &&
       fecha(v.desde) && fecha(v.hasta) && v.desde<=v.hasta && (v.almacenId==null||Number.isSafeInteger(v.almacenId))) ||
-    new Set(q.ventanas.map((v:Ventana)=>v.zona)).size!==q.ventanas.length ||
-    !Array.isArray(q.presentaciones) || !q.presentaciones.every((x:unknown)=>typeof x==='string')) {
+    new Set(q.ventanas.map((v:Ventana)=>v.zona)).size!==q.ventanas.length) {
     res.status(400).json({error:'Revise el periodo, las ventanas y las selecciones.'}); return;
   }
   try {res.json(await analizar(q));} catch(e) {

@@ -12,6 +12,19 @@ export function mesPedido(texto: string): string | null {
   return m[4]+'-'+String(n).padStart(2,'0');
 }
 
+export function rangoUltimos30(corte: string): {desde:string;hasta:string} {
+  const fin=new Date(corte+'T00:00:00Z');
+  const inicio=new Date(fin); inicio.setUTCDate(inicio.getUTCDate()-29);
+  return {desde:inicio.toISOString().slice(0,10),hasta:corte};
+}
+
+export function cabeceraElegible(q: Consulta, c: Cabecera): boolean {
+  if ((q.modalidad??'MES_CALENDARIO')==='ULTIMOS_30_DIAS') {
+    return !!q.solicitudesDesde && !!q.solicitudesHasta && c.fecha>=q.solicitudesDesde && c.fecha<=q.solicitudesHasta;
+  }
+  return mesPedido(c.periodo)===q.mes;
+}
+
 export function conciliar(q: Consulta, corte: string, centros: Centro[], almacenes: Almacen[], cab: Cabecera[], detalle: Detalle[], salidas: Despacho[]): Informe {
   const avisos = new Set<string>();
   const periodoDudoso = new Set<string>();
@@ -19,20 +32,28 @@ export function conciliar(q: Consulta, corte: string, centros: Centro[], almacen
   const centrosPorId = new Map(centros.map(u=>[u.id,u]));
   const centrosPorClues = new Map(centros.map(u=>[u.clues,u]));
   for (const c of cab) {
-    if (!mesPedido(c.periodo)) { periodoDudoso.add(c.clues); avisos.add(c.clues+' · Pedido '+c.id+' con periodo por validar: '+(c.periodo || 'vacío')); continue; }
-    if (mesPedido(c.periodo)!==q.mes) continue;
+    if ((q.modalidad??'MES_CALENDARIO')==='MES_CALENDARIO' && !mesPedido(c.periodo)) {
+      periodoDudoso.add(c.clues); avisos.add(c.clues+' · Pedido '+c.id+' con periodo por validar: '+(c.periodo || 'vacío')); continue;
+    }
+    if (!cabeceraElegible(q,c)) continue;
     const lista = grupos.get(c.clues) || []; lista.push(c); grupos.set(c.clues,lista);
   }
   const filas = new Map<string,Fila>();
   const cabPorId = new Map<string,string>();
+  const cabecerasPorId = new Map(cab.map(c=>[c.id,c]));
+  const limitacionesTemporales: string[]=[];
   for (const [clues, lista] of grupos) {
     for (const c of lista) cabPorId.set(c.id, clues);
     if (lista.length > 1) avisos.add(clues+' · '+lista.length+' solicitudes acumuladas. Posible reexportación o corrección; se incluyeron todos los registros del periodo.');
+    if ((q.modalidad??'MES_CALENDARIO')==='ULTIMOS_30_DIAS') {
+      const ciclos=new Set(lista.map(c=>(c.periodo||'Sin periodo').trim().toLowerCase()));
+      if(ciclos.size>1) limitacionesTemporales.push(clues+' incluye solicitudes de '+ciclos.size+' ciclos; las salidas no pueden atribuirse definitivamente a una cabecera.');
+    }
   }
   function fila(u: Centro, clave: string): Fila {
     const key = JSON.stringify([u.clues,clave]);
     let f=filas.get(key);
-    if (!f) { f={tieneMovimiento:false,solicitudIds:[],clues:u.clues,nombre:u.nombre,municipio:u.municipio,clave,descripcion:'',solicitado:null,surtido:0,pendiente:null,excedente:null,cobertura:null,relacion:null,estado:''}; filas.set(key,f); }
+    if (!f) { f={tieneMovimiento:false,solicitudIds:[],solicitudes:[],clues:u.clues,nombre:u.nombre,municipio:u.municipio,jurisdiccion:u.jurisdiccion||'N/D',clave,descripcion:'',solicitado:null,surtido:0,pendiente:null,excedente:null,cobertura:null,relacion:null,estado:''}; filas.set(key,f); }
     return f;
   }
   const conDetalle = new Set<string>();
@@ -42,6 +63,8 @@ export function conciliar(q: Consulta, corte: string, centros: Centro[], almacen
     conDetalle.add(d.id);
     const f = fila(centrosPorClues.get(clues)!, d.clave);
     f.solicitudIds.push(d.id); // El servicio entrega un detalle agregado por cabecera y clave.
+    const cabecera=cabecerasPorId.get(d.id);
+    if(cabecera) f.solicitudes.push({id:cabecera.id,fecha:cabecera.fecha,periodo:cabecera.periodo,tipo:cabecera.tipo});
     f.solicitado = (f.solicitado ?? 0) + d.cantidad;
     f.descripcion = d.descripcion;
     if (d.invalido || !d.clave) f.estado='Detalle de solicitud por validar';
@@ -97,7 +120,8 @@ export function conciliar(q: Consulta, corte: string, centros: Centro[], almacen
     if (f.estado.includes('validar') || f.estado==='CLUES ambigua') avisos.add(f.clues+' · '+f.clave+' · '+f.estado);
     (f.solicitado===null?sinSolicitud:filasPedido).push(f);
   }
-  return {corte,almacenes,filas:filasPedido,sinSolicitud,incidencias:[...avisos],ventanas:q.ventanas,sustituciones:[]};
+  return {corte,modalidad:q.modalidad??'MES_CALENDARIO',solicitudesDesde:q.solicitudesDesde!,solicitudesHasta:q.solicitudesHasta!,
+    almacenes,filas:filasPedido,sinSolicitud,incidencias:[...avisos],limitacionesTemporales,ventanas:q.ventanas,sustituciones:[]};
 }
 
 export function detectarSustituciones(informe: Informe, relaciones: HomologoEdgeRow[]): SustitucionPotencial[] {
@@ -142,7 +166,7 @@ export function detectarSustituciones(informe: Informe, relaciones: HomologoEdge
       : compartida ? 'Sustituta para varios faltantes'
       : 'Relación única';
     return {
-      municipio:faltante.municipio,nombre:faltante.nombre,clues:faltante.clues,
+      municipio:faltante.municipio,jurisdiccion:faltante.jurisdiccion,nombre:faltante.nombre,clues:faltante.clues,
       claveSolicitada:faltante.clave,descripcionSolicitada:faltante.descripcion,
       pendienteDirecto:faltante.pendiente!,claveSustituta:salida.clave,
       descripcionSas:salida.descripcion,cantidadSustituta:salida.surtido,factor,

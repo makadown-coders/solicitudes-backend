@@ -31,18 +31,34 @@ class CargaMasivaService {
 
     // sigue disponible por compatibilidad
     const aliasMap = await this.precargarAlias();
+    const cluesMap = tabla === 'salida' ? await this.precargarCluesMap() : null;
+
     for (const row of datos) {
       if (row.unidad_origen_texto) {
-        const key = row.unidad_origen_texto.toLowerCase().trim();
+        const key = String(row.unidad_origen_texto).toLowerCase().trim();
         row.unidad_origen_id = aliasMap.get(key) ?? null;
       }
-      if (row.unidad_destino_texto) {
-        const key = row.unidad_destino_texto.toLowerCase().trim();
+
+      if (tabla === 'salida') {
+        let destinoId: number | null = null;
+        if (row.unidad_destino_texto) {
+          const key = String(row.unidad_destino_texto).toLowerCase().trim();
+          destinoId = aliasMap.get(key) ?? null;
+        }
+        if (destinoId === null && cluesMap && row.clues != null) {
+          const cluesKey = String(row.clues).trim().toUpperCase();
+          if (cluesKey) {
+            destinoId = cluesMap.get(cluesKey) ?? null;
+          }
+        }
+        row.unidad_destino_id = destinoId;
+      } else if (row.unidad_destino_texto) {
+        const key = String(row.unidad_destino_texto).toLowerCase().trim();
         row.unidad_destino_id = aliasMap.get(key) ?? null;
       }
     }
 
-    const columnas = Object.keys(datos[0]);
+    const columnas = Object.keys(datos[0]).filter(col => !(tabla === 'salida' && col === 'clues'));
     const registros = datos.map(obj => columnas.map(col => obj[col] ?? null));
     await this.insertarBatch(tabla, columnas, registros);
   }
@@ -102,6 +118,19 @@ class CargaMasivaService {
     rows.forEach(r => {
       if (r.alias_sas) map.set(r.alias_sas.trim(), r.unidad_medica_id);
       if (r.alias_dash) map.set(r.alias_dash.trim(), r.unidad_medica_id);
+    });
+    return map;
+  }
+
+  private async precargarCluesMap(): Promise<Map<string, number>> {
+    const map = new Map<string, number>();
+    const { rows } = await pool.query(`
+      SELECT id, UPPER(TRIM(cluesimb)) AS cluesimb
+      FROM unidad_medica
+      WHERE cluesimb IS NOT NULL AND TRIM(cluesimb) <> ''
+    `);
+    rows.forEach(r => {
+      if (r.cluesimb) map.set(r.cluesimb, r.id);
     });
     return map;
   }
@@ -167,7 +196,8 @@ class CargaMasivaService {
         descripcion text,
         programa_extra text,
         lote text,
-        fecha_caducidad date
+        fecha_caducidad date,
+        clues text
       ) ON COMMIT DROP;
     `;
   }
@@ -235,7 +265,8 @@ class CargaMasivaService {
       o.descripcion ?? null,
       o.programa_extra ?? null,
       o.lote ?? null,
-      o.fecha_caducidad ?? null
+      o.fecha_caducidad ?? null,
+      o.clues ?? null
     ];
   }
 
@@ -339,7 +370,7 @@ class CargaMasivaService {
           )
           SELECT
             ao.unidad_medica_id,
-            ad.unidad_medica_id,
+            COALESCE(ad.unidad_medica_id, um_dest.id),
             t.folio,
             t.clave_cnis,
             t.cantidad,
@@ -356,6 +387,10 @@ class CargaMasivaService {
           FROM tmp_salidas t
           LEFT JOIN alias_flat ao ON ao.alias = LOWER(t.unidad_origen_texto)
           LEFT JOIN alias_flat ad ON ad.alias = LOWER(t.unidad_destino_texto)
+          LEFT JOIN unidad_medica um_dest
+            ON ad.unidad_medica_id IS NULL
+            AND t.clues IS NOT NULL AND TRIM(t.clues) <> ''
+            AND UPPER(TRIM(um_dest.cluesimb)) = UPPER(TRIM(t.clues))
         `);
       }
 

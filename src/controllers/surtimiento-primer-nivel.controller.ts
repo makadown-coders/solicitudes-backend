@@ -10,6 +10,7 @@ function fecha(s: unknown): s is string {
 export async function analizarSurtimiento(req: Request,res: Response) {
   const q=req.body;
   if (!q || typeof q.mes!=='string' || !/^\d{4}-(0[1-9]|1[012])$/.test(q.mes) ||
+    !['MES_CALENDARIO','ULTIMOS_30_DIAS'].includes(q.modalidad??'MES_CALENDARIO') ||
     !Array.isArray(q.ventanas) || !q.ventanas.length || q.ventanas.length>3 ||
     !q.ventanas.every((v:Ventana)=>v && ['AZM','AZT','AZE'].includes(v.zona) &&
       fecha(v.desde) && fecha(v.hasta) && v.desde<=v.hasta && (v.almacenId==null||Number.isSafeInteger(v.almacenId))) ||

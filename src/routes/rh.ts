@@ -119,4 +119,32 @@ router.patch(
   controller.concluirComisionPersona.bind(controller)
 );
 
+router.get(
+  '/personas/:personaId/vacaciones',
+  requireAuth,
+  requireRhAccess(),
+  controller.listVacacionesPersona.bind(controller)
+);
+
+router.post(
+  '/personas/:personaId/vacaciones',
+  requireAuth,
+  requireRhAccess(),
+  controller.createVacacionPersona.bind(controller)
+);
+
+router.patch(
+  '/personas/:personaId/vacaciones/:registroId/anular',
+  requireAuth,
+  requireRhAccess(),
+  controller.anularVacacionPersona.bind(controller)
+);
+
+router.get(
+  '/personas/:personaId/adscripciones',
+  requireAuth,
+  requireRhAccess(),
+  controller.listAdscripcionesPersona.bind(controller)
+);
+
 export default router;

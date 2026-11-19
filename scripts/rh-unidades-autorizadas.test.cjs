@@ -3098,7 +3098,7 @@ async function run() {
       const adminRoutes = rhRouter.stack.filter(
         (l) => l.route && l.route.path !== '/mi-contexto'
       );
-      assert.equal(adminRoutes.length, 15);
+      assert.equal(adminRoutes.length, 19);
       for (const layer of adminRoutes) {
         assert.equal(
           layer.route.stack.length,
@@ -4871,13 +4871,448 @@ async function run() {
       assert.equal(comisionAuditLogs.length, auditCountBefore + 1);
       passed++;
     }
+
+    // =========================================================================
+    // SUITE RH-4A.4A: Vacaciones (GET / POST / PATCH anular)
+    // =========================================================================
+
+    const vacPersonas = new Map([
+      [601, { id: 601, activo: true }],
+      [602, { id: 602, activo: false }],
+      [603, { id: 603, activo: true }],
+    ]);
+    const vacAdscripciones = new Map([
+      [801, { id: 801, persona_id: 601 }],
+      [802, { id: 802, persona_id: 603 }],
+    ]);
+    let nextVacId = 1000;
+    const vacRows = [];
+    const vacAuditLogs = [];
+    const vacTxEvents = [];
+    const vacSqlLog = [];
+    let simulateVacAuditFail = false;
+
+    const runVacQuery = async (text, params = []) => {
+      const sql = String(text);
+      vacSqlLog.push(sql);
+
+      if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') {
+        vacTxEvents.push(sql);
+        return { rows: [], rowCount: 0 };
+      }
+      if (sql.includes('FROM public.persona') && sql.includes('WHERE id = $1')) {
+        const p = vacPersonas.get(Number(params[0]));
+        return { rows: p ? [{ ...p }] : [], rowCount: p ? 1 : 0 };
+      }
+      if (sql.includes('FROM public.rh_adscripcion_laboral') && sql.includes('WHERE id = $1')) {
+        const a = vacAdscripciones.get(Number(params[0]));
+        return { rows: a ? [{ ...a }] : [], rowCount: a ? 1 : 0 };
+      }
+      if (sql.includes('FROM public.rh_vacacion_registro') && sql.includes("estado = 'REGISTRADO'") && sql.includes('ORDER BY id ASC')) {
+        const pid = Number(params[0]);
+        const list = vacRows.filter((v) => v.persona_id === pid && v.estado === 'REGISTRADO');
+        return { rows: list.map((v) => ({ ...v })), rowCount: list.length };
+      }
+      if (sql.includes('INSERT INTO public.rh_vacacion_registro')) {
+        const id = ++nextVacId;
+        const now = '2026-11-19T14:00:00.000Z';
+        const row = {
+          id,
+          persona_id: Number(params[0]),
+          adscripcion_id: params[1] ?? null,
+          anio_ciclo: Number(params[2]),
+          periodo_referencia: String(params[3]),
+          fecha_inicio: String(params[4]),
+          fecha_fin: String(params[5]),
+          dias_registrados: Number(params[6]),
+          documento_referencia: params[7] ?? null,
+          observaciones: params[8] ?? null,
+          estado: 'REGISTRADO',
+          motivo_anulacion: null,
+          anulado_en: null,
+          creado_en: now,
+          actualizado_en: now,
+        };
+        vacRows.push(row);
+        return { rows: [{ ...row }], rowCount: 1 };
+      }
+      if (sql.includes('FROM public.rh_vacacion_registro') && sql.includes('FOR UPDATE')) {
+        const rid = Number(params[0]);
+        const pid = Number(params[1]);
+        const found = vacRows.find((v) => v.id === rid && v.persona_id === pid);
+        return { rows: found ? [{ ...found }] : [], rowCount: found ? 1 : 0 };
+      }
+      if (sql.includes('UPDATE public.rh_vacacion_registro')) {
+        const motivo = String(params[0]);
+        const rid = Number(params[2]);
+        const pid = Number(params[3]);
+        const found = vacRows.find((v) => v.id === rid && v.persona_id === pid);
+        if (!found) return { rows: [], rowCount: 0 };
+        found.estado = 'ANULADO';
+        found.motivo_anulacion = motivo;
+        found.anulado_en = '2026-11-19T15:00:00.000Z';
+        found.actualizado_en = '2026-11-19T15:00:00.000Z';
+        return { rows: [{ anulado_en: found.anulado_en, actualizado_en: found.actualizado_en }], rowCount: 1 };
+      }
+      if (sql.includes('FROM public.rh_vacacion_registro v')) {
+        const pid = Number(params[0]);
+        let list = vacRows.filter((v) => v.persona_id === pid);
+        if (sql.includes('v.anio_ciclo = $2')) {
+          list = list.filter((v) => v.anio_ciclo === Number(params[1]));
+        }
+        if (sql.includes("v.estado = 'REGISTRADO'")) {
+          list = list.filter((v) => v.estado === 'REGISTRADO');
+        } else if (sql.includes("v.estado = 'ANULADO'")) {
+          list = list.filter((v) => v.estado === 'ANULADO');
+        }
+        const rows = list.map((v) => ({ ...v, total: String(list.length) }));
+        return { rows, rowCount: rows.length };
+      }
+      if (sql.includes('INSERT INTO public.app_audit_logs')) {
+        if (simulateVacAuditFail) throw new Error('Simulated vacacion audit error');
+        vacAuditLogs.push({ userId: params[0], action: params[1], resource: params[2], payload: params[5] });
+        return { rows: [{ id: vacAuditLogs.length }], rowCount: 1 };
+      }
+      throw new Error(`Unexpected SQL in RH-4A.4A test: ${sql}`);
+    };
+
+    pool.query = runVacQuery;
+    pool.connect = async () => ({ query: runVacQuery, release: () => {} });
+
+    // 63 (RH-4A.4A): Autorización, registro válido, sin adscripción, validaciones 400/409, duplicado, superposición informada, auditoría y cero mutaciones a adscripciones
+    {
+      const rhGlobal = { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' };
+      const rhClues = { scope: 'CLUES', clues: ['BCIMB000012'], grantedBy: 'RECURSOS_HUMANOS' };
+      const adminTic = { scope: 'GLOBAL', clues: [], grantedBy: 'ADMIN_TIC' };
+
+      for (const bad of [rhClues, adminTic, undefined]) {
+        const r1 = createMockRes();
+        await controller.listVacacionesPersona({ user: { sub: AUTH_USER_UUID }, rhAccess: bad, params: { personaId: '601' }, query: {} }, r1);
+        assert.equal(r1.statusCode, 403);
+        const r2 = createMockRes();
+        await controller.createVacacionPersona({ user: { sub: AUTH_USER_UUID }, rhAccess: bad, params: { personaId: '601' }, body: {} }, r2);
+        assert.equal(r2.statusCode, 403);
+        const r3 = createMockRes();
+        await controller.anularVacacionPersona({ user: { sub: AUTH_USER_UUID }, rhAccess: bad, params: { personaId: '601', registroId: '1001' }, body: { motivo_anulacion: 'x' } }, r3);
+        assert.equal(r3.statusCode, 403);
+      }
+
+      // Fechas invertidas -> 400
+      const resInv = createMockRes();
+      await controller.createVacacionPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '601' }, body: { anio_ciclo: 2026, periodo_referencia: '1er Periodo', fecha_inicio: '2026-07-15', fecha_fin: '2026-07-01', dias_registrados: 10 } },
+        resInv
+      );
+      assert.equal(resInv.statusCode, 400);
+
+      // Días inválidos -> 400
+      const resBadDays = createMockRes();
+      await controller.createVacacionPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '601' }, body: { anio_ciclo: 2026, periodo_referencia: '1er Periodo', fecha_inicio: '2026-07-01', fecha_fin: '2026-07-15', dias_registrados: 0 } },
+        resBadDays
+      );
+      assert.equal(resBadDays.statusCode, 400);
+
+      // Persona inactiva -> 409
+      const resInactive = createMockRes();
+      await controller.createVacacionPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '602' }, body: { anio_ciclo: 2026, periodo_referencia: '1er Periodo', fecha_inicio: '2026-07-01', fecha_fin: '2026-07-10', dias_registrados: 10 } },
+        resInactive
+      );
+      assert.equal(resInactive.statusCode, 409);
+
+      // Adscripción ajena -> 409
+      const resWrongAds = createMockRes();
+      await controller.createVacacionPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '601' }, body: { adscripcion_id: 802, anio_ciclo: 2026, periodo_referencia: '1er Periodo', fecha_inicio: '2026-07-01', fecha_fin: '2026-07-10', dias_registrados: 10 } },
+        resWrongAds
+      );
+      assert.equal(resWrongAds.statusCode, 409);
+
+      // Registro válido sin adscripción -> 201
+      const resOk1 = createMockRes();
+      await controller.createVacacionPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '601' }, body: { anio_ciclo: 2026, periodo_referencia: '1er Periodo', fecha_inicio: '2026-07-01', fecha_fin: '2026-07-10', dias_registrados: 10, documento_referencia: 'OF-VAC-01' } },
+        resOk1
+      );
+      assert.equal(resOk1.statusCode, 201);
+      assert.equal(resOk1.headers['cache-control'], 'no-store');
+      assert.equal(resOk1.body.registro.adscripcion_id, null);
+      assert.equal(resOk1.body.tiene_superposicion, false);
+
+      // Duplicado exacto activo -> 409
+      const resDup = createMockRes();
+      await controller.createVacacionPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '601' }, body: { anio_ciclo: 2026, periodo_referencia: '1er Periodo', fecha_inicio: '2026-07-01', fecha_fin: '2026-07-10', dias_registrados: 10 } },
+        resDup
+      );
+      assert.equal(resDup.statusCode, 409);
+
+      // Periodo parcialmente superpuesto -> 201 con tiene_superposicion=true (informativo para RH)
+      const resOverlap = createMockRes();
+      await controller.createVacacionPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '601' }, body: { anio_ciclo: 2026, periodo_referencia: 'Extraordinario', fecha_inicio: '2026-07-08', fecha_fin: '2026-07-15', dias_registrados: 5 } },
+        resOverlap
+      );
+      assert.equal(resOverlap.statusCode, 201);
+      assert.equal(resOverlap.body.tiene_superposicion, true);
+      assert.equal(resOverlap.body.registros_superpuestos_ids.length, 1);
+
+      assert.equal(vacAuditLogs.filter((l) => l.action === 'RH_CREATE_VACACION_REGISTRO').length, 2);
+      assert.equal(vacSqlLog.some((q) => /(INSERT|UPDATE|DELETE)\s+.*rh_adscripcion_laboral/i.test(q)), false);
+      passed++;
+    }
+
+    // 64 (RH-4A.4A): Consulta sin registros, historial paginado y filtros
+    {
+      const rhGlobal = { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' };
+      const resEmpty = createMockRes();
+      await controller.listVacacionesPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '603' }, query: {} },
+        resEmpty
+      );
+      assert.equal(resEmpty.statusCode, 200);
+      assert.equal(resEmpty.headers['cache-control'], 'no-store');
+      assert.equal(resEmpty.body.items.length, 0);
+
+      const resList = createMockRes();
+      await controller.listVacacionesPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '601' }, query: { anio_ciclo: '2026', estado: 'registrados' } },
+        resList
+      );
+      assert.equal(resList.statusCode, 200);
+      assert.equal(resList.body.items.length, 2);
+      assert.equal(resList.body.total, 2);
+      passed++;
+    }
+
+    // 65 (RH-4A.4A): Anulación con motivo obligatorio, idempotencia sin duplicar auditoría y ROLLBACK ante fallo de auditoría
+    {
+      const rhGlobal = { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' };
+      const targetId = vacRows[0].id;
+
+      // Sin motivo -> 400
+      const resNoMotivo = createMockRes();
+      await controller.anularVacacionPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '601', registroId: String(targetId) }, body: { motivo_anulacion: '   ' } },
+        resNoMotivo
+      );
+      assert.equal(resNoMotivo.statusCode, 400);
+
+      // Anulación válida -> 200, idempotente=false
+      const resAnular = createMockRes();
+      await controller.anularVacacionPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '601', registroId: String(targetId) }, body: { motivo_anulacion: 'Error de captura en fechas' } },
+        resAnular
+      );
+      assert.equal(resAnular.statusCode, 200);
+      assert.equal(resAnular.body.idempotente, false);
+      assert.equal(resAnular.body.registro.estado, 'ANULADO');
+      assert.equal(vacAuditLogs.filter((l) => l.action === 'RH_ANULAR_VACACION_REGISTRO').length, 1);
+
+      // Anulación repetida -> 200, idempotente=true, no duplica auditoría
+      const resRepeat = createMockRes();
+      await controller.anularVacacionPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '601', registroId: String(targetId) }, body: { motivo_anulacion: 'Repetido' } },
+        resRepeat
+      );
+      assert.equal(resRepeat.statusCode, 200);
+      assert.equal(resRepeat.body.idempotente, true);
+      assert.equal(vacAuditLogs.filter((l) => l.action === 'RH_ANULAR_VACACION_REGISTRO').length, 1);
+
+      // Fallo de auditoría ejecuta ROLLBACK y responde 500
+      simulateVacAuditFail = true;
+      vacTxEvents.length = 0;
+      const resFail = createMockRes();
+      await controller.createVacacionPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '603' }, body: { anio_ciclo: 2026, periodo_referencia: 'Prueba Rollback', fecha_inicio: '2026-08-01', fecha_fin: '2026-08-05', dias_registrados: 5 } },
+        resFail
+      );
+      assert.equal(resFail.statusCode, 500);
+      assert.equal(vacTxEvents.includes('ROLLBACK'), true);
+      assert.equal(vacTxEvents.includes('COMMIT'), false);
+      simulateVacAuditFail = false;
+      passed++;
+    }
+
+    // =========================================================================
+    // SUITE RH-4A.5B: GET /api/rh/personas/:personaId/adscripciones
+    // =========================================================================
+
+    const adsPersonaMap = new Map([
+      [701, { id: 701 }],
+      [702, { id: 702 }],
+    ]);
+
+    const adsMockRows = [
+      {
+        adscripcion_laboral_id: 901,
+        persona_id: 701,
+        unidad_medica_id: 177,
+        unidad_nombre: 'OFICINA CENTRAL',
+        unidad_cluesimb: 'N/A',
+        matricula: 'MAT-01',
+        puesto: 'Coordinación',
+        turno: 'Matutino',
+        jornada: '8h',
+        horario: '08:00-16:00',
+        vigente_desde: '2026-01-01',
+        vigente_hasta: null,
+        activo: true,
+        observaciones: null,
+        current_date_iso: '2026-11-19',
+      },
+      {
+        adscripcion_laboral_id: 902,
+        persona_id: 701,
+        unidad_medica_id: 12,
+        unidad_nombre: 'HOSPITAL GENERAL MEXICALI',
+        unidad_cluesimb: 'BCIMB000012',
+        matricula: null,
+        puesto: 'Enfermería',
+        turno: null,
+        jornada: null,
+        horario: null,
+        vigente_desde: '2027-01-01',
+        vigente_hasta: '2027-06-30',
+        activo: true,
+        observaciones: 'Próxima',
+        current_date_iso: '2026-11-19',
+      },
+      {
+        adscripcion_laboral_id: 903,
+        persona_id: 701,
+        unidad_medica_id: 12,
+        unidad_nombre: 'HOSPITAL GENERAL MEXICALI',
+        unidad_cluesimb: 'BCIMB000012',
+        matricula: 'MAT-00',
+        puesto: 'Auxiliar',
+        turno: 'Vespertino',
+        jornada: '8h',
+        horario: '14:00-22:00',
+        vigente_desde: '2024-01-01',
+        vigente_hasta: '2024-12-31',
+        activo: true,
+        observaciones: 'Histórica por fecha',
+        current_date_iso: '2026-11-19',
+      },
+      {
+        adscripcion_laboral_id: 904,
+        persona_id: 701,
+        unidad_medica_id: 177,
+        unidad_nombre: 'OFICINA CENTRAL',
+        unidad_cluesimb: 'N/A',
+        matricula: null,
+        puesto: 'Apoyo',
+        turno: null,
+        jornada: null,
+        horario: null,
+        vigente_desde: '2025-01-01',
+        vigente_hasta: null,
+        activo: false,
+        observaciones: 'Inactiva administrativamente',
+        current_date_iso: '2026-11-19',
+      },
+    ];
+
+    const adsSqlLog = [];
+    pool.query = async (text, params = []) => {
+      const sql = String(text);
+      adsSqlLog.push(sql);
+      if (sql.includes('FROM public.persona WHERE id = $1')) {
+        const p = adsPersonaMap.get(Number(params[0]));
+        return { rows: p ? [p] : [], rowCount: p ? 1 : 0 };
+      }
+      if (sql.includes('FROM public.rh_adscripcion_laboral al')) {
+        const pid = Number(params[0]);
+        const today = '2026-11-19';
+        let list = adsMockRows.filter((r) => r.persona_id === pid);
+        if (sql.includes('AND al.activo = TRUE AND al.vigente_desde <= CURRENT_DATE')) {
+          list = list.filter((r) => r.activo && r.vigente_desde <= today && (r.vigente_hasta === null || r.vigente_hasta >= today));
+        } else if (sql.includes('AND al.activo = TRUE AND al.vigente_desde > CURRENT_DATE')) {
+          list = list.filter((r) => r.activo && r.vigente_desde > today);
+        } else if (sql.includes('AND (al.activo = FALSE')) {
+          list = list.filter((r) => !r.activo || (r.vigente_hasta !== null && r.vigente_hasta < today));
+        }
+        const rows = list.map((r) => ({ ...r, total: String(list.length) }));
+        return { rows, rowCount: rows.length };
+      }
+      throw new Error(`Unexpected SQL in RH-4A.5B test: ${sql}`);
+    };
+
+    // 66 (RH-4A.5B): Autorización (RH GLOBAL vs 403), validaciones 400/404, clasificación vigencia (VIGENTE, FUTURA, HISTORICA), Oficina Central N/A, filtros y cero escrituras SQL
+    {
+      const rhGlobal = { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' };
+      const rhClues = { scope: 'CLUES', clues: ['BCIMB000012'], grantedBy: 'RECURSOS_HUMANOS' };
+      const adminTic = { scope: 'GLOBAL', clues: [], grantedBy: 'ADMIN_TIC' };
+
+      for (const bad of [rhClues, adminTic, undefined]) {
+        const r = createMockRes();
+        await controller.listAdscripcionesPersona({ user: { sub: AUTH_USER_UUID }, rhAccess: bad, params: { personaId: '701' }, query: {} }, r);
+        assert.equal(r.statusCode, 403);
+      }
+
+      const resBadId = createMockRes();
+      await controller.listAdscripcionesPersona({ user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: 'abc' }, query: {} }, resBadId);
+      assert.equal(resBadId.statusCode, 400);
+
+      const resBadParam = createMockRes();
+      await controller.listAdscripcionesPersona({ user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '701' }, query: { foo: '1' } }, resBadParam);
+      assert.equal(resBadParam.statusCode, 400);
+
+      const res404 = createMockRes();
+      await controller.listAdscripcionesPersona({ user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '9999' }, query: {} }, res404);
+      assert.equal(res404.statusCode, 404);
+
+      const resAll = createMockRes();
+      await controller.listAdscripcionesPersona({ user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '701' }, query: { estado: 'todas' } }, resAll);
+      assert.equal(resAll.statusCode, 200);
+      assert.equal(resAll.headers['cache-control'], 'no-store');
+      assert.equal(resAll.body.items.length, 4);
+      assert.equal(resAll.body.items[0].unidad_cluesimb, 'N/A');
+      assert.equal(resAll.body.items[0].estado_vigencia, 'VIGENTE');
+      assert.equal(resAll.body.items[1].estado_vigencia, 'FUTURA');
+      assert.equal(resAll.body.items[2].estado_vigencia, 'HISTORICA');
+      assert.equal(resAll.body.items[3].estado_vigencia, 'HISTORICA');
+      assert.equal('rfc' in resAll.body.items[0], false);
+      assert.equal('curp' in resAll.body.items[0], false);
+      passed++;
+    }
+
+    // 67 (RH-4A.5B): Filtros vigentes/futuras/historicas, persona sin adscripciones y cero escrituras SQL
+    {
+      const rhGlobal = { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' };
+
+      const resVig = createMockRes();
+      await controller.listAdscripcionesPersona({ user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '701' }, query: { estado: 'vigentes' } }, resVig);
+      assert.equal(resVig.statusCode, 200);
+      assert.equal(resVig.body.items.length, 1);
+
+      const resFut = createMockRes();
+      await controller.listAdscripcionesPersona({ user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '701' }, query: { estado: 'futuras' } }, resFut);
+      assert.equal(resFut.statusCode, 200);
+      assert.equal(resFut.body.items.length, 1);
+
+      const resHist = createMockRes();
+      await controller.listAdscripcionesPersona({ user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '701' }, query: { estado: 'historicas' } }, resHist);
+      assert.equal(resHist.statusCode, 200);
+      assert.equal(resHist.body.items.length, 2);
+
+      const resEmpty = createMockRes();
+      await controller.listAdscripcionesPersona({ user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '702' }, query: {} }, resEmpty);
+      assert.equal(resEmpty.statusCode, 200);
+      assert.equal(resEmpty.body.items.length, 0);
+
+      assert.equal(adsSqlLog.some((q) => /(INSERT|UPDATE|DELETE)/i.test(q)), false);
+      passed++;
+    }
   } finally {
     pool.query = originalQuery;
     pool.connect = originalConnect;
   }
 
   console.log(
-    `RH-API.1 + RH-2B.1 + RH-2B.4A + RH-2B.4C + RH-2B.4E + RH-2B.4G.1 + RH-2B.4G.2 + RH-2B.4G.2A + RH-2C.2 + RH-4A.1A + RH-4A.1A.1 + RH-4A.2A + RH-4A.3A + RH-4A.3A.1 TESTS PASSED: ${passed}/62`
+    `RH-API.1 + RH-2B.1 + RH-2B.4A + RH-2B.4C + RH-2B.4E + RH-2B.4G.1 + RH-2B.4G.2 + RH-2B.4G.2A + RH-2C.2 + RH-4A.1A + RH-4A.1A.1 + RH-4A.2A + RH-4A.3A + RH-4A.3A.1 + RH-4A.4A + RH-4A.5B TESTS PASSED: ${passed}/67`
   );
 }
 

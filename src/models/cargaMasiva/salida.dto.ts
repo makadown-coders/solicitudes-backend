@@ -16,4 +16,5 @@ export interface SalidaDTO {
   programa_extra?: string | null;
   lote?: string | null;
   fecha_caducidad?: string | null;
+  clues?: string | null;
 }

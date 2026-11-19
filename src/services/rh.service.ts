@@ -4455,6 +4455,154 @@ export default class RhService {
       client.release();
     }
   }
+
+  async listAdscripcionesPorPersona(
+    access: RhAccessContext,
+    personaId: number,
+    opts: {
+      estado?: 'todas' | 'vigentes' | 'futuras' | 'historicas';
+      page?: number;
+      pageSize?: number;
+    } = {}
+  ): Promise<RhAdscripcionesPersonaListResult> {
+    if (access.grantedBy !== 'RECURSOS_HUMANOS' || access.scope !== 'GLOBAL') {
+      throw new RhHttpError(
+        403,
+        'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para consultar las adscripciones laborales por trabajador'
+      );
+    }
+
+    if (!Number.isInteger(personaId) || personaId <= 0) {
+      throw new RhHttpError(400, 'Identificador de persona inválido');
+    }
+
+    const personaCheck = await pool.query<{ id: number }>(
+      `SELECT id FROM public.persona WHERE id = $1 LIMIT 1`,
+      [personaId]
+    );
+    if (!personaCheck.rowCount) {
+      throw new RhHttpError(404, 'Persona no encontrada en el directorio institucional');
+    }
+
+    const rawPageSize = Number(opts.pageSize ?? 20);
+    const rawPage = Number(opts.page ?? 1);
+    const pageSize = Math.min(Math.max(Number.isFinite(rawPageSize) ? Math.trunc(rawPageSize) : 20, 1), 100);
+    const page = Math.max(Number.isFinite(rawPage) ? Math.trunc(rawPage) : 1, 1);
+    const offset = (page - 1) * pageSize;
+
+    const conditions: string[] = ['al.persona_id = $1'];
+    const estado = opts.estado ?? 'todas';
+    if (estado === 'vigentes') {
+      conditions.push(
+        'al.activo = TRUE AND al.vigente_desde <= CURRENT_DATE AND (al.vigente_hasta IS NULL OR al.vigente_hasta >= CURRENT_DATE)'
+      );
+    } else if (estado === 'futuras') {
+      conditions.push('al.activo = TRUE AND al.vigente_desde > CURRENT_DATE');
+    } else if (estado === 'historicas') {
+      conditions.push('(al.activo = FALSE OR (al.vigente_hasta IS NOT NULL AND al.vigente_hasta < CURRENT_DATE))');
+    }
+
+    const sql = `
+      SELECT
+        al.id AS adscripcion_laboral_id,
+        al.persona_id,
+        al.unidad_medica_id,
+        um.nombre AS unidad_nombre,
+        um.cluesimb AS unidad_cluesimb,
+        al.matricula,
+        al.puesto,
+        al.turno,
+        al.jornada,
+        al.horario,
+        al.vigente_desde,
+        al.vigente_hasta,
+        al.activo,
+        al.observaciones,
+        CURRENT_DATE::text AS current_date_iso,
+        COUNT(*) OVER() AS total
+      FROM public.rh_adscripcion_laboral al
+      LEFT JOIN public.unidad_medica um
+        ON um.id = al.unidad_medica_id
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY
+        al.activo DESC,
+        al.vigente_desde DESC,
+        al.id DESC
+      LIMIT $2 OFFSET $3
+    `;
+
+    const { rows } = await pool.query(sql, [personaId, pageSize, offset]);
+    const total = rows.length > 0 ? Number(rows[0].total) : 0;
+    const fallbackToday = new Date().toISOString().slice(0, 10);
+
+    const items: RhAdscripcionPersonaDto[] = rows.map((r: any) => {
+      const desde = formatDateOnly(r.vigente_desde) ?? '';
+      const hasta = formatDateOnly(r.vigente_hasta);
+      const today = formatDateOnly(r.current_date_iso) ?? fallbackToday;
+      const activo = Boolean(r.activo);
+
+      let estadoVigencia: RhAdscripcionPersonaEstadoVigencia = 'VIGENTE';
+      if (!activo || (hasta !== null && hasta < today)) {
+        estadoVigencia = 'HISTORICA';
+      } else if (desde > today) {
+        estadoVigencia = 'FUTURA';
+      }
+
+      return {
+        adscripcion_laboral_id: Number(r.adscripcion_laboral_id),
+        persona_id: Number(r.persona_id),
+        unidad_medica_id: Number(r.unidad_medica_id),
+        unidad_nombre: r.unidad_nombre != null ? String(r.unidad_nombre) : null,
+        unidad_cluesimb: r.unidad_cluesimb != null ? String(r.unidad_cluesimb) : null,
+        matricula: r.matricula != null ? String(r.matricula) : null,
+        puesto: r.puesto != null ? String(r.puesto) : null,
+        turno: r.turno != null ? String(r.turno) : null,
+        jornada: r.jornada != null ? String(r.jornada) : null,
+        horario: r.horario != null ? String(r.horario) : null,
+        vigente_desde: desde,
+        vigente_hasta: hasta,
+        activo,
+        estado_vigencia: estadoVigencia,
+        observaciones: r.observaciones != null ? String(r.observaciones) : null,
+      };
+    });
+
+    return {
+      persona_id: personaId,
+      items,
+      page,
+      pageSize,
+      total,
+    };
+  }
+}
+
+export type RhAdscripcionPersonaEstadoVigencia = 'VIGENTE' | 'FUTURA' | 'HISTORICA';
+
+export interface RhAdscripcionPersonaDto {
+  adscripcion_laboral_id: number;
+  persona_id: number;
+  unidad_medica_id: number;
+  unidad_nombre: string | null;
+  unidad_cluesimb: string | null;
+  matricula: string | null;
+  puesto: string | null;
+  turno: string | null;
+  jornada: string | null;
+  horario: string | null;
+  vigente_desde: string;
+  vigente_hasta: string | null;
+  activo: boolean;
+  estado_vigencia: RhAdscripcionPersonaEstadoVigencia;
+  observaciones: string | null;
+}
+
+export interface RhAdscripcionesPersonaListResult {
+  persona_id: number;
+  items: RhAdscripcionPersonaDto[];
+  page: number;
+  pageSize: number;
+  total: number;
 }
 
 export type RhVacacionEstado = 'REGISTRADO' | 'ANULADO';

@@ -3098,7 +3098,7 @@ async function run() {
       const adminRoutes = rhRouter.stack.filter(
         (l) => l.route && l.route.path !== '/mi-contexto'
       );
-      assert.equal(adminRoutes.length, 18);
+      assert.equal(adminRoutes.length, 19);
       for (const layer of adminRoutes) {
         assert.equal(
           layer.route.stack.length,
@@ -5134,13 +5134,185 @@ async function run() {
       simulateVacAuditFail = false;
       passed++;
     }
+
+    // =========================================================================
+    // SUITE RH-4A.5B: GET /api/rh/personas/:personaId/adscripciones
+    // =========================================================================
+
+    const adsPersonaMap = new Map([
+      [701, { id: 701 }],
+      [702, { id: 702 }],
+    ]);
+
+    const adsMockRows = [
+      {
+        adscripcion_laboral_id: 901,
+        persona_id: 701,
+        unidad_medica_id: 177,
+        unidad_nombre: 'OFICINA CENTRAL',
+        unidad_cluesimb: 'N/A',
+        matricula: 'MAT-01',
+        puesto: 'Coordinación',
+        turno: 'Matutino',
+        jornada: '8h',
+        horario: '08:00-16:00',
+        vigente_desde: '2026-01-01',
+        vigente_hasta: null,
+        activo: true,
+        observaciones: null,
+        current_date_iso: '2026-11-19',
+      },
+      {
+        adscripcion_laboral_id: 902,
+        persona_id: 701,
+        unidad_medica_id: 12,
+        unidad_nombre: 'HOSPITAL GENERAL MEXICALI',
+        unidad_cluesimb: 'BCIMB000012',
+        matricula: null,
+        puesto: 'Enfermería',
+        turno: null,
+        jornada: null,
+        horario: null,
+        vigente_desde: '2027-01-01',
+        vigente_hasta: '2027-06-30',
+        activo: true,
+        observaciones: 'Próxima',
+        current_date_iso: '2026-11-19',
+      },
+      {
+        adscripcion_laboral_id: 903,
+        persona_id: 701,
+        unidad_medica_id: 12,
+        unidad_nombre: 'HOSPITAL GENERAL MEXICALI',
+        unidad_cluesimb: 'BCIMB000012',
+        matricula: 'MAT-00',
+        puesto: 'Auxiliar',
+        turno: 'Vespertino',
+        jornada: '8h',
+        horario: '14:00-22:00',
+        vigente_desde: '2024-01-01',
+        vigente_hasta: '2024-12-31',
+        activo: true,
+        observaciones: 'Histórica por fecha',
+        current_date_iso: '2026-11-19',
+      },
+      {
+        adscripcion_laboral_id: 904,
+        persona_id: 701,
+        unidad_medica_id: 177,
+        unidad_nombre: 'OFICINA CENTRAL',
+        unidad_cluesimb: 'N/A',
+        matricula: null,
+        puesto: 'Apoyo',
+        turno: null,
+        jornada: null,
+        horario: null,
+        vigente_desde: '2025-01-01',
+        vigente_hasta: null,
+        activo: false,
+        observaciones: 'Inactiva administrativamente',
+        current_date_iso: '2026-11-19',
+      },
+    ];
+
+    const adsSqlLog = [];
+    pool.query = async (text, params = []) => {
+      const sql = String(text);
+      adsSqlLog.push(sql);
+      if (sql.includes('FROM public.persona WHERE id = $1')) {
+        const p = adsPersonaMap.get(Number(params[0]));
+        return { rows: p ? [p] : [], rowCount: p ? 1 : 0 };
+      }
+      if (sql.includes('FROM public.rh_adscripcion_laboral al')) {
+        const pid = Number(params[0]);
+        const today = '2026-11-19';
+        let list = adsMockRows.filter((r) => r.persona_id === pid);
+        if (sql.includes('AND al.activo = TRUE AND al.vigente_desde <= CURRENT_DATE')) {
+          list = list.filter((r) => r.activo && r.vigente_desde <= today && (r.vigente_hasta === null || r.vigente_hasta >= today));
+        } else if (sql.includes('AND al.activo = TRUE AND al.vigente_desde > CURRENT_DATE')) {
+          list = list.filter((r) => r.activo && r.vigente_desde > today);
+        } else if (sql.includes('AND (al.activo = FALSE')) {
+          list = list.filter((r) => !r.activo || (r.vigente_hasta !== null && r.vigente_hasta < today));
+        }
+        const rows = list.map((r) => ({ ...r, total: String(list.length) }));
+        return { rows, rowCount: rows.length };
+      }
+      throw new Error(`Unexpected SQL in RH-4A.5B test: ${sql}`);
+    };
+
+    // 66 (RH-4A.5B): Autorización (RH GLOBAL vs 403), validaciones 400/404, clasificación vigencia (VIGENTE, FUTURA, HISTORICA), Oficina Central N/A, filtros y cero escrituras SQL
+    {
+      const rhGlobal = { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' };
+      const rhClues = { scope: 'CLUES', clues: ['BCIMB000012'], grantedBy: 'RECURSOS_HUMANOS' };
+      const adminTic = { scope: 'GLOBAL', clues: [], grantedBy: 'ADMIN_TIC' };
+
+      for (const bad of [rhClues, adminTic, undefined]) {
+        const r = createMockRes();
+        await controller.listAdscripcionesPersona({ user: { sub: AUTH_USER_UUID }, rhAccess: bad, params: { personaId: '701' }, query: {} }, r);
+        assert.equal(r.statusCode, 403);
+      }
+
+      const resBadId = createMockRes();
+      await controller.listAdscripcionesPersona({ user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: 'abc' }, query: {} }, resBadId);
+      assert.equal(resBadId.statusCode, 400);
+
+      const resBadParam = createMockRes();
+      await controller.listAdscripcionesPersona({ user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '701' }, query: { foo: '1' } }, resBadParam);
+      assert.equal(resBadParam.statusCode, 400);
+
+      const res404 = createMockRes();
+      await controller.listAdscripcionesPersona({ user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '9999' }, query: {} }, res404);
+      assert.equal(res404.statusCode, 404);
+
+      const resAll = createMockRes();
+      await controller.listAdscripcionesPersona({ user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '701' }, query: { estado: 'todas' } }, resAll);
+      assert.equal(resAll.statusCode, 200);
+      assert.equal(resAll.headers['cache-control'], 'no-store');
+      assert.equal(resAll.body.items.length, 4);
+      assert.equal(resAll.body.items[0].unidad_cluesimb, 'N/A');
+      assert.equal(resAll.body.items[0].estado_vigencia, 'VIGENTE');
+      assert.equal(resAll.body.items[1].estado_vigencia, 'FUTURA');
+      assert.equal(resAll.body.items[2].estado_vigencia, 'HISTORICA');
+      assert.equal(resAll.body.items[3].estado_vigencia, 'HISTORICA');
+      assert.equal('rfc' in resAll.body.items[0], false);
+      assert.equal('curp' in resAll.body.items[0], false);
+      passed++;
+    }
+
+    // 67 (RH-4A.5B): Filtros vigentes/futuras/historicas, persona sin adscripciones y cero escrituras SQL
+    {
+      const rhGlobal = { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' };
+
+      const resVig = createMockRes();
+      await controller.listAdscripcionesPersona({ user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '701' }, query: { estado: 'vigentes' } }, resVig);
+      assert.equal(resVig.statusCode, 200);
+      assert.equal(resVig.body.items.length, 1);
+
+      const resFut = createMockRes();
+      await controller.listAdscripcionesPersona({ user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '701' }, query: { estado: 'futuras' } }, resFut);
+      assert.equal(resFut.statusCode, 200);
+      assert.equal(resFut.body.items.length, 1);
+
+      const resHist = createMockRes();
+      await controller.listAdscripcionesPersona({ user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '701' }, query: { estado: 'historicas' } }, resHist);
+      assert.equal(resHist.statusCode, 200);
+      assert.equal(resHist.body.items.length, 2);
+
+      const resEmpty = createMockRes();
+      await controller.listAdscripcionesPersona({ user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '702' }, query: {} }, resEmpty);
+      assert.equal(resEmpty.statusCode, 200);
+      assert.equal(resEmpty.body.items.length, 0);
+
+      assert.equal(adsSqlLog.some((q) => /(INSERT|UPDATE|DELETE)/i.test(q)), false);
+      passed++;
+    }
   } finally {
     pool.query = originalQuery;
     pool.connect = originalConnect;
   }
 
   console.log(
-    `RH-API.1 + RH-2B.1 + RH-2B.4A + RH-2B.4C + RH-2B.4E + RH-2B.4G.1 + RH-2B.4G.2 + RH-2B.4G.2A + RH-2C.2 + RH-4A.1A + RH-4A.1A.1 + RH-4A.2A + RH-4A.3A + RH-4A.3A.1 + RH-4A.4A TESTS PASSED: ${passed}/65`
+    `RH-API.1 + RH-2B.1 + RH-2B.4A + RH-2B.4C + RH-2B.4E + RH-2B.4G.1 + RH-2B.4G.2 + RH-2B.4G.2A + RH-2C.2 + RH-4A.1A + RH-4A.1A.1 + RH-4A.2A + RH-4A.3A + RH-4A.3A.1 + RH-4A.4A + RH-4A.5B TESTS PASSED: ${passed}/67`
   );
 }
 

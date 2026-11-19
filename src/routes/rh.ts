@@ -140,4 +140,11 @@ router.patch(
   controller.anularVacacionPersona.bind(controller)
 );
 
+router.get(
+  '/personas/:personaId/adscripciones',
+  requireAuth,
+  requireRhAccess(),
+  controller.listAdscripcionesPersona.bind(controller)
+);
+
 export default router;

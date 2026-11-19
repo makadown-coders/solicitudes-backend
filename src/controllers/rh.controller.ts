@@ -164,6 +164,12 @@ const ALLOWED_ANULAR_VACACION_KEYS: ReadonlySet<string> = new Set([
   'motivo_anulacion',
 ]);
 
+const ALLOWED_LIST_ADSCRIPCIONES_PERSONA_QUERY_KEYS: ReadonlySet<string> = new Set([
+  'estado',
+  'page',
+  'pageSize',
+]);
+
 export default class RhController {
   private readonly service = new RhService();
 
@@ -1373,6 +1379,79 @@ export default class RhController {
       }
       console.error('Error en PATCH /api/rh/personas/:personaId/vacaciones/:registroId/anular');
       res.status(500).json({ error: 'Error interno al anular el registro vacacional' });
+    }
+  }
+
+  async listAdscripcionesPersona(req: RhAuthenticatedRequest, res: Response): Promise<void> {
+    if (typeof req.user?.sub !== 'string' || !req.user.sub.trim()) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    if (!req.rhAccess) {
+      res.status(403).json({ error: 'Permiso insuficiente' });
+      return;
+    }
+
+    if (req.rhAccess.grantedBy !== 'RECURSOS_HUMANOS' || req.rhAccess.scope !== 'GLOBAL') {
+      res.status(403).json({
+        error:
+          'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para consultar las adscripciones laborales por trabajador',
+      });
+      return;
+    }
+
+    const personaId = parseUnidadIdParam(req.params?.personaId);
+    if (personaId === null) {
+      res.status(400).json({ error: 'Identificador de persona inválido' });
+      return;
+    }
+
+    const queryObj = (req.query ?? {}) as Record<string, unknown>;
+    for (const key of Object.keys(queryObj)) {
+      if (!ALLOWED_LIST_ADSCRIPCIONES_PERSONA_QUERY_KEYS.has(key)) {
+        res.status(400).json({ error: `Parámetro de consulta no permitido: ${key}` });
+        return;
+      }
+    }
+
+    if (isInvalidNonStringQuery(queryObj.estado)) {
+      res.status(400).json({ error: 'Parámetro estado inválido' });
+      return;
+    }
+
+    const rawEstado = extractSingleStringQuery(queryObj.estado)?.trim().toLowerCase() ?? 'todas';
+    if (!['todas', 'vigentes', 'futuras', 'historicas'].includes(rawEstado)) {
+      res.status(400).json({
+        error: 'Parámetro estado inválido (permitidos: todas, vigentes, futuras, historicas)',
+      });
+      return;
+    }
+
+    const parsedPagination = parsePaginationAndSearchQuery(queryObj);
+    if (!parsedPagination.ok) {
+      res.status(400).json({ error: parsedPagination.error });
+      return;
+    }
+
+    try {
+      const result = await this.service.listAdscripcionesPorPersona(req.rhAccess, personaId, {
+        estado: rawEstado as 'todas' | 'vigentes' | 'futuras' | 'historicas',
+        page: parsedPagination.page,
+        pageSize: parsedPagination.pageSize,
+      });
+
+      if (typeof res.set === 'function') {
+        res.set('Cache-Control', 'no-store');
+      }
+      res.status(200).json(result);
+    } catch (err) {
+      if (err instanceof RhHttpError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      console.error('Error en GET /api/rh/personas/:personaId/adscripciones');
+      res.status(500).json({ error: 'Error interno al consultar las adscripciones laborales' });
     }
   }
 }

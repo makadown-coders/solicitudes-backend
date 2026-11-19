@@ -1,6 +1,6 @@
 import { pool } from '../db/pool';
 import { Almacen, Cabecera, Centro, Consulta, Despacho, Detalle } from '../models/solicitudes/primer-nivel/Surtimiento';
-import { conciliar, detectarSustituciones, mesPedido } from './surtimiento-calculo';
+import { cabeceraElegible, conciliar, detectarSustituciones, rangoUltimos30 } from './surtimiento-calculo';
 import HomologosService from './homologos.service';
 
 export async function analizar(input: Consulta) {
@@ -8,6 +8,21 @@ export async function analizar(input: Consulta) {
   try {
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
     const {rows:[{corte}]}=await client.query("SELECT (now() AT TIME ZONE 'America/Tijuana')::date::text AS corte");
+    const modalidad=input.modalidad??'MES_CALENDARIO';
+    const rangoBase=rangoUltimos30(corte);
+    if(modalidad==='ULTIMOS_30_DIAS' && input.ventanas.some(v=>v.desde>rangoBase.desde)) {
+      throw new RangeError('La fecha inicial puede conservarse o moverse hacia atrás para ampliar el análisis.');
+    }
+    const rango=modalidad==='ULTIMOS_30_DIAS' ? {
+      // La ventana inicia en 30 días, pero puede ampliarse hacia atrás.
+      // BETWEEN conserva inclusivos el día inicial y la fecha de corte.
+      desde:input.ventanas.reduce((min,v)=>v.desde<min?v.desde:min,rangoBase.desde),
+      hasta:corte
+    } : {
+      desde:input.mes+'-01',
+      hasta:new Date(Date.UTC(Number(input.mes.slice(0,4)),Number(input.mes.slice(5,7)),0)).toISOString().slice(0,10)
+    };
+    const consulta: Consulta={...input,modalidad,solicitudesDesde:rango.desde,solicitudesHasta:rango.hasta};
     const {rows:almacenes}=await client.query<Almacen>(`
       WITH zonas_institucionales(zona, cluesimb) AS (
         VALUES ('AZM','BCIMB001405'), ('AZT','BCIMB001335'), ('AZE','BCIMB001340')
@@ -36,15 +51,24 @@ export async function analizar(input: Consulta) {
     const {rows:centros}=await client.query<Centro>(`
       WITH catalogo AS (SELECT id,nombre,activo,upper(trim(cluesimb)) clues,
         count(*) OVER (PARTITION BY upper(trim(cluesimb)))=1 unico FROM public.unidad_medica)
-      SELECT u.id,u.clues,u.nombre,u.unico,max(v.nombre_municipio) municipio
+      SELECT u.id,u.clues,u.nombre,u.unico,max(v.nombre_municipio) municipio,
+        CASE
+          WHEN u.clues='BCIMB000133' THEN 'MEXICALI'
+          WHEN upper(trim(max(v.nombre_municipio))) IN ('TIJUANA','TECATE','PLAYAS DE ROSARITO') THEN 'TIJUANA'
+          WHEN upper(trim(max(v.nombre_municipio))) IN ('MEXICALI','SAN FELIPE') THEN 'MEXICALI'
+          WHEN upper(trim(max(v.nombre_municipio))) IN ('ENSENADA','SAN QUINTIN','SAN QUINTÍN') THEN 'ENSENADA'
+          ELSE upper(trim(max(v.nombre_municipio)))
+        END jurisdiccion
       FROM catalogo u JOIN public.v_unidad_medica_detalle v ON v.id=u.id
       WHERE u.activo AND nullif(u.clues,'') IS NOT NULL AND upper(trim(v.tipo_unidad))='CENTRO DE SALUD'
       GROUP BY u.id,u.clues,u.nombre,u.unico`);
     const {rows:cab}=await client.query<Cabecera>(`
       SELECT b.id::text,upper(trim(b.cluesimb)) clues,b.periodo_texto periodo,
-        b.created_day::text fecha,b.tipo_pedido tipo,EXISTS(SELECT 1 FROM public.solicitud_primer_nivel_contexto c
+        (b.created_at AT TIME ZONE 'America/Tijuana')::date::text fecha,b.tipo_pedido tipo,EXISTS(SELECT 1 FROM public.solicitud_primer_nivel_contexto c
         WHERE c.solicitud_id=b.id) contexto FROM public.solicitud_bitacora b
-      WHERE upper(trim(b.cluesimb))=ANY($1::text[]) ORDER BY b.created_at,b.id`,[centros.map(c=>c.clues)]);
+      WHERE upper(trim(b.cluesimb))=ANY($1::text[])
+        AND ($2::text<>'ULTIMOS_30_DIAS' OR (b.created_at AT TIME ZONE 'America/Tijuana')::date BETWEEN $3::date AND $4::date)
+      ORDER BY b.created_at,b.id`,[centros.map(c=>c.clues),modalidad,rango.desde,rango.hasta]);
     const {rows:detalle}=await client.query<Detalle>(`
       WITH d AS (SELECT solicitud_id::text id,upper(trim(clave)) clave,sum(cantidad)::float8 cantidad,
         bool_or(cantidad IS NULL OR cantidad<0) invalido
@@ -52,7 +76,7 @@ export async function analizar(input: Consulta) {
         GROUP BY solicitud_id,upper(trim(clave)))
       SELECT d.*,coalesce(i.descripcion,'') descripcion FROM d LEFT JOIN LATERAL
         (SELECT descripcion FROM cnis.insumo WHERE upper(trim(clave))=d.clave
-        ORDER BY activo DESC,id DESC LIMIT 1) i ON true`,[cab.filter(c=>mesPedido(c.periodo)===input.mes).map(c=>c.id)]);
+        ORDER BY activo DESC,id DESC LIMIT 1) i ON true`,[cab.filter(c=>cabeceraElegible(consulta,c)).map(c=>c.id)]);
     const {rows:salidas}=await client.query<Despacho>(`
       WITH ventanas AS (SELECT * FROM jsonb_to_recordset($1::jsonb) AS v("almacenId" int,desde date,hasta date)),
       diario AS (SELECT s.fecha_entregado::date dia,s.unidad_origen_id origen,s.unidad_destino_id destino,
@@ -72,7 +96,7 @@ export async function analizar(input: Consulta) {
           AND upper(trim(v.tipo_unidad))='CENTRO DE SALUD') centro
       FROM diario d LEFT JOIN public.unidad_medica u ON u.id=d.destino
       LEFT JOIN public.unidad_medica o ON o.id=d.origen`,[JSON.stringify(ventanas),corte]);
-    const informe=conciliar({...input,ventanas},corte,centros,almacenes,cab,detalle,salidas);
+    const informe=conciliar({...consulta,ventanas},corte,centros,almacenes,cab,detalle,salidas);
     const clavesFaltantes=Array.from(new Set(informe.filas
       .filter(f=>f.pendiente!==null && f.pendiente>0 && !!f.clave).map(f=>f.clave)));
     const relaciones=clavesFaltantes.length

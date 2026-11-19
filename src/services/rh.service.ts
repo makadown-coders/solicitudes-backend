@@ -3933,4 +3933,565 @@ export default class RhService {
       client.release();
     }
   }
+
+  async listVacacionesPorPersona(
+    access: RhAccessContext,
+    personaId: number,
+    opts: {
+      anioCiclo?: number;
+      estado?: 'todos' | 'registrados' | 'anulados';
+      page?: number;
+      pageSize?: number;
+    } = {}
+  ): Promise<RhVacacionesListResult> {
+    if (access.grantedBy !== 'RECURSOS_HUMANOS' || access.scope !== 'GLOBAL') {
+      throw new RhHttpError(
+        403,
+        'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para consultar vacaciones'
+      );
+    }
+
+    if (!Number.isInteger(personaId) || personaId <= 0) {
+      throw new RhHttpError(400, 'Identificador de persona inválido');
+    }
+
+    const personaCheck = await pool.query<{ id: number }>(
+      `SELECT id FROM public.persona WHERE id = $1 LIMIT 1`,
+      [personaId]
+    );
+    if (!personaCheck.rowCount) {
+      throw new RhHttpError(404, 'Persona no encontrada en el directorio institucional');
+    }
+
+    const rawPageSize = Number(opts.pageSize ?? 20);
+    const rawPage = Number(opts.page ?? 1);
+    const pageSize = Math.min(Math.max(Number.isFinite(rawPageSize) ? Math.trunc(rawPageSize) : 20, 1), 100);
+    const page = Math.max(Number.isFinite(rawPage) ? Math.trunc(rawPage) : 1, 1);
+    const offset = (page - 1) * pageSize;
+
+    const conditions: string[] = ['v.persona_id = $1'];
+    const params: unknown[] = [personaId];
+
+    if (opts.anioCiclo !== undefined) {
+      params.push(opts.anioCiclo);
+      conditions.push(`v.anio_ciclo = $${params.length}`);
+    }
+
+    const estado = opts.estado ?? 'todos';
+    if (estado === 'registrados') {
+      conditions.push(`v.estado = 'REGISTRADO'`);
+    } else if (estado === 'anulados') {
+      conditions.push(`v.estado = 'ANULADO'`);
+    }
+
+    params.push(pageSize);
+    const limitIdx = params.length;
+    params.push(offset);
+    const offsetIdx = params.length;
+
+    const sql = `
+      SELECT
+        v.id,
+        v.persona_id,
+        v.adscripcion_id,
+        v.anio_ciclo,
+        v.periodo_referencia,
+        v.fecha_inicio,
+        v.fecha_fin,
+        v.dias_registrados,
+        v.documento_referencia,
+        v.observaciones,
+        v.estado,
+        v.motivo_anulacion,
+        v.anulado_en,
+        v.creado_en,
+        v.actualizado_en,
+        COUNT(*) OVER() AS total
+      FROM public.rh_vacacion_registro v
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY
+        v.anio_ciclo DESC,
+        v.fecha_inicio DESC,
+        v.id DESC
+      LIMIT $${limitIdx} OFFSET $${offsetIdx}
+    `;
+
+    const { rows } = await pool.query(sql, params);
+    const total = rows.length > 0 ? Number(rows[0].total) : 0;
+
+    const items: RhVacacionRegistroDto[] = rows.map((r: any) => ({
+      id: Number(r.id),
+      persona_id: Number(r.persona_id),
+      adscripcion_id: r.adscripcion_id != null ? Number(r.adscripcion_id) : null,
+      anio_ciclo: Number(r.anio_ciclo),
+      periodo_referencia: String(r.periodo_referencia),
+      fecha_inicio: formatDateOnly(r.fecha_inicio) ?? '',
+      fecha_fin: formatDateOnly(r.fecha_fin) ?? '',
+      dias_registrados: Number(r.dias_registrados),
+      documento_referencia: r.documento_referencia != null ? String(r.documento_referencia) : null,
+      observaciones: r.observaciones != null ? String(r.observaciones) : null,
+      estado: String(r.estado) === 'ANULADO' ? 'ANULADO' : 'REGISTRADO',
+      motivo_anulacion: r.motivo_anulacion != null ? String(r.motivo_anulacion) : null,
+      anulado_en: r.anulado_en != null ? new Date(r.anulado_en).toISOString() : null,
+      creado_en: r.creado_en != null ? new Date(r.creado_en).toISOString() : '',
+      actualizado_en: r.actualizado_en != null ? new Date(r.actualizado_en).toISOString() : '',
+    }));
+
+    return {
+      persona_id: personaId,
+      items,
+      page,
+      pageSize,
+      total,
+    };
+  }
+
+  async createVacacionRegistro(
+    access: RhAccessContext,
+    personaId: number,
+    input: Record<string, unknown>,
+    auditMeta: RhAuditMeta
+  ): Promise<RhCreateVacacionResult> {
+    if (access.grantedBy !== 'RECURSOS_HUMANOS' || access.scope !== 'GLOBAL') {
+      throw new RhHttpError(
+        403,
+        'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para registrar vacaciones'
+      );
+    }
+
+    const rawUserId = typeof auditMeta?.userId === 'string' ? auditMeta.userId.trim() : '';
+    if (!UUID_REGEX.test(rawUserId)) {
+      throw new RhHttpError(401, 'Unauthorized');
+    }
+
+    if (!Number.isInteger(personaId) || personaId <= 0) {
+      throw new RhHttpError(400, 'Identificador de persona inválido');
+    }
+
+    const hasOwn = (k: string): boolean => Object.prototype.hasOwnProperty.call(input, k);
+
+    let adscripcionId: number | null = null;
+    if (hasOwn('adscripcion_id') && input.adscripcion_id !== null && input.adscripcion_id !== undefined) {
+      if (
+        typeof input.adscripcion_id !== 'number' ||
+        !Number.isSafeInteger(input.adscripcion_id) ||
+        input.adscripcion_id <= 0
+      ) {
+        throw new RhHttpError(400, 'El campo "adscripcion_id" debe ser un entero positivo o null');
+      }
+      adscripcionId = input.adscripcion_id;
+    }
+
+    if (
+      typeof input.anio_ciclo !== 'number' ||
+      !Number.isInteger(input.anio_ciclo) ||
+      input.anio_ciclo < 1990 ||
+      input.anio_ciclo > 2100
+    ) {
+      throw new RhHttpError(400, 'El campo "anio_ciclo" debe ser un año entero válido (1990-2100)');
+    }
+    const anioCiclo = input.anio_ciclo;
+
+    const periodoReferencia = normalizeOptionalVarchar(
+      input.periodo_referencia,
+      'periodo_referencia',
+      80
+    );
+    if (!periodoReferencia) {
+      throw new RhHttpError(400, 'El campo "periodo_referencia" es obligatorio');
+    }
+
+    const fechaInicio = parseStrictIsoDate(input.fecha_inicio, 'fecha_inicio');
+    const fechaFin = parseStrictIsoDate(input.fecha_fin, 'fecha_fin');
+    if (fechaFin < fechaInicio) {
+      throw new RhHttpError(400, 'La fecha "fecha_fin" no puede ser anterior a "fecha_inicio"');
+    }
+
+    if (
+      typeof input.dias_registrados !== 'number' ||
+      !Number.isInteger(input.dias_registrados) ||
+      input.dias_registrados < 1 ||
+      input.dias_registrados > 366
+    ) {
+      throw new RhHttpError(
+        400,
+        'El campo "dias_registrados" debe ser un número entero entre 1 y 366'
+      );
+    }
+    const diasRegistrados = input.dias_registrados;
+
+    const documentoReferencia = hasOwn('documento_referencia')
+      ? normalizeOptionalVarchar(input.documento_referencia, 'documento_referencia', 120)
+      : null;
+    const observaciones = hasOwn('observaciones')
+      ? normalizeOptionalVarchar(input.observaciones, 'observaciones', 2000)
+      : null;
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const personaRes = await client.query<{ id: number; activo: boolean }>(
+        `SELECT id, activo FROM public.persona WHERE id = $1 FOR UPDATE`,
+        [personaId]
+      );
+      if (!personaRes.rowCount) {
+        throw new RhHttpError(404, 'Persona no encontrada en el directorio institucional');
+      }
+      if (personaRes.rows[0].activo !== true) {
+        throw new RhHttpError(
+          409,
+          'No se puede registrar un periodo vacacional para una persona inactiva en el padrón'
+        );
+      }
+
+      if (adscripcionId !== null) {
+        const adsRes = await client.query<{ id: number; persona_id: number }>(
+          `SELECT id, persona_id FROM public.rh_adscripcion_laboral WHERE id = $1 LIMIT 1`,
+          [adscripcionId]
+        );
+        if (!adsRes.rowCount) {
+          throw new RhHttpError(404, 'La adscripción laboral especificada no existe');
+        }
+        if (Number(adsRes.rows[0].persona_id) !== personaId) {
+          throw new RhHttpError(
+            409,
+            'La adscripción laboral especificada pertenece a otra persona'
+          );
+        }
+      }
+
+      // Verificar duplicado exacto activo y detectar posibles superposiciones (informativas para RH)
+      const existingRes = await client.query<{
+        id: number;
+        anio_ciclo: number;
+        fecha_inicio: unknown;
+        fecha_fin: unknown;
+      }>(
+        `SELECT id, anio_ciclo, fecha_inicio, fecha_fin
+           FROM public.rh_vacacion_registro
+          WHERE persona_id = $1
+            AND estado = 'REGISTRADO'
+          ORDER BY id ASC`,
+        [personaId]
+      );
+
+      const overlappingIds: number[] = [];
+      for (const ex of existingRes.rows) {
+        const exInicio = formatDateOnly(ex.fecha_inicio) ?? '';
+        const exFin = formatDateOnly(ex.fecha_fin) ?? '';
+        if (
+          Number(ex.anio_ciclo) === anioCiclo &&
+          exInicio === fechaInicio &&
+          exFin === fechaFin
+        ) {
+          throw new RhHttpError(
+            409,
+            'Ya existe un registro vacacional activo idéntico para esa persona, ciclo y fechas'
+          );
+        }
+        if (dateRangesOverlap(fechaInicio, fechaFin, exInicio, exFin)) {
+          overlappingIds.push(Number(ex.id));
+        }
+      }
+
+      const insertRes = await client.query<any>(
+        `INSERT INTO public.rh_vacacion_registro (
+           persona_id,
+           adscripcion_id,
+           anio_ciclo,
+           periodo_referencia,
+           fecha_inicio,
+           fecha_fin,
+           dias_registrados,
+           documento_referencia,
+           observaciones,
+           estado,
+           creado_por,
+           actualizado_por
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'REGISTRADO', $10, $10)
+         RETURNING
+           id, persona_id, adscripcion_id, anio_ciclo, periodo_referencia,
+           fecha_inicio, fecha_fin, dias_registrados, documento_referencia,
+           observaciones, estado, motivo_anulacion, anulado_en, creado_en, actualizado_en`,
+        [
+          personaId,
+          adscripcionId,
+          anioCiclo,
+          periodoReferencia,
+          fechaInicio,
+          fechaFin,
+          diasRegistrados,
+          documentoReferencia,
+          observaciones,
+          rawUserId,
+        ]
+      );
+
+      const created = insertRes.rows[0];
+      const registroId = Number(created.id);
+
+      const auditPayload = {
+        registro_id: registroId,
+        persona_id: personaId,
+        adscripcion_id: adscripcionId,
+        anio_ciclo: anioCiclo,
+        periodo_referencia: periodoReferencia,
+        fecha_inicio: fechaInicio,
+        fecha_fin: fechaFin,
+        dias_registrados: diasRegistrados,
+        documento_referencia: documentoReferencia,
+        tiene_superposicion: overlappingIds.length > 0,
+      };
+
+      await client.query(
+        `INSERT INTO public.app_audit_logs (user_id, action, resource, ip, user_agent, payload)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+        [
+          rawUserId,
+          'RH_CREATE_VACACION_REGISTRO',
+          `rh_vacacion_registro:${registroId}`,
+          auditMeta.ip ?? null,
+          auditMeta.userAgent ?? null,
+          JSON.stringify(auditPayload),
+        ]
+      );
+
+      await client.query('COMMIT');
+
+      return {
+        registro: {
+          id: registroId,
+          persona_id: personaId,
+          adscripcion_id: adscripcionId,
+          anio_ciclo: anioCiclo,
+          periodo_referencia: periodoReferencia,
+          fecha_inicio: formatDateOnly(created.fecha_inicio) ?? fechaInicio,
+          fecha_fin: formatDateOnly(created.fecha_fin) ?? fechaFin,
+          dias_registrados: diasRegistrados,
+          documento_referencia: documentoReferencia,
+          observaciones,
+          estado: 'REGISTRADO',
+          motivo_anulacion: null,
+          anulado_en: null,
+          creado_en: created.creado_en != null ? new Date(created.creado_en).toISOString() : '',
+          actualizado_en:
+            created.actualizado_en != null ? new Date(created.actualizado_en).toISOString() : '',
+        },
+        tiene_superposicion: overlappingIds.length > 0,
+        registros_superpuestos_ids: overlappingIds,
+      };
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // Ignore rollback failure
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async anularVacacionRegistro(
+    access: RhAccessContext,
+    personaId: number,
+    registroId: number,
+    input: Record<string, unknown>,
+    auditMeta: RhAuditMeta
+  ): Promise<RhAnularVacacionResult> {
+    if (access.grantedBy !== 'RECURSOS_HUMANOS' || access.scope !== 'GLOBAL') {
+      throw new RhHttpError(
+        403,
+        'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para anular registros vacacionales'
+      );
+    }
+
+    const rawUserId = typeof auditMeta?.userId === 'string' ? auditMeta.userId.trim() : '';
+    if (!UUID_REGEX.test(rawUserId)) {
+      throw new RhHttpError(401, 'Unauthorized');
+    }
+
+    if (!Number.isInteger(personaId) || personaId <= 0) {
+      throw new RhHttpError(400, 'Identificador de persona inválido');
+    }
+
+    if (!Number.isInteger(registroId) || registroId <= 0) {
+      throw new RhHttpError(400, 'Identificador de registro vacacional inválido');
+    }
+
+    const motivoAnulacion = normalizeOptionalVarchar(
+      input.motivo_anulacion,
+      'motivo_anulacion',
+      300
+    );
+    if (!motivoAnulacion) {
+      throw new RhHttpError(400, 'El campo "motivo_anulacion" es obligatorio');
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const regRes = await client.query<any>(
+        `SELECT
+           id, persona_id, adscripcion_id, anio_ciclo, periodo_referencia,
+           fecha_inicio, fecha_fin, dias_registrados, documento_referencia,
+           observaciones, estado, motivo_anulacion, anulado_en, creado_en, actualizado_en
+         FROM public.rh_vacacion_registro
+        WHERE id = $1
+          AND persona_id = $2
+          FOR UPDATE`,
+        [registroId, personaId]
+      );
+
+      if (!regRes.rowCount) {
+        throw new RhHttpError(404, 'Registro vacacional no encontrado para la persona especificada');
+      }
+
+      const current = regRes.rows[0];
+      if (String(current.estado) === 'ANULADO') {
+        await client.query('COMMIT');
+        return {
+          registro: {
+            id: Number(current.id),
+            persona_id: Number(current.persona_id),
+            adscripcion_id: current.adscripcion_id != null ? Number(current.adscripcion_id) : null,
+            anio_ciclo: Number(current.anio_ciclo),
+            periodo_referencia: String(current.periodo_referencia),
+            fecha_inicio: formatDateOnly(current.fecha_inicio) ?? '',
+            fecha_fin: formatDateOnly(current.fecha_fin) ?? '',
+            dias_registrados: Number(current.dias_registrados),
+            documento_referencia:
+              current.documento_referencia != null ? String(current.documento_referencia) : null,
+            observaciones: current.observaciones != null ? String(current.observaciones) : null,
+            estado: 'ANULADO',
+            motivo_anulacion:
+              current.motivo_anulacion != null ? String(current.motivo_anulacion) : null,
+            anulado_en: current.anulado_en != null ? new Date(current.anulado_en).toISOString() : null,
+            creado_en: current.creado_en != null ? new Date(current.creado_en).toISOString() : '',
+            actualizado_en:
+              current.actualizado_en != null ? new Date(current.actualizado_en).toISOString() : '',
+          },
+          idempotente: true,
+        };
+      }
+
+      const updateRes = await client.query<any>(
+        `UPDATE public.rh_vacacion_registro
+            SET estado = 'ANULADO',
+                motivo_anulacion = $1,
+                anulado_por = $2,
+                anulado_en = NOW(),
+                actualizado_por = $2,
+                actualizado_en = NOW()
+          WHERE id = $3
+            AND persona_id = $4
+          RETURNING anulado_en, actualizado_en`,
+        [motivoAnulacion, rawUserId, registroId, personaId]
+      );
+
+      const updatedMeta = updateRes.rows[0] ?? {};
+      const auditPayload = {
+        registro_id: registroId,
+        persona_id: personaId,
+        anio_ciclo: Number(current.anio_ciclo),
+        fecha_inicio: formatDateOnly(current.fecha_inicio) ?? '',
+        fecha_fin: formatDateOnly(current.fecha_fin) ?? '',
+        motivo_anulacion: motivoAnulacion,
+      };
+
+      await client.query(
+        `INSERT INTO public.app_audit_logs (user_id, action, resource, ip, user_agent, payload)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+        [
+          rawUserId,
+          'RH_ANULAR_VACACION_REGISTRO',
+          `rh_vacacion_registro:${registroId}`,
+          auditMeta.ip ?? null,
+          auditMeta.userAgent ?? null,
+          JSON.stringify(auditPayload),
+        ]
+      );
+
+      await client.query('COMMIT');
+
+      return {
+        registro: {
+          id: Number(current.id),
+          persona_id: Number(current.persona_id),
+          adscripcion_id: current.adscripcion_id != null ? Number(current.adscripcion_id) : null,
+          anio_ciclo: Number(current.anio_ciclo),
+          periodo_referencia: String(current.periodo_referencia),
+          fecha_inicio: formatDateOnly(current.fecha_inicio) ?? '',
+          fecha_fin: formatDateOnly(current.fecha_fin) ?? '',
+          dias_registrados: Number(current.dias_registrados),
+          documento_referencia:
+            current.documento_referencia != null ? String(current.documento_referencia) : null,
+          observaciones: current.observaciones != null ? String(current.observaciones) : null,
+          estado: 'ANULADO',
+          motivo_anulacion: motivoAnulacion,
+          anulado_en:
+            updatedMeta.anulado_en != null
+              ? new Date(updatedMeta.anulado_en).toISOString()
+              : new Date().toISOString(),
+          creado_en: current.creado_en != null ? new Date(current.creado_en).toISOString() : '',
+          actualizado_en:
+            updatedMeta.actualizado_en != null
+              ? new Date(updatedMeta.actualizado_en).toISOString()
+              : new Date().toISOString(),
+        },
+        idempotente: false,
+      };
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // Ignore rollback failure
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+}
+
+export type RhVacacionEstado = 'REGISTRADO' | 'ANULADO';
+
+export interface RhVacacionRegistroDto {
+  id: number;
+  persona_id: number;
+  adscripcion_id: number | null;
+  anio_ciclo: number;
+  periodo_referencia: string;
+  fecha_inicio: string;
+  fecha_fin: string;
+  dias_registrados: number;
+  documento_referencia: string | null;
+  observaciones: string | null;
+  estado: RhVacacionEstado;
+  motivo_anulacion: string | null;
+  anulado_en: string | null;
+  creado_en: string;
+  actualizado_en: string;
+}
+
+export interface RhVacacionesListResult {
+  persona_id: number;
+  items: RhVacacionRegistroDto[];
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
+export interface RhCreateVacacionResult {
+  registro: RhVacacionRegistroDto;
+  tiene_superposicion: boolean;
+  registros_superpuestos_ids: number[];
+}
+
+export interface RhAnularVacacionResult {
+  registro: RhVacacionRegistroDto;
+  idempotente: boolean;
 }

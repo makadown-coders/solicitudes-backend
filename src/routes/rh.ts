@@ -70,4 +70,53 @@ router.post(
   controller.createAdscripcionPorUnidad.bind(controller)
 );
 
+router.get(
+  '/personas',
+  requireAuth,
+  requireRhAccess(),
+  controller.listPersonasPadron.bind(controller)
+);
+
+router.post(
+  '/personas',
+  requireAuth,
+  requireRhAccess(),
+  controller.createPersona.bind(controller)
+);
+
+router.patch(
+  '/personas/:personaId/estado',
+  requireAuth,
+  requireRhAccess(),
+  controller.updatePersonaEstado.bind(controller)
+);
+
+router.patch(
+  '/personas/:personaId/general',
+  requireAuth,
+  requireRhAccess(),
+  controller.updatePersonaGeneral.bind(controller)
+);
+
+router.get(
+  '/personas/:personaId/comisiones',
+  requireAuth,
+  requireRhAccess(),
+  controller.listComisionesPersona.bind(controller)
+);
+
+router.post(
+  '/personas/:personaId/comisiones',
+  requireAuth,
+  requireRhAccess(),
+  controller.createComisionPersona.bind(controller)
+);
+
+router.patch(
+  '/personas/:personaId/comisiones/:comisionId/concluir',
+  requireAuth,
+  requireRhAccess(),
+  controller.concluirComisionPersona.bind(controller)
+);
+
 export default router;

@@ -228,6 +228,87 @@ export interface RhMiContextoResult {
   permisos: RhMiContextoPermisos;
 }
 
+export interface RhPersonaAdminDto {
+  persona_id: number;
+  nombre_completo: string;
+  nombres: string | null;
+  apellidos: string | null;
+  cargo: string | null;
+  correo_principal: string | null;
+  unidad_medica_id: number | null;
+  tiene_rfc: boolean;
+  rfc_masked: string | null;
+  tiene_curp: boolean;
+  curp_masked: string | null;
+  activo: boolean;
+  fecha_baja: string | null;
+}
+
+export interface RhUpdatePersonaEstadoResult {
+  persona: RhPersonaAdminDto;
+  estado_anterior: boolean;
+  estado_nuevo: boolean;
+  idempotente: boolean;
+  campos_modificados: string[];
+}
+
+export interface RhPersonasPadronItem extends RhPersonaAdminDto {
+  unidad_medica_nombre: string | null;
+  unidad_medica_cluesimb: string | null;
+  tiene_cuenta_activa: boolean;
+}
+
+export interface RhPersonasPadronPagedResult {
+  items: RhPersonasPadronItem[];
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
+export interface RhPersonasPadronQueryOpts extends RhListQueryOpts {
+  estado?: 'activas' | 'inactivas' | 'todas';
+  unidadId?: number | null;
+}
+
+export interface RhUpdatePersonaGeneralResult {
+  persona: RhPersonaAdminDto;
+  idempotente: boolean;
+  campos_modificados: string[];
+}
+
+export type RhComisionEstadoVigencia = 'VIGENTE' | 'FUTURA' | 'CONCLUIDA';
+
+export interface RhComisionLaboralDto {
+  id: number;
+  persona_id: number;
+  adscripcion_origen_id: number | null;
+  sin_adscripcion_formal_origen: boolean;
+  unidad_destino_id: number | null;
+  unidad_destino_nombre: string | null;
+  unidad_destino_cluesimb: string | null;
+  area_destino_texto: string | null;
+  fecha_inicio: string;
+  fecha_fin: string | null;
+  motivo: string | null;
+  oficio_referencia: string | null;
+  observaciones: string | null;
+  activo: boolean;
+  estado_vigencia: RhComisionEstadoVigencia;
+}
+
+export interface RhComisionesListResult {
+  persona_id: number;
+  items: RhComisionLaboralDto[];
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
+export interface RhConcluirComisionResult {
+  comision: RhComisionLaboralDto;
+  idempotente: boolean;
+}
+
 export class RhHttpError extends Error {
   constructor(
     public readonly status: 400 | 401 | 403 | 404 | 409,
@@ -2397,6 +2478,1456 @@ export default class RhService {
         );
       }
 
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Alta administrativa de una persona institucional en `public.persona` (`POST /api/rh/personas`).
+   *
+   * - Exclusivo para `RECURSOS_HUMANOS GLOBAL`.
+   * - No crea cuentas en `app_users`, ni contraseñas, ni roles, ni adscripciones laborales.
+   * - Respeta el trigger `t_persona_nombre` enviando `nombres` y `apellidos` sin sobrescribir `nombre_completo`.
+   * - Mapea errores de unicidad `23505` (`uq_persona_rfc` / `uq_persona_curp`) a HTTP 409 sin revelar terceros.
+   * - Registra auditoría `RH_CREATE_PERSONA` en `public.app_audit_logs` dentro de la misma transacción.
+   */
+  async createPersonaInstitucional(
+    access: RhAccessContext,
+    input: Record<string, unknown>,
+    auditMeta: RhAuditMeta
+  ): Promise<RhPersonaAdminDto> {
+    if (access.grantedBy !== 'RECURSOS_HUMANOS' || access.scope !== 'GLOBAL') {
+      throw new RhHttpError(
+        403,
+        'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para registrar personas en el padrón institucional'
+      );
+    }
+
+    const rawUserId = typeof auditMeta?.userId === 'string' ? auditMeta.userId.trim() : '';
+    if (!UUID_REGEX.test(rawUserId)) {
+      throw new RhHttpError(401, 'Unauthorized');
+    }
+
+    const hasOwn = (k: string): boolean => Object.prototype.hasOwnProperty.call(input, k);
+
+    const nombres = normalizeCollapsedPersonNamePart(
+      hasOwn('nombres') ? input.nombres : null,
+      'nombres',
+      150
+    );
+    if (!nombres) {
+      throw new RhHttpError(400, 'El campo "nombres" es obligatorio');
+    }
+
+    const apellidos = normalizeCollapsedPersonNamePart(
+      hasOwn('apellidos') ? input.apellidos : null,
+      'apellidos',
+      150
+    );
+    if (!apellidos) {
+      throw new RhHttpError(400, 'El campo "apellidos" es obligatorio');
+    }
+
+    const combinedLength = `${nombres} ${apellidos}`.trim().length;
+    if (combinedLength > 150) {
+      throw new RhHttpError(
+        400,
+        'La combinación de "nombres" y "apellidos" no puede exceder 150 caracteres'
+      );
+    }
+
+    const rfc = hasOwn('rfc') && input.rfc !== undefined ? normalizeAndValidateRfc(input.rfc) : null;
+    const curp =
+      hasOwn('curp') && input.curp !== undefined ? normalizeAndValidateCurp(input.curp) : null;
+    const cargo = hasOwn('cargo') ? normalizeOptionalVarchar(input.cargo, 'cargo', 100) : null;
+
+    let correoPrincipal: string | null = null;
+    if (hasOwn('correo_principal') && input.correo_principal !== null && input.correo_principal !== undefined) {
+      if (typeof input.correo_principal !== 'string') {
+        throw new RhHttpError(400, 'El campo "correo_principal" debe ser una cadena de texto o null');
+      }
+      const cleanEmail = input.correo_principal.trim().toLowerCase();
+      if (cleanEmail.length > 0) {
+        if (cleanEmail.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+          throw new RhHttpError(400, 'El campo "correo_principal" no tiene un formato de correo válido');
+        }
+        correoPrincipal = cleanEmail;
+      }
+    }
+
+    let unidadMedicaId: number | null = null;
+    if (hasOwn('unidad_medica_id') && input.unidad_medica_id !== null && input.unidad_medica_id !== undefined) {
+      if (
+        typeof input.unidad_medica_id !== 'number' ||
+        !Number.isSafeInteger(input.unidad_medica_id) ||
+        input.unidad_medica_id <= 0
+      ) {
+        throw new RhHttpError(400, 'El campo "unidad_medica_id" debe ser un entero positivo o null');
+      }
+      unidadMedicaId = input.unidad_medica_id;
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      if (unidadMedicaId !== null) {
+        const umRes = await client.query<{ id: number }>(
+          `SELECT id
+             FROM public.unidad_medica
+            WHERE id = $1
+              AND activo = TRUE
+            LIMIT 1`,
+          [unidadMedicaId]
+        );
+        if (!umRes.rowCount) {
+          throw new RhHttpError(404, 'Unidad médica de referencia no encontrada o inactiva');
+        }
+      }
+
+      const insertRes = await client.query<{
+        id: number;
+        nombre_completo: string;
+        nombres: string | null;
+        apellidos: string | null;
+        cargo: string | null;
+        correo_principal: string | null;
+        unidad_medica_id: number | null;
+        rfc: string | null;
+        curp: string | null;
+        activo: boolean;
+        fecha_baja: unknown;
+      }>(
+        `INSERT INTO public.persona (
+           nombres,
+           apellidos,
+           rfc,
+           curp,
+           cargo,
+           correo_principal,
+           unidad_medica_id,
+           activo
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
+         RETURNING
+           id,
+           nombre_completo,
+           nombres,
+           apellidos,
+           cargo,
+           correo_principal,
+           unidad_medica_id,
+           rfc,
+           curp,
+           activo,
+           fecha_baja`,
+        [nombres, apellidos, rfc, curp, cargo, correoPrincipal, unidadMedicaId]
+      );
+
+      const created = insertRes.rows[0];
+      const personaId = Number(created.id);
+
+      const camposRegistrados = ['nombres', 'apellidos', 'activo'];
+      if (rfc !== null) camposRegistrados.push('rfc');
+      if (curp !== null) camposRegistrados.push('curp');
+      if (cargo !== null) camposRegistrados.push('cargo');
+      if (correoPrincipal !== null) camposRegistrados.push('correo_principal');
+      if (unidadMedicaId !== null) camposRegistrados.push('unidad_medica_id');
+
+      const auditPayload = {
+        persona_id: personaId,
+        unidad_medica_id: unidadMedicaId,
+        campos_registrados: camposRegistrados,
+      };
+
+      await client.query(
+        `INSERT INTO public.app_audit_logs (user_id, action, resource, ip, user_agent, payload)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+        [
+          rawUserId,
+          'RH_CREATE_PERSONA',
+          `persona:${personaId}`,
+          auditMeta.ip ?? null,
+          auditMeta.userAgent ?? null,
+          JSON.stringify(auditPayload),
+        ]
+      );
+
+      await client.query('COMMIT');
+
+      const rfcInfo = maskSensitiveIdentifier(created.rfc, 3);
+      const curpInfo = maskSensitiveIdentifier(created.curp, 2);
+
+      return {
+        persona_id: personaId,
+        nombre_completo: String(created.nombre_completo ?? `${nombres} ${apellidos}`.trim()),
+        nombres: created.nombres != null ? String(created.nombres) : nombres,
+        apellidos: created.apellidos != null ? String(created.apellidos) : apellidos,
+        cargo: created.cargo != null ? String(created.cargo) : null,
+        correo_principal: created.correo_principal != null ? String(created.correo_principal) : null,
+        unidad_medica_id:
+          created.unidad_medica_id != null ? Number(created.unidad_medica_id) : null,
+        tiene_rfc: rfcInfo.exists,
+        rfc_masked: rfcInfo.masked,
+        tiene_curp: curpInfo.exists,
+        curp_masked: curpInfo.masked,
+        activo: Boolean(created.activo),
+        fecha_baja: formatDateOnly(created.fecha_baja),
+      };
+    } catch (err: any) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // Ignore rollback failure
+      }
+
+      if (err && typeof err === 'object' && err.code === '23505') {
+        const constraint = String(err.constraint ?? '').toLowerCase();
+        if (constraint.includes('rfc')) {
+          throw new RhHttpError(
+            409,
+            'El RFC proporcionado ya se encuentra registrado en otra persona del directorio institucional'
+          );
+        }
+        if (constraint.includes('curp')) {
+          throw new RhHttpError(
+            409,
+            'La CURP proporcionada ya se encuentra registrada en otra persona del directorio institucional'
+          );
+        }
+        throw new RhHttpError(
+          409,
+          'Uno de los identificadores proporcionados ya se encuentra registrado en el directorio institucional'
+        );
+      }
+
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Cambio controlado de estado administrativo (`activo` y `fecha_baja`) de una persona
+   * (`PATCH /api/rh/personas/:personaId/estado`).
+   *
+   * - Exclusivo para `RECURSOS_HUMANOS GLOBAL`.
+   * - No elimina físicamente registros, ni modifica `app_users`, roles ni adscripciones.
+   * - Al desactivar (`activo = false`), bloquea con HTTP 409 si existe una cuenta activa vinculada
+   *   en `app_users` o una adscripción laboral vigente en `rh_adscripcion_laboral`.
+   * - Idempotente: si el estado solicitado coincide con el actual, no ejecuta UPDATE ni duplica auditoría.
+   * - Registra `RH_UPDATE_PERSONA_ESTADO` en `app_audit_logs` dentro de la misma transacción.
+   */
+  async updatePersonaEstadoAdministrativo(
+    access: RhAccessContext,
+    personaId: number,
+    activo: boolean,
+    auditMeta: RhAuditMeta
+  ): Promise<RhUpdatePersonaEstadoResult> {
+    if (access.grantedBy !== 'RECURSOS_HUMANOS' || access.scope !== 'GLOBAL') {
+      throw new RhHttpError(
+        403,
+        'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para modificar el estado administrativo de personas'
+      );
+    }
+
+    const rawUserId = typeof auditMeta?.userId === 'string' ? auditMeta.userId.trim() : '';
+    if (!UUID_REGEX.test(rawUserId)) {
+      throw new RhHttpError(401, 'Unauthorized');
+    }
+
+    if (!Number.isInteger(personaId) || personaId <= 0) {
+      throw new RhHttpError(400, 'Identificador de persona inválido');
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const personaRes = await client.query<{
+        id: number;
+        nombre_completo: string;
+        nombres: string | null;
+        apellidos: string | null;
+        cargo: string | null;
+        correo_principal: string | null;
+        unidad_medica_id: number | null;
+        rfc: string | null;
+        curp: string | null;
+        activo: boolean;
+        fecha_baja: unknown;
+      }>(
+        `SELECT id, nombre_completo, nombres, apellidos, cargo, correo_principal,
+                unidad_medica_id, rfc, curp, activo, fecha_baja
+           FROM public.persona
+          WHERE id = $1
+            FOR UPDATE`,
+        [personaId]
+      );
+
+      if (!personaRes.rowCount) {
+        throw new RhHttpError(404, 'Persona no encontrada en el directorio institucional');
+      }
+
+      const current = personaRes.rows[0];
+      const currentActivo = Boolean(current.activo);
+
+      if (currentActivo === activo) {
+        await client.query('COMMIT');
+        const rfcInfoNoOp = maskSensitiveIdentifier(current.rfc, 3);
+        const curpInfoNoOp = maskSensitiveIdentifier(current.curp, 2);
+        return {
+          persona: {
+            persona_id: Number(current.id),
+            nombre_completo: String(current.nombre_completo ?? ''),
+            nombres: current.nombres != null ? String(current.nombres) : null,
+            apellidos: current.apellidos != null ? String(current.apellidos) : null,
+            cargo: current.cargo != null ? String(current.cargo) : null,
+            correo_principal: current.correo_principal != null ? String(current.correo_principal) : null,
+            unidad_medica_id:
+              current.unidad_medica_id != null ? Number(current.unidad_medica_id) : null,
+            tiene_rfc: rfcInfoNoOp.exists,
+            rfc_masked: rfcInfoNoOp.masked,
+            tiene_curp: curpInfoNoOp.exists,
+            curp_masked: curpInfoNoOp.masked,
+            activo: currentActivo,
+            fecha_baja: formatDateOnly(current.fecha_baja),
+          },
+          estado_anterior: currentActivo,
+          estado_nuevo: currentActivo,
+          idempotente: true,
+          campos_modificados: [],
+        };
+      }
+
+      if (!activo) {
+        const activeUserRes = await client.query<{ id: string }>(
+          `SELECT id
+             FROM public.app_users
+            WHERE persona_id = $1
+              AND UPPER(TRIM(status)) = 'ACTIVE'
+            LIMIT 1`,
+          [personaId]
+        );
+        if (activeUserRes.rowCount) {
+          throw new RhHttpError(
+            409,
+            'No se puede desactivar administrativamente una persona que tiene una cuenta de acceso activa vinculada'
+          );
+        }
+
+        const activeAdsRes = await client.query<{ id: number }>(
+          `SELECT id
+             FROM public.rh_adscripcion_laboral
+            WHERE persona_id = $1
+              AND activo = TRUE
+              AND (vigente_hasta IS NULL OR vigente_hasta >= CURRENT_DATE)
+            LIMIT 1`,
+          [personaId]
+        );
+        if (activeAdsRes.rowCount) {
+          throw new RhHttpError(
+            409,
+            'No se puede desactivar administrativamente una persona con adscripción laboral vigente'
+          );
+        }
+      }
+
+      const updateRes = await client.query<{
+        id: number;
+        nombre_completo: string;
+        nombres: string | null;
+        apellidos: string | null;
+        cargo: string | null;
+        correo_principal: string | null;
+        unidad_medica_id: number | null;
+        rfc: string | null;
+        curp: string | null;
+        activo: boolean;
+        fecha_baja: unknown;
+      }>(
+        activo
+          ? `UPDATE public.persona
+                SET activo = TRUE,
+                    fecha_baja = NULL,
+                    actualizado_en = NOW()
+              WHERE id = $1
+              RETURNING id, nombre_completo, nombres, apellidos, cargo, correo_principal,
+                        unidad_medica_id, rfc, curp, activo, fecha_baja`
+          : `UPDATE public.persona
+                SET activo = FALSE,
+                    fecha_baja = CURRENT_DATE,
+                    actualizado_en = NOW()
+              WHERE id = $1
+              RETURNING id, nombre_completo, nombres, apellidos, cargo, correo_principal,
+                        unidad_medica_id, rfc, curp, activo, fecha_baja`,
+        [personaId]
+      );
+
+      const updated = updateRes.rows[0];
+      const camposModificados = ['activo', 'fecha_baja'];
+
+      const auditPayload = {
+        persona_id: personaId,
+        estado_anterior: currentActivo,
+        estado_nuevo: activo,
+        campos_modificados: camposModificados,
+      };
+
+      await client.query(
+        `INSERT INTO public.app_audit_logs (user_id, action, resource, ip, user_agent, payload)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+        [
+          rawUserId,
+          'RH_UPDATE_PERSONA_ESTADO',
+          `persona:${personaId}`,
+          auditMeta.ip ?? null,
+          auditMeta.userAgent ?? null,
+          JSON.stringify(auditPayload),
+        ]
+      );
+
+      await client.query('COMMIT');
+
+      const rfcInfo = maskSensitiveIdentifier(updated.rfc, 3);
+      const curpInfo = maskSensitiveIdentifier(updated.curp, 2);
+
+      return {
+        persona: {
+          persona_id: Number(updated.id),
+          nombre_completo: String(updated.nombre_completo ?? ''),
+          nombres: updated.nombres != null ? String(updated.nombres) : null,
+          apellidos: updated.apellidos != null ? String(updated.apellidos) : null,
+          cargo: updated.cargo != null ? String(updated.cargo) : null,
+          correo_principal: updated.correo_principal != null ? String(updated.correo_principal) : null,
+          unidad_medica_id:
+            updated.unidad_medica_id != null ? Number(updated.unidad_medica_id) : null,
+          tiene_rfc: rfcInfo.exists,
+          rfc_masked: rfcInfo.masked,
+          tiene_curp: curpInfo.exists,
+          curp_masked: curpInfo.masked,
+          activo: Boolean(updated.activo),
+          fecha_baja: formatDateOnly(updated.fecha_baja),
+        },
+        estado_anterior: currentActivo,
+        estado_nuevo: Boolean(updated.activo),
+        idempotente: false,
+        campos_modificados: camposModificados,
+      };
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // Ignore rollback failure
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Consulta paginada del padrón institucional directamente sobre `public.persona`
+   * (`GET /api/rh/personas`), independiente de `rh_adscripcion_laboral` y `app_users`.
+   *
+   * - Exclusivo para `RECURSOS_HUMANOS GLOBAL`.
+   * - Utiliza `LEFT JOIN` para incluir personas sin cuenta en `app_users`, sin adscripción
+   *   laboral y sin unidad médica de referencia (`unidad_medica_id IS NULL`).
+   * - Enmascara siempre RFC y CURP antes de construir el DTO.
+   */
+  async listPersonasPadronInstitucional(
+    access: RhAccessContext,
+    opts: RhPersonasPadronQueryOpts = {}
+  ): Promise<RhPersonasPadronPagedResult> {
+    if (access.grantedBy !== 'RECURSOS_HUMANOS' || access.scope !== 'GLOBAL') {
+      throw new RhHttpError(
+        403,
+        'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para consultar el padrón institucional completo'
+      );
+    }
+
+    const rawPageSize = Number(opts.pageSize ?? 20);
+    const rawPage = Number(opts.page ?? 1);
+    const pageSize = Math.min(
+      Math.max(Number.isFinite(rawPageSize) ? Math.trunc(rawPageSize) : 20, 1),
+      100
+    );
+    const page = Math.max(Number.isFinite(rawPage) ? Math.trunc(rawPage) : 1, 1);
+    const offset = (page - 1) * pageSize;
+
+    const params: unknown[] = [];
+    const conditions: string[] = [];
+
+    const estado = opts.estado ?? 'todas';
+    if (estado === 'activas') {
+      conditions.push('p.activo = TRUE');
+    } else if (estado === 'inactivas') {
+      conditions.push('p.activo = FALSE');
+    }
+
+    if (opts.unidadId !== null && opts.unidadId !== undefined) {
+      params.push(opts.unidadId);
+      conditions.push(`p.unidad_medica_id = $${params.length}`);
+    }
+
+    const q = typeof opts.q === 'string' ? opts.q.trim() : '';
+    if (q.length > 0) {
+      params.push(q.toLowerCase());
+      const qParam = `$${params.length}`;
+      conditions.push(`(
+        LOWER(COALESCE(p.nombre_completo, '')) LIKE '%' || ${qParam} || '%' OR
+        LOWER(COALESCE(p.nombres, '')) LIKE '%' || ${qParam} || '%' OR
+        LOWER(COALESCE(p.apellidos, '')) LIKE '%' || ${qParam} || '%'
+      )`);
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    params.push(pageSize);
+    const limitParam = `$${params.length}`;
+    params.push(offset);
+    const offsetParam = `$${params.length}`;
+
+    const sql = `
+      SELECT
+        p.id AS persona_id,
+        p.nombre_completo,
+        p.nombres,
+        p.apellidos,
+        p.cargo,
+        p.correo_principal,
+        p.unidad_medica_id,
+        um.nombre AS unidad_medica_nombre,
+        um.cluesimb AS unidad_medica_cluesimb,
+        p.rfc,
+        p.curp,
+        p.activo,
+        p.fecha_baja,
+        COALESCE(acc.tiene_cuenta_activa, FALSE) AS tiene_cuenta_activa,
+        COUNT(*) OVER() AS total
+      FROM public.persona p
+      LEFT JOIN public.unidad_medica um
+        ON um.id = p.unidad_medica_id
+      LEFT JOIN LATERAL (
+        SELECT TRUE AS tiene_cuenta_activa
+          FROM public.app_users u
+         WHERE u.persona_id = p.id
+           AND UPPER(TRIM(u.status)) = 'ACTIVE'
+         LIMIT 1
+      ) acc ON TRUE
+      ${whereClause}
+      ORDER BY
+        p.activo DESC,
+        LOWER(TRIM(p.nombre_completo)) ASC,
+        p.id ASC
+      LIMIT ${limitParam} OFFSET ${offsetParam}
+    `;
+
+    const { rows } = await pool.query(sql, params);
+    const total = rows.length > 0 ? Number(rows[0].total) : 0;
+
+    const items: RhPersonasPadronItem[] = rows.map((r: any) => {
+      const rfcInfo = maskSensitiveIdentifier(r.rfc, 3);
+      const curpInfo = maskSensitiveIdentifier(r.curp, 2);
+
+      return {
+        persona_id: Number(r.persona_id),
+        nombre_completo: String(r.nombre_completo ?? ''),
+        nombres: r.nombres != null ? String(r.nombres) : null,
+        apellidos: r.apellidos != null ? String(r.apellidos) : null,
+        cargo: r.cargo != null ? String(r.cargo) : null,
+        correo_principal: r.correo_principal != null ? String(r.correo_principal) : null,
+        unidad_medica_id: r.unidad_medica_id != null ? Number(r.unidad_medica_id) : null,
+        unidad_medica_nombre:
+          r.unidad_medica_nombre != null ? String(r.unidad_medica_nombre) : null,
+        unidad_medica_cluesimb:
+          r.unidad_medica_cluesimb != null ? String(r.unidad_medica_cluesimb) : null,
+        tiene_rfc: rfcInfo.exists,
+        rfc_masked: rfcInfo.masked,
+        tiene_curp: curpInfo.exists,
+        curp_masked: curpInfo.masked,
+        activo: Boolean(r.activo),
+        fecha_baja: formatDateOnly(r.fecha_baja),
+        tiene_cuenta_activa: Boolean(r.tiene_cuenta_activa),
+      };
+    });
+
+    return {
+      items,
+      page,
+      pageSize,
+      total,
+    };
+  }
+
+  /**
+   * Edición parcial y auditada de datos generales del directorio institucional en `public.persona`
+   * (`PATCH /api/rh/personas/:personaId/general`).
+   *
+   * - Exclusivo para `RECURSOS_HUMANOS GLOBAL`.
+   * - Campos permitidos: `cargo`, `correo_principal`, `unidad_medica_id` (referencia del directorio).
+   * - Nunca modifica `rh_adscripcion_laboral`, `nombres`, `apellidos`, `rfc`, `curp`, `activo` ni `app_users`.
+   * - Soporta `OFICINA CENTRAL` (`id = 177`, `cluesimb = 'N/A'`) y `unidad_medica_id = null`.
+   * - Idempotente: si no hay cambios efectivos, no ejecuta UPDATE ni duplica auditoría.
+   * - Registra `RH_UPDATE_PERSONA_GENERAL` en `app_audit_logs` dentro de la misma transacción
+   *   sin almacenar `correo_principal`, `rfc` ni `curp`.
+   */
+  async updatePersonaGeneralDatos(
+    access: RhAccessContext,
+    personaId: number,
+    patch: Record<string, unknown>,
+    auditMeta: RhAuditMeta
+  ): Promise<RhUpdatePersonaGeneralResult> {
+    if (access.grantedBy !== 'RECURSOS_HUMANOS' || access.scope !== 'GLOBAL') {
+      throw new RhHttpError(
+        403,
+        'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para editar datos generales del padrón institucional'
+      );
+    }
+
+    const rawUserId = typeof auditMeta?.userId === 'string' ? auditMeta.userId.trim() : '';
+    if (!UUID_REGEX.test(rawUserId)) {
+      throw new RhHttpError(401, 'Unauthorized');
+    }
+
+    if (!Number.isInteger(personaId) || personaId <= 0) {
+      throw new RhHttpError(400, 'Identificador de persona inválido');
+    }
+
+    const hasOwn = (k: string): boolean => Object.prototype.hasOwnProperty.call(patch, k);
+
+    const parsedPatch: {
+      cargo?: string | null;
+      correo_principal?: string | null;
+      unidad_medica_id?: number | null;
+    } = {};
+
+    if (hasOwn('cargo')) {
+      parsedPatch.cargo = normalizeOptionalVarchar(patch.cargo, 'cargo', 100);
+    }
+
+    if (hasOwn('correo_principal')) {
+      if (patch.correo_principal === null || patch.correo_principal === undefined) {
+        parsedPatch.correo_principal = null;
+      } else if (typeof patch.correo_principal !== 'string') {
+        throw new RhHttpError(400, 'El campo "correo_principal" debe ser una cadena de texto o null');
+      } else {
+        const cleanEmail = patch.correo_principal.trim().toLowerCase();
+        if (cleanEmail.length === 0) {
+          parsedPatch.correo_principal = null;
+        } else if (cleanEmail.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+          throw new RhHttpError(400, 'El campo "correo_principal" no tiene un formato de correo válido');
+        } else {
+          parsedPatch.correo_principal = cleanEmail;
+        }
+      }
+    }
+
+    if (hasOwn('unidad_medica_id')) {
+      if (patch.unidad_medica_id === null || patch.unidad_medica_id === undefined) {
+        parsedPatch.unidad_medica_id = null;
+      } else if (
+        typeof patch.unidad_medica_id !== 'number' ||
+        !Number.isSafeInteger(patch.unidad_medica_id) ||
+        patch.unidad_medica_id <= 0
+      ) {
+        throw new RhHttpError(400, 'El campo "unidad_medica_id" debe ser un entero positivo o null');
+      } else {
+        parsedPatch.unidad_medica_id = patch.unidad_medica_id;
+      }
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const personaRes = await client.query<{
+        id: number;
+        nombre_completo: string;
+        nombres: string | null;
+        apellidos: string | null;
+        cargo: string | null;
+        correo_principal: string | null;
+        unidad_medica_id: number | null;
+        rfc: string | null;
+        curp: string | null;
+        activo: boolean;
+        fecha_baja: unknown;
+      }>(
+        `SELECT id, nombre_completo, nombres, apellidos, cargo, correo_principal,
+                unidad_medica_id, rfc, curp, activo, fecha_baja
+           FROM public.persona
+          WHERE id = $1
+            FOR UPDATE`,
+        [personaId]
+      );
+
+      if (!personaRes.rowCount) {
+        throw new RhHttpError(404, 'Persona no encontrada en el directorio institucional');
+      }
+
+      const current = personaRes.rows[0];
+      const currentCargo =
+        current.cargo != null && String(current.cargo).trim() !== ''
+          ? String(current.cargo).trim()
+          : null;
+      const currentCorreo =
+        current.correo_principal != null && String(current.correo_principal).trim() !== ''
+          ? String(current.correo_principal).trim().toLowerCase()
+          : null;
+      const currentUnidadId =
+        current.unidad_medica_id != null ? Number(current.unidad_medica_id) : null;
+
+      const finalCargo = hasOwn('cargo') ? parsedPatch.cargo! : currentCargo;
+      const finalCorreo = hasOwn('correo_principal') ? parsedPatch.correo_principal! : currentCorreo;
+      const finalUnidadId = hasOwn('unidad_medica_id')
+        ? parsedPatch.unidad_medica_id!
+        : currentUnidadId;
+
+      if (finalUnidadId !== null && finalUnidadId !== currentUnidadId) {
+        const umRes = await client.query<{ id: number }>(
+          `SELECT id
+             FROM public.unidad_medica
+            WHERE id = $1
+              AND activo = TRUE
+            LIMIT 1`,
+          [finalUnidadId]
+        );
+        if (!umRes.rowCount) {
+          throw new RhHttpError(404, 'Unidad médica de referencia no encontrada o inactiva');
+        }
+      }
+
+      const camposModificados: string[] = [];
+      if (finalCargo !== currentCargo) camposModificados.push('cargo');
+      if (finalCorreo !== currentCorreo) camposModificados.push('correo_principal');
+      if (finalUnidadId !== currentUnidadId) camposModificados.push('unidad_medica_id');
+
+      if (camposModificados.length === 0) {
+        await client.query('COMMIT');
+        const rfcInfoNoOp = maskSensitiveIdentifier(current.rfc, 3);
+        const curpInfoNoOp = maskSensitiveIdentifier(current.curp, 2);
+        return {
+          persona: {
+            persona_id: Number(current.id),
+            nombre_completo: String(current.nombre_completo ?? ''),
+            nombres: current.nombres != null ? String(current.nombres) : null,
+            apellidos: current.apellidos != null ? String(current.apellidos) : null,
+            cargo: currentCargo,
+            correo_principal: currentCorreo,
+            unidad_medica_id: currentUnidadId,
+            tiene_rfc: rfcInfoNoOp.exists,
+            rfc_masked: rfcInfoNoOp.masked,
+            tiene_curp: curpInfoNoOp.exists,
+            curp_masked: curpInfoNoOp.masked,
+            activo: Boolean(current.activo),
+            fecha_baja: formatDateOnly(current.fecha_baja),
+          },
+          idempotente: true,
+          campos_modificados: [],
+        };
+      }
+
+      const setClauses: string[] = [];
+      const updateParams: unknown[] = [];
+
+      if (camposModificados.includes('cargo')) {
+        updateParams.push(finalCargo);
+        setClauses.push(`cargo = $${updateParams.length}`);
+      }
+      if (camposModificados.includes('correo_principal')) {
+        updateParams.push(finalCorreo);
+        setClauses.push(`correo_principal = $${updateParams.length}`);
+      }
+      if (camposModificados.includes('unidad_medica_id')) {
+        updateParams.push(finalUnidadId);
+        setClauses.push(`unidad_medica_id = $${updateParams.length}`);
+      }
+      setClauses.push('actualizado_en = NOW()');
+
+      updateParams.push(personaId);
+      const whereIdx = updateParams.length;
+
+      const updateRes = await client.query<{
+        id: number;
+        nombre_completo: string;
+        nombres: string | null;
+        apellidos: string | null;
+        cargo: string | null;
+        correo_principal: string | null;
+        unidad_medica_id: number | null;
+        rfc: string | null;
+        curp: string | null;
+        activo: boolean;
+        fecha_baja: unknown;
+      }>(
+        `UPDATE public.persona
+            SET ${setClauses.join(', ')}
+          WHERE id = $${whereIdx}
+          RETURNING id, nombre_completo, nombres, apellidos, cargo, correo_principal,
+                    unidad_medica_id, rfc, curp, activo, fecha_baja`,
+        updateParams
+      );
+
+      const updated = updateRes.rows[0];
+
+      // Auditoría sin correo electrónico completo ni identificadores sensibles
+      const auditPayload: Record<string, unknown> = {
+        persona_id: personaId,
+        campos_modificados: camposModificados,
+      };
+      if (camposModificados.includes('unidad_medica_id')) {
+        auditPayload.unidad_medica_id_anterior = currentUnidadId;
+        auditPayload.unidad_medica_id_nueva = finalUnidadId;
+      }
+
+      await client.query(
+        `INSERT INTO public.app_audit_logs (user_id, action, resource, ip, user_agent, payload)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+        [
+          rawUserId,
+          'RH_UPDATE_PERSONA_GENERAL',
+          `persona:${personaId}`,
+          auditMeta.ip ?? null,
+          auditMeta.userAgent ?? null,
+          JSON.stringify(auditPayload),
+        ]
+      );
+
+      await client.query('COMMIT');
+
+      const rfcInfo = maskSensitiveIdentifier(updated.rfc, 3);
+      const curpInfo = maskSensitiveIdentifier(updated.curp, 2);
+
+      return {
+        persona: {
+          persona_id: Number(updated.id),
+          nombre_completo: String(updated.nombre_completo ?? ''),
+          nombres: updated.nombres != null ? String(updated.nombres) : null,
+          apellidos: updated.apellidos != null ? String(updated.apellidos) : null,
+          cargo: updated.cargo != null ? String(updated.cargo) : null,
+          correo_principal: updated.correo_principal != null ? String(updated.correo_principal) : null,
+          unidad_medica_id:
+            updated.unidad_medica_id != null ? Number(updated.unidad_medica_id) : null,
+          tiene_rfc: rfcInfo.exists,
+          rfc_masked: rfcInfo.masked,
+          tiene_curp: curpInfo.exists,
+          curp_masked: curpInfo.masked,
+          activo: Boolean(updated.activo),
+          fecha_baja: formatDateOnly(updated.fecha_baja),
+        },
+        idempotente: false,
+        campos_modificados: camposModificados,
+      };
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // Ignore rollback failure
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  private computeComisionEstadoVigencia(
+    activo: boolean,
+    fechaInicio: string,
+    fechaFin: string | null,
+    todayIso: string
+  ): RhComisionEstadoVigencia {
+    if (!activo) {
+      return 'CONCLUIDA';
+    }
+    if (fechaInicio > todayIso) {
+      return 'FUTURA';
+    }
+    if (fechaFin !== null && fechaFin < todayIso) {
+      return 'CONCLUIDA';
+    }
+    return 'VIGENTE';
+  }
+
+  async listComisionesPorPersona(
+    access: RhAccessContext,
+    personaId: number,
+    opts: { estado?: 'todas' | 'vigentes' | 'futuras' | 'concluidas'; page?: number; pageSize?: number } = {}
+  ): Promise<RhComisionesListResult> {
+    if (access.grantedBy !== 'RECURSOS_HUMANOS' || access.scope !== 'GLOBAL') {
+      throw new RhHttpError(
+        403,
+        'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para consultar comisiones laborales'
+      );
+    }
+
+    if (!Number.isInteger(personaId) || personaId <= 0) {
+      throw new RhHttpError(400, 'Identificador de persona inválido');
+    }
+
+    const personaCheck = await pool.query<{ id: number }>(
+      `SELECT id FROM public.persona WHERE id = $1 LIMIT 1`,
+      [personaId]
+    );
+    if (!personaCheck.rowCount) {
+      throw new RhHttpError(404, 'Persona no encontrada en el directorio institucional');
+    }
+
+    const rawPageSize = Number(opts.pageSize ?? 20);
+    const rawPage = Number(opts.page ?? 1);
+    const pageSize = Math.min(Math.max(Number.isFinite(rawPageSize) ? Math.trunc(rawPageSize) : 20, 1), 100);
+    const page = Math.max(Number.isFinite(rawPage) ? Math.trunc(rawPage) : 1, 1);
+    const offset = (page - 1) * pageSize;
+
+    const conditions: string[] = ['c.persona_id = $1'];
+    const estado = opts.estado ?? 'todas';
+    if (estado === 'vigentes') {
+      conditions.push(
+        'c.activo = TRUE AND c.fecha_inicio <= CURRENT_DATE AND (c.fecha_fin IS NULL OR c.fecha_fin >= CURRENT_DATE)'
+      );
+    } else if (estado === 'futuras') {
+      conditions.push('c.activo = TRUE AND c.fecha_inicio > CURRENT_DATE');
+    } else if (estado === 'concluidas') {
+      conditions.push('(c.activo = FALSE OR (c.fecha_fin IS NOT NULL AND c.fecha_fin < CURRENT_DATE))');
+    }
+
+    const sql = `
+      SELECT
+        c.id,
+        c.persona_id,
+        c.adscripcion_origen_id,
+        c.unidad_destino_id,
+        um.nombre AS unidad_destino_nombre,
+        um.cluesimb AS unidad_destino_cluesimb,
+        c.area_destino_texto,
+        c.fecha_inicio,
+        c.fecha_fin,
+        c.motivo,
+        c.oficio_referencia,
+        c.observaciones,
+        c.activo,
+        CURRENT_DATE::text AS current_date_iso,
+        COUNT(*) OVER() AS total
+      FROM public.rh_comision_laboral c
+      LEFT JOIN public.unidad_medica um
+        ON um.id = c.unidad_destino_id
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY
+        c.activo DESC,
+        c.fecha_inicio DESC,
+        c.id DESC
+      LIMIT $2 OFFSET $3
+    `;
+
+    const { rows } = await pool.query(sql, [personaId, pageSize, offset]);
+    const total = rows.length > 0 ? Number(rows[0].total) : 0;
+    const fallbackToday = new Date().toISOString().slice(0, 10);
+
+    const items: RhComisionLaboralDto[] = rows.map((r: any) => {
+      const inicio = formatDateOnly(r.fecha_inicio) ?? '';
+      const fin = formatDateOnly(r.fecha_fin);
+      const today = formatDateOnly(r.current_date_iso) ?? fallbackToday;
+      const activo = Boolean(r.activo);
+
+      return {
+        id: Number(r.id),
+        persona_id: Number(r.persona_id),
+        adscripcion_origen_id: r.adscripcion_origen_id != null ? Number(r.adscripcion_origen_id) : null,
+        sin_adscripcion_formal_origen: r.adscripcion_origen_id == null,
+        unidad_destino_id: r.unidad_destino_id != null ? Number(r.unidad_destino_id) : null,
+        unidad_destino_nombre: r.unidad_destino_nombre != null ? String(r.unidad_destino_nombre) : null,
+        unidad_destino_cluesimb: r.unidad_destino_cluesimb != null ? String(r.unidad_destino_cluesimb) : null,
+        area_destino_texto: r.area_destino_texto != null ? String(r.area_destino_texto) : null,
+        fecha_inicio: inicio,
+        fecha_fin: fin,
+        motivo: r.motivo != null ? String(r.motivo) : null,
+        oficio_referencia: r.oficio_referencia != null ? String(r.oficio_referencia) : null,
+        observaciones: r.observaciones != null ? String(r.observaciones) : null,
+        activo,
+        estado_vigencia: this.computeComisionEstadoVigencia(activo, inicio, fin, today),
+      };
+    });
+
+    return {
+      persona_id: personaId,
+      items,
+      page,
+      pageSize,
+      total,
+    };
+  }
+
+  async createComisionLaboral(
+    access: RhAccessContext,
+    personaId: number,
+    input: Record<string, unknown>,
+    auditMeta: RhAuditMeta
+  ): Promise<RhComisionLaboralDto> {
+    if (access.grantedBy !== 'RECURSOS_HUMANOS' || access.scope !== 'GLOBAL') {
+      throw new RhHttpError(
+        403,
+        'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para registrar comisiones laborales'
+      );
+    }
+
+    const rawUserId = typeof auditMeta?.userId === 'string' ? auditMeta.userId.trim() : '';
+    if (!UUID_REGEX.test(rawUserId)) {
+      throw new RhHttpError(401, 'Unauthorized');
+    }
+
+    if (!Number.isInteger(personaId) || personaId <= 0) {
+      throw new RhHttpError(400, 'Identificador de persona inválido');
+    }
+
+    const hasOwn = (k: string): boolean => Object.prototype.hasOwnProperty.call(input, k);
+
+    let adscripcionOrigenId: number | null = null;
+    if (hasOwn('adscripcion_origen_id') && input.adscripcion_origen_id !== null && input.adscripcion_origen_id !== undefined) {
+      if (
+        typeof input.adscripcion_origen_id !== 'number' ||
+        !Number.isSafeInteger(input.adscripcion_origen_id) ||
+        input.adscripcion_origen_id <= 0
+      ) {
+        throw new RhHttpError(400, 'El campo "adscripcion_origen_id" debe ser un entero positivo o null');
+      }
+      adscripcionOrigenId = input.adscripcion_origen_id;
+    }
+
+    let unidadDestinoId: number | null = null;
+    if (hasOwn('unidad_destino_id') && input.unidad_destino_id !== null && input.unidad_destino_id !== undefined) {
+      if (
+        typeof input.unidad_destino_id !== 'number' ||
+        !Number.isSafeInteger(input.unidad_destino_id) ||
+        input.unidad_destino_id <= 0
+      ) {
+        throw new RhHttpError(400, 'El campo "unidad_destino_id" debe ser un entero positivo o null');
+      }
+      unidadDestinoId = input.unidad_destino_id;
+    }
+
+    const areaDestinoTexto = hasOwn('area_destino_texto')
+      ? normalizeOptionalVarchar(input.area_destino_texto, 'area_destino_texto', 160)
+      : null;
+
+    if (unidadDestinoId === null && areaDestinoTexto === null) {
+      throw new RhHttpError(
+        400,
+        'Debe especificar un destino identificable: "unidad_destino_id", "area_destino_texto" o ambos'
+      );
+    }
+
+    const fechaInicio = parseStrictIsoDate(input.fecha_inicio, 'fecha_inicio');
+    let fechaFin: string | null = null;
+    if (hasOwn('fecha_fin') && input.fecha_fin !== null && input.fecha_fin !== undefined) {
+      if (typeof input.fecha_fin === 'string' && input.fecha_fin.trim() === '') {
+        fechaFin = null;
+      } else {
+        fechaFin = parseStrictIsoDate(input.fecha_fin, 'fecha_fin');
+      }
+    }
+
+    if (fechaFin !== null && fechaFin < fechaInicio) {
+      throw new RhHttpError(400, 'La fecha "fecha_fin" no puede ser anterior a "fecha_inicio"');
+    }
+
+    const motivo = hasOwn('motivo') ? normalizeOptionalVarchar(input.motivo, 'motivo', 200) : null;
+    const oficioReferencia = hasOwn('oficio_referencia')
+      ? normalizeOptionalVarchar(input.oficio_referencia, 'oficio_referencia', 120)
+      : null;
+    const observaciones = hasOwn('observaciones')
+      ? normalizeOptionalVarchar(input.observaciones, 'observaciones', 2000)
+      : null;
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // 1) Bloquear fila de persona para serializar altas concurrentes de comisiones
+      const personaRes = await client.query<{ id: number; activo: boolean }>(
+        `SELECT id, activo FROM public.persona WHERE id = $1 FOR UPDATE`,
+        [personaId]
+      );
+      if (!personaRes.rowCount) {
+        throw new RhHttpError(404, 'Persona no encontrada en el directorio institucional');
+      }
+      if (personaRes.rows[0].activo !== true) {
+        throw new RhHttpError(
+          409,
+          'No se puede registrar una comisión laboral para una persona inactiva en el padrón'
+        );
+      }
+
+      // 2) Validar unidad destino si se proporcionó (soporta OFICINA CENTRAL id=177, CLUES N/A)
+      let unidadDestinoNombre: string | null = null;
+      let unidadDestinoClues: string | null = null;
+      if (unidadDestinoId !== null) {
+        const umRes = await client.query<{ id: number; nombre: string; cluesimb: string | null }>(
+          `SELECT id, nombre, cluesimb FROM public.unidad_medica WHERE id = $1 AND activo = TRUE LIMIT 1`,
+          [unidadDestinoId]
+        );
+        if (!umRes.rowCount) {
+          throw new RhHttpError(404, 'Unidad médica de destino no encontrada o inactiva');
+        }
+        unidadDestinoNombre = String(umRes.rows[0].nombre);
+        unidadDestinoClues = umRes.rows[0].cluesimb ?? null;
+      }
+
+      // 3) Si se indicó adscripcion_origen_id, verificar que pertenezca a la misma persona (sin modificar rh_adscripcion_laboral)
+      if (adscripcionOrigenId !== null) {
+        const adsRes = await client.query<{ id: number; persona_id: number }>(
+          `SELECT id, persona_id FROM public.rh_adscripcion_laboral WHERE id = $1 LIMIT 1`,
+          [adscripcionOrigenId]
+        );
+        if (!adsRes.rowCount) {
+          throw new RhHttpError(404, 'La adscripción de origen especificada no existe');
+        }
+        if (Number(adsRes.rows[0].persona_id) !== personaId) {
+          throw new RhHttpError(
+            409,
+            'La adscripción de origen especificada pertenece a otra persona'
+          );
+        }
+      }
+
+      // 4) Bloquear y validar superposición contra comisiones activas de la misma persona
+      const activeComisionesRes = await client.query<{
+        id: number;
+        fecha_inicio: unknown;
+        fecha_fin: unknown;
+        activo: boolean;
+      }>(
+        `SELECT id, fecha_inicio, fecha_fin, activo
+           FROM public.rh_comision_laboral
+          WHERE persona_id = $1
+            AND activo = TRUE
+          ORDER BY id ASC
+            FOR UPDATE`,
+        [personaId]
+      );
+
+      for (const existing of activeComisionesRes.rows) {
+        const exInicio = formatDateOnly(existing.fecha_inicio) ?? '0001-01-01';
+        const exFin = formatDateOnly(existing.fecha_fin);
+        if (dateRangesOverlap(fechaInicio, fechaFin, exInicio, exFin)) {
+          throw new RhHttpError(
+            409,
+            'El periodo de la comisión se superpone con otra comisión activa registrada para la misma persona'
+          );
+        }
+      }
+
+      // 5) Insertar nueva comisión laboral (sin tocar rh_adscripcion_laboral)
+      const insertRes = await client.query<{
+        id: number;
+        persona_id: number;
+        adscripcion_origen_id: number | null;
+        unidad_destino_id: number | null;
+        area_destino_texto: string | null;
+        fecha_inicio: unknown;
+        fecha_fin: unknown;
+        motivo: string | null;
+        oficio_referencia: string | null;
+        observaciones: string | null;
+        activo: boolean;
+        current_date_iso: unknown;
+      }>(
+        `INSERT INTO public.rh_comision_laboral (
+           persona_id,
+           adscripcion_origen_id,
+           unidad_destino_id,
+           area_destino_texto,
+           fecha_inicio,
+           fecha_fin,
+           motivo,
+           oficio_referencia,
+           observaciones,
+           activo,
+           creado_por,
+           actualizado_por
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, $10, $10)
+         RETURNING
+           id, persona_id, adscripcion_origen_id, unidad_destino_id, area_destino_texto,
+           fecha_inicio, fecha_fin, motivo, oficio_referencia, observaciones, activo,
+           CURRENT_DATE::text AS current_date_iso`,
+        [
+          personaId,
+          adscripcionOrigenId,
+          unidadDestinoId,
+          areaDestinoTexto,
+          fechaInicio,
+          fechaFin,
+          motivo,
+          oficioReferencia,
+          observaciones,
+          rawUserId,
+        ]
+      );
+
+      const created = insertRes.rows[0];
+      const comisionId = Number(created.id);
+
+      const auditPayload = {
+        comision_id: comisionId,
+        persona_id: personaId,
+        adscripcion_origen_id: adscripcionOrigenId,
+        unidad_destino_id: unidadDestinoId,
+        fecha_inicio: fechaInicio,
+        fecha_fin: fechaFin,
+        oficio_referencia: oficioReferencia,
+      };
+
+      await client.query(
+        `INSERT INTO public.app_audit_logs (user_id, action, resource, ip, user_agent, payload)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+        [
+          rawUserId,
+          'RH_CREATE_COMISION',
+          `rh_comision_laboral:${comisionId}`,
+          auditMeta.ip ?? null,
+          auditMeta.userAgent ?? null,
+          JSON.stringify(auditPayload),
+        ]
+      );
+
+      await client.query('COMMIT');
+
+      const todayIso =
+        formatDateOnly(created.current_date_iso) ?? new Date().toISOString().slice(0, 10);
+
+      return {
+        id: comisionId,
+        persona_id: personaId,
+        adscripcion_origen_id: adscripcionOrigenId,
+        sin_adscripcion_formal_origen: adscripcionOrigenId === null,
+        unidad_destino_id: unidadDestinoId,
+        unidad_destino_nombre: unidadDestinoNombre,
+        unidad_destino_cluesimb: unidadDestinoClues,
+        area_destino_texto: areaDestinoTexto,
+        fecha_inicio: formatDateOnly(created.fecha_inicio) ?? fechaInicio,
+        fecha_fin: formatDateOnly(created.fecha_fin),
+        motivo,
+        oficio_referencia: oficioReferencia,
+        observaciones,
+        activo: Boolean(created.activo),
+        estado_vigencia: this.computeComisionEstadoVigencia(
+          Boolean(created.activo),
+          formatDateOnly(created.fecha_inicio) ?? fechaInicio,
+          formatDateOnly(created.fecha_fin),
+          todayIso
+        ),
+      };
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // Ignore rollback failure
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async concluirComisionLaboral(
+    access: RhAccessContext,
+    personaId: number,
+    comisionId: number,
+    input: Record<string, unknown>,
+    auditMeta: RhAuditMeta
+  ): Promise<RhConcluirComisionResult> {
+    if (access.grantedBy !== 'RECURSOS_HUMANOS' || access.scope !== 'GLOBAL') {
+      throw new RhHttpError(
+        403,
+        'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para concluir comisiones laborales'
+      );
+    }
+
+    const rawUserId = typeof auditMeta?.userId === 'string' ? auditMeta.userId.trim() : '';
+    if (!UUID_REGEX.test(rawUserId)) {
+      throw new RhHttpError(401, 'Unauthorized');
+    }
+
+    if (!Number.isInteger(personaId) || personaId <= 0) {
+      throw new RhHttpError(400, 'Identificador de persona inválido');
+    }
+
+    if (!Number.isInteger(comisionId) || comisionId <= 0) {
+      throw new RhHttpError(400, 'Identificador de comisión inválido');
+    }
+
+    const hasOwn = (k: string): boolean => Object.prototype.hasOwnProperty.call(input, k);
+    let requestedFechaFin: string | null = null;
+    if (hasOwn('fecha_fin') && input.fecha_fin !== null && input.fecha_fin !== undefined) {
+      requestedFechaFin = parseStrictIsoDate(input.fecha_fin, 'fecha_fin');
+    }
+
+    const requestedObservaciones = hasOwn('observaciones')
+      ? normalizeOptionalVarchar(input.observaciones, 'observaciones', 2000)
+      : undefined;
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const comisionRes = await client.query<{
+        id: number;
+        persona_id: number;
+        adscripcion_origen_id: number | null;
+        unidad_destino_id: number | null;
+        unidad_destino_nombre: string | null;
+        unidad_destino_cluesimb: string | null;
+        area_destino_texto: string | null;
+        fecha_inicio: unknown;
+        fecha_fin: unknown;
+        motivo: string | null;
+        oficio_referencia: string | null;
+        observaciones: string | null;
+        activo: boolean;
+        current_date_iso: unknown;
+      }>(
+        `SELECT
+           c.id, c.persona_id, c.adscripcion_origen_id, c.unidad_destino_id,
+           um.nombre AS unidad_destino_nombre, um.cluesimb AS unidad_destino_cluesimb,
+           c.area_destino_texto, c.fecha_inicio, c.fecha_fin, c.motivo,
+           c.oficio_referencia, c.observaciones, c.activo,
+           CURRENT_DATE::text AS current_date_iso
+         FROM public.rh_comision_laboral c
+         LEFT JOIN public.unidad_medica um
+           ON um.id = c.unidad_destino_id
+        WHERE c.id = $1
+          AND c.persona_id = $2
+          FOR UPDATE OF c`,
+        [comisionId, personaId]
+      );
+
+      if (!comisionRes.rowCount) {
+        throw new RhHttpError(404, 'Comisión laboral no encontrada para la persona especificada');
+      }
+
+      const current = comisionRes.rows[0];
+      const currentInicio = formatDateOnly(current.fecha_inicio) ?? '';
+      const currentFin = formatDateOnly(current.fecha_fin);
+      const todayIso =
+        formatDateOnly(current.current_date_iso) ?? new Date().toISOString().slice(0, 10);
+
+      // Idempotencia: si ya está concluida (activo === false), no modificar ni duplicar auditoría
+      if (!Boolean(current.activo)) {
+        await client.query('COMMIT');
+        return {
+          comision: {
+            id: Number(current.id),
+            persona_id: Number(current.persona_id),
+            adscripcion_origen_id:
+              current.adscripcion_origen_id != null ? Number(current.adscripcion_origen_id) : null,
+            sin_adscripcion_formal_origen: current.adscripcion_origen_id == null,
+            unidad_destino_id:
+              current.unidad_destino_id != null ? Number(current.unidad_destino_id) : null,
+            unidad_destino_nombre:
+              current.unidad_destino_nombre != null ? String(current.unidad_destino_nombre) : null,
+            unidad_destino_cluesimb:
+              current.unidad_destino_cluesimb != null
+                ? String(current.unidad_destino_cluesimb)
+                : null,
+            area_destino_texto:
+              current.area_destino_texto != null ? String(current.area_destino_texto) : null,
+            fecha_inicio: currentInicio,
+            fecha_fin: currentFin,
+            motivo: current.motivo != null ? String(current.motivo) : null,
+            oficio_referencia:
+              current.oficio_referencia != null ? String(current.oficio_referencia) : null,
+            observaciones: current.observaciones != null ? String(current.observaciones) : null,
+            activo: false,
+            estado_vigencia: 'CONCLUIDA',
+          },
+          idempotente: true,
+        };
+      }
+
+      const finalFechaFin = requestedFechaFin ?? (currentFin ?? (todayIso >= currentInicio ? todayIso : currentInicio));
+      if (finalFechaFin < currentInicio) {
+        throw new RhHttpError(
+          400,
+          'La fecha de conclusión no puede ser anterior a "fecha_inicio"'
+        );
+      }
+
+      const finalObservaciones =
+        requestedObservaciones !== undefined
+          ? requestedObservaciones
+          : current.observaciones != null
+            ? String(current.observaciones)
+            : null;
+
+      await client.query(
+        `UPDATE public.rh_comision_laboral
+            SET activo = FALSE,
+                fecha_fin = $1,
+                observaciones = $2,
+                actualizado_por = $3,
+                actualizado_en = NOW()
+          WHERE id = $4
+            AND persona_id = $5`,
+        [finalFechaFin, finalObservaciones, rawUserId, comisionId, personaId]
+      );
+
+      const auditPayload = {
+        comision_id: comisionId,
+        persona_id: personaId,
+        fecha_inicio: currentInicio,
+        fecha_fin_anterior: currentFin,
+        fecha_fin_nueva: finalFechaFin,
+      };
+
+      await client.query(
+        `INSERT INTO public.app_audit_logs (user_id, action, resource, ip, user_agent, payload)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+        [
+          rawUserId,
+          'RH_CONCLUIR_COMISION',
+          `rh_comision_laboral:${comisionId}`,
+          auditMeta.ip ?? null,
+          auditMeta.userAgent ?? null,
+          JSON.stringify(auditPayload),
+        ]
+      );
+
+      await client.query('COMMIT');
+
+      return {
+        comision: {
+          id: Number(current.id),
+          persona_id: Number(current.persona_id),
+          adscripcion_origen_id:
+            current.adscripcion_origen_id != null ? Number(current.adscripcion_origen_id) : null,
+          sin_adscripcion_formal_origen: current.adscripcion_origen_id == null,
+          unidad_destino_id:
+            current.unidad_destino_id != null ? Number(current.unidad_destino_id) : null,
+          unidad_destino_nombre:
+            current.unidad_destino_nombre != null ? String(current.unidad_destino_nombre) : null,
+          unidad_destino_cluesimb:
+            current.unidad_destino_cluesimb != null ? String(current.unidad_destino_cluesimb) : null,
+          area_destino_texto:
+            current.area_destino_texto != null ? String(current.area_destino_texto) : null,
+          fecha_inicio: currentInicio,
+          fecha_fin: finalFechaFin,
+          motivo: current.motivo != null ? String(current.motivo) : null,
+          oficio_referencia:
+            current.oficio_referencia != null ? String(current.oficio_referencia) : null,
+          observaciones: finalObservaciones,
+          activo: false,
+          estado_vigencia: 'CONCLUIDA',
+        },
+        idempotente: false,
+      };
+    } catch (err) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // Ignore rollback failure
+      }
       throw err;
     } finally {
       client.release();

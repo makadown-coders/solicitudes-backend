@@ -4,6 +4,7 @@ import { SolicitudesController } from '../controllers/solicitudes.controller';
 import { NecesidadesPrimerNivelApsController } from '../controllers/necesidades-primer-nivel-aps.controller';
 import { NecesidadesPrimerNivelProgramasPreventivosController } from '../controllers/necesidades-primer-nivel-programas-preventivos.controller';
 import ConcentradoPrimerNivelController from '../controllers/concentrado-primer-nivel.controller';
+import AbastoProgramasNecesidadesController from '../controllers/abasto-programas-necesidades.controller';
 
 import { analizarSurtimiento } from '../controllers/surtimiento-primer-nivel.controller';
 
@@ -13,12 +14,14 @@ const c = new SolicitudesController();
 const aps = new NecesidadesPrimerNivelApsController();
 const preventivos = new NecesidadesPrimerNivelProgramasPreventivosController();
 const concentradoPrimerNivel = new ConcentradoPrimerNivelController();
+const abastoProgramasNecesidades = new AbastoProgramasNecesidadesController();
 
 r.post('/primer-nivel/enviar', c.postEnviarNecesidadesPrimerNivel.bind(c));
 r.post('/primer-nivel/vista-previa-excel', c.postVistaPreviaNecesidadesPrimerNivel.bind(c));
 r.get('/primer-nivel/concentrado', concentradoPrimerNivel.consultar);
 r.get('/primer-nivel/concentrado/export', concentradoPrimerNivel.exportar);
 r.get('/primer-nivel/concentrado/matriz-distribucion', concentradoPrimerNivel.matrizDistribucion);
+r.get('/primer-nivel/abasto-programas/necesidades', abastoProgramasNecesidades.consultar);
 r.get('/primer-nivel/aps/estructura', aps.getEstructura.bind(aps));
 r.get('/primer-nivel/aps/medicamentos', aps.getMedicamentos.bind(aps));
 r.get('/primer-nivel/aps/medicamentos/:codigo', aps.getMedicamento.bind(aps));

@@ -137,7 +137,7 @@ export function detectarSustituciones(informe: Informe, relaciones: HomologoEdge
     const multiples=(porFaltante.get(JSON.stringify([faltante.clues,faltante.clave]))?.size??0)>1;
     const compartida=(porSustituta.get(JSON.stringify([faltante.clues,salida.clave]))?.size??0)>1;
     const cantidadEquivalente=salida.surtido/factor;
-    const estado = multiples && compartida ? 'Múltiples candidatos y sustituta compartida'
+    const estado: SustitucionPotencial['estado'] = multiples && compartida ? 'Múltiples candidatos y sustituta compartida'
       : multiples ? 'Múltiples candidatos'
       : compartida ? 'Sustituta para varios faltantes'
       : 'Relación única';

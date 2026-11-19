@@ -77,4 +77,13 @@ const edge = (claveConsultada, candidato, factor, direccion = 'FORWARD') => ({
   assert.deepEqual(base.filas, antes);
 }
 
-console.log('surtimiento-sustituciones: 8 escenarios correctos');
+// Una clave ya acreditada directamente no entra al conjunto sin solicitud y no se reutiliza.
+{
+  const base = informe([
+    filaPedido('U1', 'A', 80),
+    filaPedido('U1', 'B', 0, { solicitado: 50, surtido: 50, cobertura: 100, relacion: 100 }),
+  ], []);
+  assert.equal(detectarSustituciones(base, [edge('A', 'B', 1)]).length, 0);
+}
+
+console.log('surtimiento-sustituciones: 10 verificaciones correctas');

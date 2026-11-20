@@ -159,11 +159,20 @@ const ALLOWED_CREATE_VACACION_KEYS: ReadonlySet<string> = new Set([
   'adscripcion_id',
   'anio_ciclo',
   'periodo_referencia',
+  'periodo_id',
+  'fechas',
   'fecha_inicio',
   'fecha_fin',
   'dias_registrados',
   'documento_referencia',
   'observaciones',
+]);
+
+const ALLOWED_UPSERT_VACACION_BOLSA_KEYS: ReadonlySet<string> = new Set([
+  'dias_asignados',
+  'estado_asignacion',
+  'justificacion_ajuste',
+  'calendario_laboral_codigo',
 ]);
 
 const ALLOWED_ANULAR_VACACION_KEYS: ReadonlySet<string> = new Set([
@@ -174,6 +183,11 @@ const ALLOWED_LIST_ADSCRIPCIONES_PERSONA_QUERY_KEYS: ReadonlySet<string> = new S
   'estado',
   'page',
   'pageSize',
+]);
+
+const ALLOWED_LOTE_ADSCRIPCIONES_ROOT_KEYS: ReadonlySet<string> = new Set([
+  'defaults',
+  'items',
 ]);
 
 export default class RhController {
@@ -1464,6 +1478,333 @@ export default class RhController {
       }
       console.error('Error en GET /api/rh/personas/:personaId/adscripciones');
       res.status(500).json({ error: 'Error interno al consultar las adscripciones laborales' });
+    }
+  }
+
+  async validarLoteAdscripcionesPorUnidad(req: RhAuthenticatedRequest, res: Response): Promise<void> {
+    if (typeof req.user?.sub !== 'string' || !req.user.sub.trim()) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    if (!req.rhAccess || req.rhAccess.grantedBy !== 'RECURSOS_HUMANOS' || req.rhAccess.scope !== 'GLOBAL') {
+      res.status(403).json({
+        error:
+          'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para validar lotes de vinculación laboral',
+      });
+      return;
+    }
+
+    const unidadId = parseUnidadIdParam(req.params?.unidadId);
+    if (unidadId === null) {
+      res.status(400).json({ error: 'Identificador de unidad de trabajo inválido' });
+      return;
+    }
+
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      res.status(400).json({ error: 'Payload inválido' });
+      return;
+    }
+
+    for (const key of Object.keys(body)) {
+      if (!ALLOWED_LOTE_ADSCRIPCIONES_ROOT_KEYS.has(key)) {
+        res.status(400).json({ error: `Propiedad no permitida: ${key}` });
+        return;
+      }
+    }
+
+    try {
+      const result = await this.service.validarLoteAdscripcionesPorUnidad(
+        req.rhAccess,
+        unidadId,
+        body as Record<string, unknown>
+      );
+      if (typeof res.set === 'function') {
+        res.set('Cache-Control', 'no-store');
+      }
+      res.status(200).json(result);
+    } catch (err) {
+      if (err instanceof RhHttpError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      console.error('Error en POST /api/rh/unidades/:unidadId/adscripciones/lote/validar');
+      res.status(500).json({ error: 'Error interno al validar el lote de adscripciones laborales' });
+    }
+  }
+
+  async createLoteAdscripcionesPorUnidad(req: RhAuthenticatedRequest, res: Response): Promise<void> {
+    if (typeof req.user?.sub !== 'string' || !req.user.sub.trim()) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    if (!req.rhAccess || req.rhAccess.grantedBy !== 'RECURSOS_HUMANOS' || req.rhAccess.scope !== 'GLOBAL') {
+      res.status(403).json({
+        error:
+          'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para ejecutar vinculación múltiple laboral',
+      });
+      return;
+    }
+
+    const unidadId = parseUnidadIdParam(req.params?.unidadId);
+    if (unidadId === null) {
+      res.status(400).json({ error: 'Identificador de unidad de trabajo inválido' });
+      return;
+    }
+
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      res.status(400).json({ error: 'Payload inválido' });
+      return;
+    }
+
+    for (const key of Object.keys(body)) {
+      if (!ALLOWED_LOTE_ADSCRIPCIONES_ROOT_KEYS.has(key)) {
+        res.status(400).json({ error: `Propiedad no permitida: ${key}` });
+        return;
+      }
+    }
+
+    try {
+      const userAgent =
+        typeof req.get === 'function' ? req.get('User-Agent') ?? null : null;
+      const ip = typeof req.ip === 'string' ? req.ip : null;
+
+      const result = await this.service.createLoteAdscripcionesPorUnidad(
+        req.rhAccess,
+        unidadId,
+        body as Record<string, unknown>,
+        {
+          userId: req.user.sub.trim(),
+          ip,
+          userAgent,
+        }
+      );
+
+      if (typeof res.set === 'function') {
+        res.set('Cache-Control', 'no-store');
+      }
+      res.status(200).json(result);
+    } catch (err) {
+      if (err instanceof RhHttpError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      console.error('Error en POST /api/rh/unidades/:unidadId/adscripciones/lote');
+      res.status(500).json({ error: 'Error interno al procesar el lote de adscripciones laborales' });
+    }
+  }
+
+  async listVacacionPeriodos(req: RhAuthenticatedRequest, res: Response): Promise<void> {
+    if (typeof req.user?.sub !== 'string' || !req.user.sub.trim()) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    if (!req.rhAccess || req.rhAccess.grantedBy !== 'RECURSOS_HUMANOS' || req.rhAccess.scope !== 'GLOBAL') {
+      res.status(403).json({
+        error: 'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para consultar periodos vacacionales',
+      });
+      return;
+    }
+
+    const queryObj = (req.query ?? {}) as Record<string, unknown>;
+    const rawAnio = extractSingleStringQuery(queryObj.anio)?.trim() ?? null;
+    let anio: number | null = null;
+    if (rawAnio) {
+      const parsed = Number(rawAnio);
+      if (!Number.isInteger(parsed) || parsed < 2000 || parsed > 2100) {
+        res.status(400).json({ error: 'Parámetro anio inválido' });
+        return;
+      }
+      anio = parsed;
+    }
+
+    try {
+      const result = await this.service.listVacacionPeriodos(req.rhAccess, { anio });
+      if (typeof res.set === 'function') {
+        res.set('Cache-Control', 'no-store');
+      }
+      res.status(200).json(result);
+    } catch (err) {
+      if (err instanceof RhHttpError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      console.error('Error en GET /api/rh/vacaciones/periodos');
+      res.status(500).json({ error: 'Error interno al consultar los periodos vacacionales' });
+    }
+  }
+
+  async listVacacionBolsasPersona(req: RhAuthenticatedRequest, res: Response): Promise<void> {
+    if (typeof req.user?.sub !== 'string' || !req.user.sub.trim()) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    if (!req.rhAccess || req.rhAccess.grantedBy !== 'RECURSOS_HUMANOS' || req.rhAccess.scope !== 'GLOBAL') {
+      res.status(403).json({
+        error: 'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para consultar bolsas vacacionales',
+      });
+      return;
+    }
+
+    const personaId = parseUnidadIdParam(req.params?.personaId);
+    if (personaId === null) {
+      res.status(400).json({ error: 'Identificador de persona inválido' });
+      return;
+    }
+
+    const queryObj = (req.query ?? {}) as Record<string, unknown>;
+    const rawAnio = extractSingleStringQuery(queryObj.anio)?.trim() ?? null;
+    const rawPeriodoId = extractSingleStringQuery(queryObj.periodoId)?.trim() ?? null;
+
+    let anio: number | null = null;
+    if (rawAnio) {
+      const parsed = Number(rawAnio);
+      if (!Number.isInteger(parsed) || parsed < 2000 || parsed > 2100) {
+        res.status(400).json({ error: 'Parámetro anio inválido' });
+        return;
+      }
+      anio = parsed;
+    }
+
+    let periodoId: number | null = null;
+    if (rawPeriodoId) {
+      const parsed = parseUnidadIdParam(rawPeriodoId);
+      if (parsed === null) {
+        res.status(400).json({ error: 'Parámetro periodoId inválido' });
+        return;
+      }
+      periodoId = parsed;
+    }
+
+    try {
+      const result = await this.service.listVacacionBolsasPersona(req.rhAccess, personaId, {
+        anio,
+        periodoId,
+      });
+      if (typeof res.set === 'function') {
+        res.set('Cache-Control', 'no-store');
+      }
+      res.status(200).json(result);
+    } catch (err) {
+      if (err instanceof RhHttpError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      console.error('Error en GET /api/rh/personas/:personaId/vacaciones/bolsas');
+      res.status(500).json({ error: 'Error interno al consultar las bolsas vacacionales' });
+    }
+  }
+
+  async upsertVacacionBolsaPersona(req: RhAuthenticatedRequest, res: Response): Promise<void> {
+    if (typeof req.user?.sub !== 'string' || !req.user.sub.trim()) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    if (!req.rhAccess || req.rhAccess.grantedBy !== 'RECURSOS_HUMANOS' || req.rhAccess.scope !== 'GLOBAL') {
+      res.status(403).json({
+        error: 'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para administrar bolsas vacacionales',
+      });
+      return;
+    }
+
+    const personaId = parseUnidadIdParam(req.params?.personaId);
+    if (personaId === null) {
+      res.status(400).json({ error: 'Identificador de persona inválido' });
+      return;
+    }
+
+    const periodoId = parseUnidadIdParam(req.params?.periodoId);
+    if (periodoId === null) {
+      res.status(400).json({ error: 'Identificador de periodo vacacional inválido' });
+      return;
+    }
+
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      res.status(400).json({ error: 'Payload inválido' });
+      return;
+    }
+
+    for (const key of Object.keys(body)) {
+      if (!ALLOWED_UPSERT_VACACION_BOLSA_KEYS.has(key)) {
+        res.status(400).json({ error: `Propiedad no permitida: ${key}` });
+        return;
+      }
+    }
+
+    try {
+      const userAgent =
+        typeof req.get === 'function' ? req.get('User-Agent') ?? null : null;
+      const ip = typeof req.ip === 'string' ? req.ip : null;
+
+      const result = await this.service.upsertVacacionBolsaPersona(
+        req.rhAccess,
+        personaId,
+        periodoId,
+        body as Record<string, unknown>,
+        {
+          userId: req.user.sub.trim(),
+          ip,
+          userAgent,
+        }
+      );
+
+      if (typeof res.set === 'function') {
+        res.set('Cache-Control', 'no-store');
+      }
+      res.status(200).json(result);
+    } catch (err) {
+      if (err instanceof RhHttpError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      console.error('Error en PATCH /api/rh/personas/:personaId/vacaciones/bolsas/:periodoId');
+      res.status(500).json({ error: 'Error interno al actualizar la bolsa vacacional' });
+    }
+  }
+
+  async getVacacionKardexPersona(req: RhAuthenticatedRequest, res: Response): Promise<void> {
+    if (typeof req.user?.sub !== 'string' || !req.user.sub.trim()) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    if (!req.rhAccess || req.rhAccess.grantedBy !== 'RECURSOS_HUMANOS' || req.rhAccess.scope !== 'GLOBAL') {
+      res.status(403).json({
+        error: 'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para consultar el kardex vacacional',
+      });
+      return;
+    }
+
+    const personaId = parseUnidadIdParam(req.params?.personaId);
+    if (personaId === null) {
+      res.status(400).json({ error: 'Identificador de persona inválido' });
+      return;
+    }
+
+    const queryObj = (req.query ?? {}) as Record<string, unknown>;
+    const rawPeriodoId = extractSingleStringQuery(queryObj.periodoId)?.trim() ?? null;
+    const periodoId = rawPeriodoId ? parseUnidadIdParam(rawPeriodoId) : null;
+    if (periodoId === null) {
+      res.status(400).json({ error: 'El parámetro periodoId es obligatorio y debe ser un entero positivo' });
+      return;
+    }
+
+    try {
+      const result = await this.service.getVacacionKardexPersona(req.rhAccess, personaId, periodoId);
+      if (typeof res.set === 'function') {
+        res.set('Cache-Control', 'no-store');
+      }
+      res.status(200).json(result);
+    } catch (err) {
+      if (err instanceof RhHttpError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      console.error('Error en GET /api/rh/personas/:personaId/vacaciones/kardex');
+      res.status(500).json({ error: 'Error interno al consultar el kardex vacacional' });
     }
   }
 }

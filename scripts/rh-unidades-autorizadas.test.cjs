@@ -3098,7 +3098,7 @@ async function run() {
       const adminRoutes = rhRouter.stack.filter(
         (l) => l.route && l.route.path !== '/mi-contexto'
       );
-      assert.equal(adminRoutes.length, 19);
+      assert.equal(adminRoutes.length, 25);
       for (const layer of adminRoutes) {
         assert.equal(
           layer.route.stack.length,
@@ -5487,13 +5487,535 @@ async function run() {
       });
       passed++;
     }
+
+    // =========================================================================
+    // SUITE RH-UX-04B: Vinculación múltiple (/lote/validar y /lote)
+    // =========================================================================
+
+    const lotePersonas = new Map([
+      [1001, { id: 1001, activo: true }],
+      [1002, { id: 1002, activo: false }],
+      [1003, { id: 1003, activo: true }],
+      [1004, { id: 1004, activo: true }],
+      [1005, { id: 1005, activo: true }],
+    ]);
+    const loteExistingAds = [
+      { id: 5001, persona_id: 1003, unidad_medica_id: 177, activo: true, vigente_desde: '2026-01-01', vigente_hasta: null, current_date_iso: '2026-11-20' },
+      { id: 5002, persona_id: 1004, unidad_medica_id: 12, activo: true, vigente_desde: '2026-01-01', vigente_hasta: null, current_date_iso: '2026-11-20' },
+    ];
+    let nextLoteAdsId = 6000;
+    const loteSqlLog = [];
+    const loteAuditLogs = [];
+    const loteLockedIds = [];
+    let simulateLoteAuditFailFor = null;
+
+    const runLoteQuery = async (text, params = []) => {
+      const sql = String(text);
+      loteSqlLog.push(sql);
+
+      if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') {
+        return { rows: [], rowCount: 0 };
+      }
+      if (sql.includes('FROM public.unidad_medica WHERE id = $1')) {
+        return Number(params[0]) === 177
+          ? { rows: [{ id: 177, nombre: 'OFICINA CENTRAL', cluesimb: 'N/A' }], rowCount: 1 }
+          : { rows: [], rowCount: 0 };
+      }
+      if (sql.includes('FROM public.persona WHERE id = ANY($1::int[])')) {
+        const ids = params[0];
+        const rows = ids.map((id) => lotePersonas.get(id)).filter(Boolean);
+        return { rows, rowCount: rows.length };
+      }
+      if (sql.includes('FROM public.rh_adscripcion_laboral') && sql.includes('ANY($1::int[])')) {
+        const ids = new Set(params[0]);
+        const rows = loteExistingAds.filter((a) => ids.has(a.persona_id) && a.activo);
+        return { rows, rowCount: rows.length };
+      }
+      if (sql.includes('FROM public.persona WHERE id = $1 FOR UPDATE')) {
+        const pid = Number(params[0]);
+        loteLockedIds.push(pid);
+        const p = lotePersonas.get(pid);
+        return { rows: p ? [{ ...p }] : [], rowCount: p ? 1 : 0 };
+      }
+      if (sql.includes('FROM public.rh_adscripcion_laboral') && sql.includes('AND unidad_medica_id = $2')) {
+        const pid = Number(params[0]);
+        const umId = Number(params[1]);
+        const found = loteExistingAds.find((a) => a.persona_id === pid && a.unidad_medica_id === umId && a.activo);
+        return { rows: found ? [{ id: found.id }] : [], rowCount: found ? 1 : 0 };
+      }
+      if (sql.includes('INSERT INTO public.rh_adscripcion_laboral')) {
+        const id = ++nextLoteAdsId;
+        loteExistingAds.push({
+          id,
+          persona_id: Number(params[0]),
+          unidad_medica_id: Number(params[1]),
+          activo: true,
+          vigente_desde: String(params[7]),
+          vigente_hasta: params[8] ?? null,
+          current_date_iso: '2026-11-20',
+        });
+        return { rows: [{ id }], rowCount: 1 };
+      }
+      if (sql.includes('INSERT INTO public.app_audit_logs')) {
+        const payload = JSON.parse(String(params[5]));
+        if (simulateLoteAuditFailFor === payload.persona_id) {
+          throw new Error('Simulated lote audit failure');
+        }
+        loteAuditLogs.push(payload);
+        return { rows: [{ id: loteAuditLogs.length }], rowCount: 1 };
+      }
+      throw new Error(`Unexpected SQL in RH-UX-04B test: ${sql}`);
+    };
+
+    pool.query = runLoteQuery;
+    pool.connect = async () => ({ query: runLoteQuery, release: () => {} });
+
+    // 71 (RH-UX-04B): Vista previa (/lote/validar) — permisos, validaciones 400/404, clasificación de 5 estados y cero escrituras SQL
+    {
+      const rhGlobal = { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' };
+      const rhClues = { scope: 'CLUES', clues: ['BCIMB000012'], grantedBy: 'RECURSOS_HUMANOS' };
+      const adminTic = { scope: 'GLOBAL', clues: [], grantedBy: 'ADMIN_TIC' };
+
+      for (const bad of [rhClues, adminTic, undefined]) {
+        const r1 = createMockRes();
+        await controller.validarLoteAdscripcionesPorUnidad({ user: { sub: AUTH_USER_UUID }, rhAccess: bad, params: { unidadId: '177' }, body: { items: [] } }, r1);
+        assert.equal(r1.statusCode, 403);
+        const r2 = createMockRes();
+        await controller.createLoteAdscripcionesPorUnidad({ user: { sub: AUTH_USER_UUID }, rhAccess: bad, params: { unidadId: '177' }, body: { items: [] } }, r2);
+        assert.equal(r2.statusCode, 403);
+      }
+
+      // Lote vacío -> 400
+      const resEmpty = createMockRes();
+      await controller.validarLoteAdscripcionesPorUnidad({ user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { unidadId: '177' }, body: { items: [] } }, resEmpty);
+      assert.equal(resEmpty.statusCode, 400);
+
+      // Más de 100 -> 400
+      const over100 = Array.from({ length: 101 }, (_, i) => ({ persona_id: i + 1 }));
+      const resOver = createMockRes();
+      await controller.validarLoteAdscripcionesPorUnidad({ user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { unidadId: '177' }, body: { defaults: { vigente_desde: '2026-11-20' }, items: over100 } }, resOver);
+      assert.equal(resOver.statusCode, 400);
+
+      // IDs duplicados en lote -> 400
+      const resDup = createMockRes();
+      await controller.validarLoteAdscripcionesPorUnidad({ user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { unidadId: '177' }, body: { defaults: { vigente_desde: '2026-11-20' }, items: [{ persona_id: 1001 }, { persona_id: 1001 }] } }, resDup);
+      assert.equal(resDup.statusCode, 400);
+
+      // Unidad inexistente -> 404
+      const resNoUm = createMockRes();
+      await controller.validarLoteAdscripcionesPorUnidad({ user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { unidadId: '9999' }, body: { defaults: { vigente_desde: '2026-11-20' }, items: [{ persona_id: 1001 }] } }, resNoUm);
+      assert.equal(resNoUm.statusCode, 404);
+
+      // Vista previa con los 5 estados
+      loteSqlLog.length = 0;
+      const resPreview = createMockRes();
+      await controller.validarLoteAdscripcionesPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: rhGlobal,
+          params: { unidadId: '177' },
+          body: {
+            defaults: { vigente_desde: '2026-11-20', turno: 'Matutino' },
+            items: [
+              { persona_id: 1001 }, // ELEGIBLE (sin matrícula ni puesto)
+              { persona_id: 1002 }, // PERSONA_INACTIVA
+              { persona_id: 1003 }, // YA_VINCULADA
+              { persona_id: 1004 }, // CONFLICTO_ADSCRIPCION
+              { persona_id: 9999 }, // DATOS_INVALIDOS (inexistente)
+            ],
+          },
+        },
+        resPreview
+      );
+      assert.equal(resPreview.statusCode, 200);
+      assert.equal(resPreview.headers['cache-control'], 'no-store');
+      assert.equal(resPreview.body.elegibles, 1);
+      assert.equal(resPreview.body.personas_inactivas, 1);
+      assert.equal(resPreview.body.ya_vinculadas, 1);
+      assert.equal(resPreview.body.conflictos_adscripcion, 1);
+      assert.equal(resPreview.body.datos_invalidos, 1);
+      assert.equal(loteSqlLog.some((q) => /(INSERT|UPDATE|DELETE)/i.test(q)), false);
+      passed++;
+    }
+
+    // 72 (RH-UX-04B): Ejecución (/lote) — ordenamiento ASC, FOR UPDATE, éxito parcial controlado, auditoría con lote_id y ROLLBACK ante fallo de auditoría
+    {
+      const rhGlobal = { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' };
+      loteLockedIds.length = 0;
+      loteAuditLogs.length = 0;
+      simulateLoteAuditFailFor = 1005;
+
+      const resExec = createMockRes();
+      await controller.createLoteAdscripcionesPorUnidad(
+        {
+          user: { sub: AUTH_USER_UUID },
+          rhAccess: rhGlobal,
+          params: { unidadId: '177' },
+          body: {
+            defaults: { vigente_desde: '2026-11-20' },
+            items: [
+              { persona_id: 1005 }, // fallará auditoría -> ERROR_INTERNO con ROLLBACK
+              { persona_id: 1003 }, // YA_VINCULADA -> OMITIDA_DUPLICADO (sin auditoría)
+              { persona_id: 1002 }, // PERSONA_INACTIVA
+              { persona_id: 1001, puesto: 'Coordinación' }, // CREADA + auditoría con lote_id
+            ],
+          },
+        },
+        resExec
+      );
+      simulateLoteAuditFailFor = null;
+
+      assert.equal(resExec.statusCode, 200);
+      assert.equal(resExec.headers['cache-control'], 'no-store');
+      assert.equal(typeof resExec.body.lote_id, 'string');
+      assert.equal(resExec.body.total_solicitados, 4);
+      assert.equal(resExec.body.creadas, 1);
+      assert.equal(resExec.body.omitidas, 1);
+      assert.equal(resExec.body.errores, 2);
+      // Verificar orden ascendente de bloqueos FOR UPDATE
+      assert.deepEqual(loteLockedIds, [1001, 1002, 1003, 1005]);
+      // Solo 1 evento de auditoría (1001), con lote_id
+      assert.equal(loteAuditLogs.length, 1);
+      assert.equal(loteAuditLogs[0].persona_id, 1001);
+      assert.equal(loteAuditLogs[0].lote_id, resExec.body.lote_id);
+      passed++;
+    }
+
+    // =========================================================================
+    // 73-77 (RH-VAC-02): Periodos institucionales, bolsas, fechas discontinuas,
+    //                    kardex consolidado, anulación y RBAC
+    // =========================================================================
+    {
+      const vacPeriodos = [
+        {
+          id: 2,
+          anio: 2026,
+          numero_periodo: 2,
+          clave: '2026-P2',
+          nombre: 'Segundo periodo 2026',
+          fecha_inicio: '2026-07-01',
+          fecha_fin: '2026-12-31',
+          dias_base_provisionales: 10,
+          activo: true,
+          observaciones: null,
+        },
+      ];
+      const vacBolsas = new Map(); // key `${personaId}:${periodoId}`
+      const vacRegistros = [];
+      const vacFechas = [];
+      const vacAudits = [];
+      let nextRegId = 900;
+      let nextFechaId = 5000;
+      let failVacAudit = false;
+
+      const handleVacQuery = async (sql, params = []) => {
+        const s = String(sql);
+        if (s === 'BEGIN' || s === 'COMMIT' || s === 'ROLLBACK') {
+          return { rows: [], rowCount: 0 };
+        }
+        if (s.includes('FROM public.rh_vacacion_periodo') && !s.includes('LEFT JOIN public.rh_vacacion_bolsa')) {
+          if (s.includes('WHERE id = $1')) {
+            const p = vacPeriodos.find((x) => x.id === Number(params[0]));
+            return { rows: p ? [p] : [], rowCount: p ? 1 : 0 };
+          }
+          const rows = params.length > 0 ? vacPeriodos.filter((x) => x.anio === Number(params[0])) : vacPeriodos;
+          return { rows, rowCount: rows.length };
+        }
+        if (s.includes('FROM public.persona WHERE id = $1')) {
+          const exists = Number(params[0]) === 777;
+          return { rows: exists ? [{ id: 777 }] : [], rowCount: exists ? 1 : 0 };
+        }
+        if (s.includes('FROM public.rh_vacacion_periodo p') && s.includes('LEFT JOIN public.rh_vacacion_bolsa b')) {
+          const pid = Number(params[0]);
+          const rows = vacPeriodos.map((per) => {
+            const b = vacBolsas.get(`${pid}:${per.id}`) || null;
+            return {
+              periodo_id: per.id,
+              anio: per.anio,
+              numero_periodo: per.numero_periodo,
+              periodo_clave: per.clave,
+              periodo_nombre: per.nombre,
+              periodo_fecha_inicio: per.fecha_inicio,
+              periodo_fecha_fin: per.fecha_fin,
+              dias_base_provisionales: per.dias_base_provisionales,
+              bolsa_id: b ? b.id : null,
+              dias_asignados: b ? b.dias_asignados : null,
+              estado_asignacion: b ? b.estado_asignacion : null,
+              justificacion_ajuste: b ? b.justificacion_ajuste : null,
+              calendario_laboral_codigo: b ? b.calendario_laboral_codigo : null,
+              actualizado_en: b ? b.actualizado_en : null,
+            };
+          });
+          return { rows, rowCount: rows.length };
+        }
+        if (s.includes('INSERT INTO public.rh_vacacion_bolsa')) {
+          const [pid, perId, dias, estado, justif, cal] = params;
+          const b = {
+            id: 301,
+            persona_id: Number(pid),
+            periodo_id: Number(perId),
+            dias_asignados: Number(dias),
+            estado_asignacion: String(estado),
+            justificacion_ajuste: justif ?? null,
+            calendario_laboral_codigo: cal ?? null,
+            actualizado_en: new Date().toISOString(),
+          };
+          vacBolsas.set(`${pid}:${perId}`, b);
+          return { rows: [b], rowCount: 1 };
+        }
+        if (s.includes('FROM public.rh_vacacion_bolsa') && s.includes('WHERE persona_id = $1')) {
+          const b = vacBolsas.get(`${Number(params[0])}:${Number(params[1])}`) || null;
+          return { rows: b ? [b] : [], rowCount: b ? 1 : 0 };
+        }
+        if (s.includes('COALESCE(SUM(dias_registrados), 0)')) {
+          const pid = Number(params[0]);
+          const perId = Number(params[1]);
+          const sum = vacRegistros
+            .filter((r) => r.persona_id === pid && r.periodo_id === perId && r.estado === 'REGISTRADO')
+            .reduce((acc, r) => acc + r.dias_registrados, 0);
+          return { rows: [{ consumidos: sum }], rowCount: 1 };
+        }
+        if (s.includes('FROM public.rh_vacacion_registro_fecha') && s.includes('ANY($3::date[])')) {
+          const [pid, perId, dates] = params;
+          const hit = vacFechas.find(
+            (f) => f.persona_id === Number(pid) && f.periodo_id === Number(perId) && f.activo && f.computable && dates.includes(f.fecha)
+          );
+          return { rows: hit ? [{ fecha: hit.fecha }] : [], rowCount: hit ? 1 : 0 };
+        }
+        if (s.includes('INSERT INTO public.rh_vacacion_registro (')) {
+          const [pid, adsId, anio, perNom, perId, fIni, fFin, dias, docRef, obs] = params;
+          const row = {
+            id: ++nextRegId,
+            persona_id: Number(pid),
+            adscripcion_id: adsId ?? null,
+            anio_ciclo: Number(anio),
+            periodo_referencia: String(perNom),
+            periodo_id: Number(perId),
+            modo_registro: 'FECHAS_DETALLADAS',
+            fecha_inicio: String(fIni),
+            fecha_fin: String(fFin),
+            dias_registrados: Number(dias),
+            documento_referencia: docRef ?? null,
+            observaciones: obs ?? null,
+            estado: 'REGISTRADO',
+            motivo_anulacion: null,
+            anulado_en: null,
+            creado_en: new Date().toISOString(),
+            actualizado_en: new Date().toISOString(),
+          };
+          vacRegistros.push(row);
+          return { rows: [row], rowCount: 1 };
+        }
+        if (s.includes('INSERT INTO public.rh_vacacion_registro_fecha')) {
+          const [regId, pid, perId, fecha, comp, motivo] = params;
+          vacFechas.push({
+            id: ++nextFechaId,
+            registro_id: Number(regId),
+            persona_id: Number(pid),
+            periodo_id: Number(perId),
+            fecha: String(fecha),
+            computable: Boolean(comp),
+            motivo_exclusion: motivo ?? null,
+            activo: true,
+          });
+          return { rows: [], rowCount: 1 };
+        }
+        if (s.includes('FROM public.rh_vacacion_registro') && s.includes('WHERE persona_id = $1') && s.includes('AND periodo_id = $2')) {
+          const rows = vacRegistros.filter((r) => r.persona_id === Number(params[0]) && r.periodo_id === Number(params[1]));
+          return { rows, rowCount: rows.length };
+        }
+        if (s.includes('FROM public.rh_vacacion_registro_fecha') && s.includes('WHERE registro_id = ANY($1::int[])')) {
+          const ids = params[0];
+          const rows = vacFechas.filter((f) => ids.includes(f.registro_id));
+          return { rows, rowCount: rows.length };
+        }
+        if (s.includes('FROM public.rh_vacacion_registro') && s.includes('WHERE id = $1')) {
+          const r = vacRegistros.find((x) => x.id === Number(params[0]) && x.persona_id === Number(params[1]));
+          return { rows: r ? [r] : [], rowCount: r ? 1 : 0 };
+        }
+        if (s.includes('UPDATE public.rh_vacacion_registro') && s.includes("SET estado = 'ANULADO'")) {
+          const [motivo, , regId, pid] = params;
+          const r = vacRegistros.find((x) => x.id === Number(regId) && x.persona_id === Number(pid));
+          if (r) {
+            r.estado = 'ANULADO';
+            r.motivo_anulacion = motivo;
+            r.anulado_en = new Date().toISOString();
+          }
+          return { rows: [{ anulado_en: r?.anulado_en, actualizado_en: new Date().toISOString() }], rowCount: r ? 1 : 0 };
+        }
+        if (s.includes('UPDATE public.rh_vacacion_registro_fecha') && s.includes('SET activo = FALSE')) {
+          const [regId, pid] = params;
+          for (const f of vacFechas) {
+            if (f.registro_id === Number(regId) && f.persona_id === Number(pid)) {
+              f.activo = false;
+            }
+          }
+          return { rows: [], rowCount: 1 };
+        }
+        if (s.includes('INSERT INTO public.app_audit_logs')) {
+          if (failVacAudit) {
+            throw new Error('Simulated audit failure');
+          }
+          vacAudits.push({ action: params[1], payload: JSON.parse(params[5]) });
+          return { rows: [], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 0 };
+      };
+
+      pool.query = handleVacQuery;
+      pool.connect = async () => ({
+        query: handleVacQuery,
+        release: () => {},
+      });
+
+      const rhGlobalUserId = '11111111-1111-4111-8111-111111111111';
+      const rhGlobalAccess = { grantedBy: 'RECURSOS_HUMANOS', scope: 'GLOBAL', cluesimb: null };
+      const rhCluesAccess = { grantedBy: 'RECURSOS_HUMANOS', scope: 'CLUES', cluesimb: 'BCIMS000001' };
+
+      // 73: Periodos institucionales + RBAC (RH CLUES rechazado con 403)
+      const resPerClues = createMockRes();
+      await controller.listVacacionPeriodos({ user: { sub: rhGlobalUserId }, rhAccess: rhCluesAccess, query: {} }, resPerClues);
+      assert.equal(resPerClues.statusCode, 403);
+
+      const resPerOk = createMockRes();
+      await controller.listVacacionPeriodos({ user: { sub: rhGlobalUserId }, rhAccess: rhGlobalAccess, query: { anio: '2026' } }, resPerOk);
+      assert.equal(resPerOk.statusCode, 200);
+      assert.equal(resPerOk.body.items.length, 1);
+      assert.equal(resPerOk.body.items[0].clave, '2026-P2');
+      passed++;
+
+      // 74: Bolsa inexistente -> ajuste sin justificación (400) -> asignación PROVISIONAL 10 días (200 + auditoría)
+      const resBolsaEmpty = createMockRes();
+      await controller.listVacacionBolsasPersona({ user: { sub: rhGlobalUserId }, rhAccess: rhGlobalAccess, params: { personaId: '777' }, query: {} }, resBolsaEmpty);
+      assert.equal(resBolsaEmpty.statusCode, 200);
+      assert.equal(resBolsaEmpty.body.items[0].estado_asignacion, 'INEXISTENTE');
+      assert.equal(resBolsaEmpty.body.items[0].dias_asignados, null);
+
+      const resBolsaBadAdj = createMockRes();
+      await controller.upsertVacacionBolsaPersona(
+        { user: { sub: rhGlobalUserId }, rhAccess: rhGlobalAccess, params: { personaId: '777', periodoId: '2' }, body: { dias_asignados: 12, estado_asignacion: 'AJUSTADA' } },
+        resBolsaBadAdj
+      );
+      assert.equal(resBolsaBadAdj.statusCode, 400);
+
+      const resBolsaSet = createMockRes();
+      await controller.upsertVacacionBolsaPersona(
+        { user: { sub: rhGlobalUserId }, rhAccess: rhGlobalAccess, params: { personaId: '777', periodoId: '2' }, body: { dias_asignados: 10, estado_asignacion: 'PROVISIONAL' } },
+        resBolsaSet
+      );
+      assert.equal(resBolsaSet.statusCode, 200);
+      assert.equal(resBolsaSet.body.bolsa.dias_asignados, 10);
+      assert.equal(vacAudits.some((a) => a.action === 'RH_UPSERT_VACACION_BOLSA'), true);
+      passed++;
+
+      // 75: Registro con 6 fechas discontinuas + 1 excluida con motivo (201) + rechazo fuera de semestre (400) + rechazo excedente (409)
+      const resOutSem = createMockRes();
+      await controller.createVacacionPersona(
+        {
+          user: { sub: rhGlobalUserId },
+          rhAccess: rhGlobalAccess,
+          params: { personaId: '777' },
+          body: { periodo_id: 2, fechas: [{ fecha: '2026-06-15', computable: true }] },
+        },
+        resOutSem
+      );
+      assert.equal(resOutSem.statusCode, 400);
+
+      const resSixDates = createMockRes();
+      await controller.createVacacionPersona(
+        {
+          user: { sub: rhGlobalUserId },
+          rhAccess: rhGlobalAccess,
+          params: { personaId: '777' },
+          body: {
+            periodo_id: 2,
+            fechas: [
+              { fecha: '2026-12-23', computable: true },
+              { fecha: '2026-12-24', computable: true },
+              { fecha: '2026-12-25', computable: false, motivo_exclusion: 'Día festivo oficial' },
+              { fecha: '2026-12-28', computable: true },
+              { fecha: '2026-12-29', computable: true },
+              { fecha: '2026-12-30', computable: true },
+              { fecha: '2026-12-31', computable: true },
+            ],
+          },
+        },
+        resSixDates
+      );
+      assert.equal(resSixDates.statusCode, 201);
+      assert.equal(resSixDates.body.registro.dias_registrados, 6);
+      assert.equal(resSixDates.body.registro.fecha_inicio, '2026-12-23');
+      assert.equal(resSixDates.body.registro.fecha_fin, '2026-12-31');
+
+      // Excedente de bolsa (quedan 4, pide 5 -> 409)
+      const resExceed = createMockRes();
+      await controller.createVacacionPersona(
+        {
+          user: { sub: rhGlobalUserId },
+          rhAccess: rhGlobalAccess,
+          params: { personaId: '777' },
+          body: {
+            periodo_id: 2,
+            fechas: [
+              { fecha: '2026-11-02', computable: true },
+              { fecha: '2026-11-03', computable: true },
+              { fecha: '2026-11-04', computable: true },
+              { fecha: '2026-11-05', computable: true },
+              { fecha: '2026-11-06', computable: true },
+            ],
+          },
+        },
+        resExceed
+      );
+      assert.equal(resExceed.statusCode, 409);
+      passed++;
+
+      // 76: Kardex consolidado calcula saldo (10 - 6 = 4) y expone fechas excluidas
+      const resKardex = createMockRes();
+      await controller.getVacacionKardexPersona(
+        { user: { sub: rhGlobalUserId }, rhAccess: rhGlobalAccess, params: { personaId: '777' }, query: { periodoId: '2' } },
+        resKardex
+      );
+      assert.equal(resKardex.statusCode, 200);
+      assert.equal(resKardex.body.resumen.dias_asignados, 10);
+      assert.equal(resKardex.body.resumen.dias_computables_registrados, 6);
+      assert.equal(resKardex.body.resumen.saldo_administrativo, 4);
+      assert.equal(resKardex.body.resumen.es_provisional, true);
+      assert.equal(resKardex.body.movimientos[0].fechas.length, 7);
+      passed++;
+
+      // 77: Anulación de movimiento detallado desactiva fechas y libera saldo (saldo vuelve a 10)
+      const createdId = resSixDates.body.registro.id;
+      const resAnular = createMockRes();
+      await controller.anularVacacionPersona(
+        {
+          user: { sub: rhGlobalUserId },
+          rhAccess: rhGlobalAccess,
+          params: { personaId: '777', registroId: String(createdId) },
+          body: { motivo_anulacion: 'Cancelación administrativa' },
+        },
+        resAnular
+      );
+      assert.equal(resAnular.statusCode, 200);
+      assert.equal(resAnular.body.registro.estado, 'ANULADO');
+      assert.equal(vacFechas.every((f) => f.activo === false), true);
+
+      const resKardexAfter = createMockRes();
+      await controller.getVacacionKardexPersona(
+        { user: { sub: rhGlobalUserId }, rhAccess: rhGlobalAccess, params: { personaId: '777' }, query: { periodoId: '2' } },
+        resKardexAfter
+      );
+      assert.equal(resKardexAfter.body.resumen.dias_computables_registrados, 0);
+      assert.equal(resKardexAfter.body.resumen.saldo_administrativo, 10);
+      passed++;
+    }
   } finally {
     pool.query = originalQuery;
     pool.connect = originalConnect;
   }
 
   console.log(
-    `RH-API.1 + RH-2B.1 + RH-2B.4A + RH-2B.4C + RH-2B.4E + RH-2B.4G.1 + RH-2B.4G.2 + RH-2B.4G.2A + RH-2C.2 + RH-4A.1A + RH-4A.1A.1 + RH-4A.2A + RH-4A.3A + RH-4A.3A.1 + RH-4A.4A + RH-4A.5B + RH-4A.7A + RH-4A.7C + BUGFIX TESTS PASSED: ${passed}/70`
+    `RH-API.1 + RH-2B.1 + RH-2B.4A + RH-2B.4C + RH-2B.4E + RH-2B.4G.1 + RH-2B.4G.2 + RH-2B.4G.2A + RH-2C.2 + RH-4A.1A + RH-4A.1A.1 + RH-4A.2A + RH-4A.3A + RH-4A.3A.1 + RH-4A.4A + RH-4A.5B + RH-4A.7A + RH-4A.7C + BUGFIX + RH-UX-04B + RH-VAC-02 TESTS PASSED: ${passed}/77`
   );
 }
 

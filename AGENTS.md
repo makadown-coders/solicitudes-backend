@@ -39,3 +39,9 @@
 - Ejecutar `npm run build` después de cambios de TypeScript.
 - El script `npm test` actualmente no contiene una suite real; no reportarlo como prueba aprobada.
 - No escribir secretos ni modificar `.env`. No hacer commit ni push salvo solicitud explícita.
+
+## Convención institucional de paginación y búsqueda (contratos API)
+
+- Los endpoints paginados deben aceptar parámetros consistentes (`page`, `pageSize` con tope razonable en servidor, `q` y filtros de dominio) y devolver `items`, `page`, `pageSize` y `total`.
+- Aplicar todos los filtros y búsquedas en SQL parametrizado **antes** de `LIMIT` / `OFFSET` y calcular `total` sobre el conjunto filtrado real (p. ej. `COUNT(*) OVER() AS total`).
+- En búsquedas de unidades institucionales, contemplar tanto nombre como `cluesimb`, incluyendo unidades administrativas como `OFICINA CENTRAL` (`cluesimb = 'N/A'`) sin excluirlas por ausencia de CLUES convencional.

@@ -5453,13 +5453,47 @@ async function run() {
       assert.equal(fiAudits.length, auditsBefore + 1);
       passed++;
     }
+
+    // 70 (BUGFIX resolveRhAccess): RECURSOS_HUMANOS GLOBAL con scope_id='*' junto a otros roles (WISHLIST/FINANZAS) y junto a ADMIN_TIC GLOBAL
+    {
+      const withExtraRoles = resolveRhAccess([
+        { code: 'WISHLIST', scope: 'GLOBAL', id: '*' },
+        { code: 'FINANZAS', scope: 'GLOBAL', id: '*' },
+        { code: 'RECURSOS_HUMANOS', scope: 'GLOBAL', id: '*' },
+      ]);
+      assert.deepEqual(withExtraRoles, {
+        scope: 'GLOBAL',
+        clues: [],
+        grantedBy: 'RECURSOS_HUMANOS',
+      });
+
+      const withAdminTicAndRh = resolveRhAccess([
+        { code: 'ADMIN_TIC', scope: 'GLOBAL', id: '*' },
+        { code: 'RECURSOS_HUMANOS', scope: 'GLOBAL', id: '*' },
+      ]);
+      assert.deepEqual(withAdminTicAndRh, {
+        scope: 'GLOBAL',
+        clues: [],
+        grantedBy: 'RECURSOS_HUMANOS',
+      });
+
+      const onlyAdminTicStar = resolveRhAccess([
+        { code: 'ADMIN_TIC', scope: 'GLOBAL', id: '*' },
+      ]);
+      assert.deepEqual(onlyAdminTicStar, {
+        scope: 'GLOBAL',
+        clues: [],
+        grantedBy: 'ADMIN_TIC',
+      });
+      passed++;
+    }
   } finally {
     pool.query = originalQuery;
     pool.connect = originalConnect;
   }
 
   console.log(
-    `RH-API.1 + RH-2B.1 + RH-2B.4A + RH-2B.4C + RH-2B.4E + RH-2B.4G.1 + RH-2B.4G.2 + RH-2B.4G.2A + RH-2C.2 + RH-4A.1A + RH-4A.1A.1 + RH-4A.2A + RH-4A.3A + RH-4A.3A.1 + RH-4A.4A + RH-4A.5B + RH-4A.7A + RH-4A.7C TESTS PASSED: ${passed}/69`
+    `RH-API.1 + RH-2B.1 + RH-2B.4A + RH-2B.4C + RH-2B.4E + RH-2B.4G.1 + RH-2B.4G.2 + RH-2B.4G.2A + RH-2C.2 + RH-4A.1A + RH-4A.1A.1 + RH-4A.2A + RH-4A.3A + RH-4A.3A.1 + RH-4A.4A + RH-4A.5B + RH-4A.7A + RH-4A.7C + BUGFIX TESTS PASSED: ${passed}/70`
   );
 }
 

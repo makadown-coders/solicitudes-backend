@@ -269,6 +269,7 @@ export interface RhPersonasPadronPagedResult {
 export interface RhPersonasPadronQueryOpts extends RhListQueryOpts {
   estado?: 'activas' | 'inactivas' | 'todas';
   unidadId?: number | null;
+  sinUnidad?: boolean;
 }
 
 export interface RhUpdatePersonaGeneralResult {
@@ -2990,7 +2991,9 @@ export default class RhService {
       conditions.push('p.activo = FALSE');
     }
 
-    if (opts.unidadId !== null && opts.unidadId !== undefined) {
+    if (opts.sinUnidad === true) {
+      conditions.push('p.unidad_medica_id IS NULL');
+    } else if (opts.unidadId !== null && opts.unidadId !== undefined) {
       params.push(opts.unidadId);
       conditions.push(`p.unidad_medica_id = $${params.length}`);
     }

@@ -833,14 +833,19 @@ export default class RhController {
     }
 
     let unidadId: number | null = null;
+    let sinUnidad = false;
     const rawUnidadId = extractSingleStringQuery(query.unidadId);
     if (rawUnidadId !== null && rawUnidadId.trim() !== '') {
-      const parsedUnidad = parseUnidadIdParam(rawUnidadId);
-      if (parsedUnidad === null) {
-        res.status(400).json({ error: 'El parámetro "unidadId" debe ser un entero positivo válido' });
-        return;
+      if (rawUnidadId.trim().toLowerCase() === 'sin_unidad') {
+        sinUnidad = true;
+      } else {
+        const parsedUnidad = parseUnidadIdParam(rawUnidadId);
+        if (parsedUnidad === null) {
+          res.status(400).json({ error: 'El parámetro "unidadId" debe ser un entero positivo válido o "sin_unidad"' });
+          return;
+        }
+        unidadId = parsedUnidad;
       }
-      unidadId = parsedUnidad;
     }
 
     try {
@@ -850,6 +855,7 @@ export default class RhController {
         pageSize: parsedPagination.pageSize,
         estado,
         unidadId,
+        sinUnidad,
       });
 
       if (typeof res.set === 'function') {

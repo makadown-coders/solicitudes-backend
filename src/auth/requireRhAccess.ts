@@ -16,6 +16,17 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
+function isGlobalScopeId(id: unknown): boolean {
+  if (id === null || id === undefined) {
+    return true;
+  }
+  if (typeof id === 'string') {
+    const trimmed = id.trim();
+    return trimmed === '' || trimmed === '*';
+  }
+  return false;
+}
+
 /**
  * Resuelve el alcance efectivo de Recursos Humanos a partir de `req.user.roles`.
  * - `RECURSOS_HUMANOS` con `{ scope: 'GLOBAL', id: null }` -> GLOBAL.
@@ -37,9 +48,9 @@ export function resolveRhAccess(rawRoles: unknown): RhAccessContext | null {
     const scope = typeof r.scope === 'string' ? r.scope.trim().toUpperCase() : '';
     const id = r.id;
 
-    if (code === 'RECURSOS_HUMANOS' && scope === 'GLOBAL' && id === null) {
+    if (code === 'RECURSOS_HUMANOS' && scope === 'GLOBAL' && isGlobalScopeId(id)) {
       hasRhGlobal = true;
-    } else if (code === 'ADMIN_TIC' && scope === 'GLOBAL' && id === null) {
+    } else if (code === 'ADMIN_TIC' && scope === 'GLOBAL' && isGlobalScopeId(id)) {
       hasAdminTicGlobal = true;
     } else if (code === 'RECURSOS_HUMANOS' && scope === 'CLUES' && typeof id === 'string') {
       const norm = id.trim().toUpperCase();

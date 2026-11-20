@@ -120,6 +120,34 @@ router.patch(
 );
 
 router.get(
+  '/vacaciones/periodos',
+  requireAuth,
+  requireRhAccess(),
+  controller.listVacacionPeriodos.bind(controller)
+);
+
+router.get(
+  '/personas/:personaId/vacaciones/bolsas',
+  requireAuth,
+  requireRhAccess(),
+  controller.listVacacionBolsasPersona.bind(controller)
+);
+
+router.patch(
+  '/personas/:personaId/vacaciones/bolsas/:periodoId',
+  requireAuth,
+  requireRhAccess(),
+  controller.upsertVacacionBolsaPersona.bind(controller)
+);
+
+router.get(
+  '/personas/:personaId/vacaciones/kardex',
+  requireAuth,
+  requireRhAccess(),
+  controller.getVacacionKardexPersona.bind(controller)
+);
+
+router.get(
   '/personas/:personaId/vacaciones',
   requireAuth,
   requireRhAccess(),
@@ -145,6 +173,20 @@ router.get(
   requireAuth,
   requireRhAccess(),
   controller.listAdscripcionesPersona.bind(controller)
+);
+
+router.post(
+  '/unidades/:unidadId/adscripciones/lote/validar',
+  requireAuth,
+  requireRhAccess(),
+  controller.validarLoteAdscripcionesPorUnidad.bind(controller)
+);
+
+router.post(
+  '/unidades/:unidadId/adscripciones/lote',
+  requireAuth,
+  requireRhAccess(),
+  controller.createLoteAdscripcionesPorUnidad.bind(controller)
 );
 
 export default router;

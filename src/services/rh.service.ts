@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { pool } from '../db/pool';
 import type { RhAccessContext, RhAccessScope } from '../auth/requireRhAccess';
 
@@ -242,6 +243,7 @@ export interface RhPersonaAdminDto {
   curp_masked: string | null;
   activo: boolean;
   fecha_baja: string | null;
+  fecha_ingreso?: string | null;
 }
 
 export interface RhUpdatePersonaEstadoResult {
@@ -268,6 +270,7 @@ export interface RhPersonasPadronPagedResult {
 export interface RhPersonasPadronQueryOpts extends RhListQueryOpts {
   estado?: 'activas' | 'inactivas' | 'todas';
   unidadId?: number | null;
+  sinUnidad?: boolean;
 }
 
 export interface RhUpdatePersonaGeneralResult {
@@ -2543,6 +2546,22 @@ export default class RhService {
       hasOwn('curp') && input.curp !== undefined ? normalizeAndValidateCurp(input.curp) : null;
     const cargo = hasOwn('cargo') ? normalizeOptionalVarchar(input.cargo, 'cargo', 100) : null;
 
+    let fechaIngreso: string | null = null;
+    if (hasOwn('fecha_ingreso') && input.fecha_ingreso !== null && input.fecha_ingreso !== undefined) {
+      if (typeof input.fecha_ingreso === 'string' && input.fecha_ingreso.trim() === '') {
+        fechaIngreso = null;
+      } else {
+        const parsedFecha = parseStrictIsoDate(input.fecha_ingreso, 'fecha_ingreso');
+        if (parsedFecha < '1940-01-01' || parsedFecha > '2100-12-31') {
+          throw new RhHttpError(
+            400,
+            'El campo "fecha_ingreso" debe estar entre 1940-01-01 y 2100-12-31'
+          );
+        }
+        fechaIngreso = parsedFecha;
+      }
+    }
+
     let correoPrincipal: string | null = null;
     if (hasOwn('correo_principal') && input.correo_principal !== null && input.correo_principal !== undefined) {
       if (typeof input.correo_principal !== 'string') {
@@ -2599,6 +2618,7 @@ export default class RhService {
         curp: string | null;
         activo: boolean;
         fecha_baja: unknown;
+        fecha_ingreso?: unknown;
       }>(
         `INSERT INTO public.persona (
            nombres,
@@ -2608,9 +2628,10 @@ export default class RhService {
            cargo,
            correo_principal,
            unidad_medica_id,
+           fecha_ingreso,
            activo
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE)
          RETURNING
            id,
            nombre_completo,
@@ -2622,8 +2643,9 @@ export default class RhService {
            rfc,
            curp,
            activo,
-           fecha_baja`,
-        [nombres, apellidos, rfc, curp, cargo, correoPrincipal, unidadMedicaId]
+           fecha_baja,
+           fecha_ingreso`,
+        [nombres, apellidos, rfc, curp, cargo, correoPrincipal, unidadMedicaId, fechaIngreso]
       );
 
       const created = insertRes.rows[0];
@@ -2635,6 +2657,7 @@ export default class RhService {
       if (cargo !== null) camposRegistrados.push('cargo');
       if (correoPrincipal !== null) camposRegistrados.push('correo_principal');
       if (unidadMedicaId !== null) camposRegistrados.push('unidad_medica_id');
+      if (fechaIngreso !== null) camposRegistrados.push('fecha_ingreso');
 
       const auditPayload = {
         persona_id: personaId,
@@ -2675,6 +2698,7 @@ export default class RhService {
         curp_masked: curpInfo.masked,
         activo: Boolean(created.activo),
         fecha_baja: formatDateOnly(created.fecha_baja),
+        fecha_ingreso: formatDateOnly(created.fecha_ingreso ?? fechaIngreso),
       };
     } catch (err: any) {
       try {
@@ -2758,9 +2782,10 @@ export default class RhService {
         curp: string | null;
         activo: boolean;
         fecha_baja: unknown;
+        fecha_ingreso?: unknown;
       }>(
         `SELECT id, nombre_completo, nombres, apellidos, cargo, correo_principal,
-                unidad_medica_id, rfc, curp, activo, fecha_baja
+                unidad_medica_id, rfc, curp, activo, fecha_baja, fecha_ingreso
            FROM public.persona
           WHERE id = $1
             FOR UPDATE`,
@@ -2967,7 +2992,9 @@ export default class RhService {
       conditions.push('p.activo = FALSE');
     }
 
-    if (opts.unidadId !== null && opts.unidadId !== undefined) {
+    if (opts.sinUnidad === true) {
+      conditions.push('p.unidad_medica_id IS NULL');
+    } else if (opts.unidadId !== null && opts.unidadId !== undefined) {
       params.push(opts.unidadId);
       conditions.push(`p.unidad_medica_id = $${params.length}`);
     }
@@ -3005,6 +3032,7 @@ export default class RhService {
         p.curp,
         p.activo,
         p.fecha_baja,
+        p.fecha_ingreso,
         COALESCE(acc.tiene_cuenta_activa, FALSE) AS tiene_cuenta_activa,
         COUNT(*) OVER() AS total
       FROM public.persona p
@@ -3050,6 +3078,7 @@ export default class RhService {
         curp_masked: curpInfo.masked,
         activo: Boolean(r.activo),
         fecha_baja: formatDateOnly(r.fecha_baja),
+        fecha_ingreso: formatDateOnly(r.fecha_ingreso),
         tiene_cuenta_activa: Boolean(r.tiene_cuenta_activa),
       };
     });
@@ -3099,10 +3128,57 @@ export default class RhService {
     const hasOwn = (k: string): boolean => Object.prototype.hasOwnProperty.call(patch, k);
 
     const parsedPatch: {
+      nombres?: string;
+      apellidos?: string;
       cargo?: string | null;
       correo_principal?: string | null;
       unidad_medica_id?: number | null;
+      curp?: string | null;
+      rfc?: string | null;
+      fecha_ingreso?: string | null;
     } = {};
+
+    if (hasOwn('fecha_ingreso')) {
+      if (
+        patch.fecha_ingreso === null ||
+        (typeof patch.fecha_ingreso === 'string' && patch.fecha_ingreso.trim() === '')
+      ) {
+        parsedPatch.fecha_ingreso = null;
+      } else {
+        const parsedFecha = parseStrictIsoDate(patch.fecha_ingreso, 'fecha_ingreso');
+        if (parsedFecha < '1940-01-01' || parsedFecha > '2100-12-31') {
+          throw new RhHttpError(
+            400,
+            'El campo "fecha_ingreso" debe estar entre 1940-01-01 y 2100-12-31'
+          );
+        }
+        parsedPatch.fecha_ingreso = parsedFecha;
+      }
+    }
+
+    if (hasOwn('nombres')) {
+      const cleanNombres = normalizeCollapsedPersonNamePart(patch.nombres, 'nombres', 150);
+      if (!cleanNombres) {
+        throw new RhHttpError(400, 'El campo "nombres" no puede estar vacío');
+      }
+      parsedPatch.nombres = cleanNombres;
+    }
+
+    if (hasOwn('apellidos')) {
+      const cleanApellidos = normalizeCollapsedPersonNamePart(patch.apellidos, 'apellidos', 150);
+      if (!cleanApellidos) {
+        throw new RhHttpError(400, 'El campo "apellidos" no puede estar vacío');
+      }
+      parsedPatch.apellidos = cleanApellidos;
+    }
+
+    if (hasOwn('curp')) {
+      parsedPatch.curp = normalizeAndValidateCurp(patch.curp);
+    }
+
+    if (hasOwn('rfc')) {
+      parsedPatch.rfc = normalizeAndValidateRfc(patch.rfc);
+    }
 
     if (hasOwn('cargo')) {
       parsedPatch.cargo = normalizeOptionalVarchar(patch.cargo, 'cargo', 100);
@@ -3155,9 +3231,10 @@ export default class RhService {
         curp: string | null;
         activo: boolean;
         fecha_baja: unknown;
+        fecha_ingreso?: unknown;
       }>(
         `SELECT id, nombre_completo, nombres, apellidos, cargo, correo_principal,
-                unidad_medica_id, rfc, curp, activo, fecha_baja
+                unidad_medica_id, rfc, curp, activo, fecha_baja, fecha_ingreso
            FROM public.persona
           WHERE id = $1
             FOR UPDATE`,
@@ -3169,6 +3246,14 @@ export default class RhService {
       }
 
       const current = personaRes.rows[0];
+      const currentNombres =
+        current.nombres != null && String(current.nombres).trim() !== ''
+          ? String(current.nombres).trim()
+          : null;
+      const currentApellidos =
+        current.apellidos != null && String(current.apellidos).trim() !== ''
+          ? String(current.apellidos).trim()
+          : null;
       const currentCargo =
         current.cargo != null && String(current.cargo).trim() !== ''
           ? String(current.cargo).trim()
@@ -3179,12 +3264,40 @@ export default class RhService {
           : null;
       const currentUnidadId =
         current.unidad_medica_id != null ? Number(current.unidad_medica_id) : null;
+      const currentCurp =
+        current.curp != null && String(current.curp).trim() !== ''
+          ? String(current.curp).trim().toUpperCase()
+          : null;
+      const currentRfc =
+        current.rfc != null && String(current.rfc).trim() !== ''
+          ? String(current.rfc).trim().toUpperCase()
+          : null;
+      const currentFechaIngreso = formatDateOnly(current.fecha_ingreso);
+
+      const finalNombres = hasOwn('nombres') ? parsedPatch.nombres! : currentNombres;
+      const finalApellidos = hasOwn('apellidos') ? parsedPatch.apellidos! : currentApellidos;
+      const finalNombreCompleto =
+        hasOwn('nombres') || hasOwn('apellidos')
+          ? `${finalNombres ?? ''} ${finalApellidos ?? ''}`.trim()
+          : String(current.nombre_completo ?? '');
+
+      if ((hasOwn('nombres') || hasOwn('apellidos')) && (!finalNombreCompleto || finalNombreCompleto.length > 150)) {
+        throw new RhHttpError(
+          400,
+          'La combinación de "nombres" y "apellidos" debe tener entre 1 y 150 caracteres'
+        );
+      }
 
       const finalCargo = hasOwn('cargo') ? parsedPatch.cargo! : currentCargo;
       const finalCorreo = hasOwn('correo_principal') ? parsedPatch.correo_principal! : currentCorreo;
       const finalUnidadId = hasOwn('unidad_medica_id')
         ? parsedPatch.unidad_medica_id!
         : currentUnidadId;
+      const finalCurp = hasOwn('curp') ? parsedPatch.curp! : currentCurp;
+      const finalRfc = hasOwn('rfc') ? parsedPatch.rfc! : currentRfc;
+      const finalFechaIngreso = hasOwn('fecha_ingreso')
+        ? parsedPatch.fecha_ingreso!
+        : currentFechaIngreso;
 
       if (finalUnidadId !== null && finalUnidadId !== currentUnidadId) {
         const umRes = await client.query<{ id: number }>(
@@ -3200,10 +3313,43 @@ export default class RhService {
         }
       }
 
+      if (finalCurp !== null && finalCurp !== currentCurp) {
+        const dupCurp = await client.query<{ id: number }>(
+          `SELECT id
+             FROM public.persona
+            WHERE UPPER(BTRIM(curp)) = $1
+              AND id <> $2
+            LIMIT 1`,
+          [finalCurp, personaId]
+        );
+        if (dupCurp.rowCount) {
+          throw new RhHttpError(409, 'Ya existe otra persona registrada con esa CURP');
+        }
+      }
+
+      if (finalRfc !== null && finalRfc !== currentRfc) {
+        const dupRfc = await client.query<{ id: number }>(
+          `SELECT id
+             FROM public.persona
+            WHERE UPPER(BTRIM(rfc)) = $1
+              AND id <> $2
+            LIMIT 1`,
+          [finalRfc, personaId]
+        );
+        if (dupRfc.rowCount) {
+          throw new RhHttpError(409, 'Ya existe otra persona registrada con ese RFC');
+        }
+      }
+
       const camposModificados: string[] = [];
+      if (finalNombres !== currentNombres) camposModificados.push('nombres');
+      if (finalApellidos !== currentApellidos) camposModificados.push('apellidos');
       if (finalCargo !== currentCargo) camposModificados.push('cargo');
       if (finalCorreo !== currentCorreo) camposModificados.push('correo_principal');
       if (finalUnidadId !== currentUnidadId) camposModificados.push('unidad_medica_id');
+      if (finalCurp !== currentCurp) camposModificados.push('curp');
+      if (finalRfc !== currentRfc) camposModificados.push('rfc');
+      if (finalFechaIngreso !== currentFechaIngreso) camposModificados.push('fecha_ingreso');
 
       if (camposModificados.length === 0) {
         await client.query('COMMIT');
@@ -3224,6 +3370,7 @@ export default class RhService {
             curp_masked: curpInfoNoOp.masked,
             activo: Boolean(current.activo),
             fecha_baja: formatDateOnly(current.fecha_baja),
+            fecha_ingreso: currentFechaIngreso,
           },
           idempotente: true,
           campos_modificados: [],
@@ -3233,6 +3380,18 @@ export default class RhService {
       const setClauses: string[] = [];
       const updateParams: unknown[] = [];
 
+      if (camposModificados.includes('nombres')) {
+        updateParams.push(finalNombres);
+        setClauses.push(`nombres = $${updateParams.length}`);
+      }
+      if (camposModificados.includes('apellidos')) {
+        updateParams.push(finalApellidos);
+        setClauses.push(`apellidos = $${updateParams.length}`);
+      }
+      if (camposModificados.includes('nombres') || camposModificados.includes('apellidos')) {
+        updateParams.push(finalNombreCompleto);
+        setClauses.push(`nombre_completo = $${updateParams.length}`);
+      }
       if (camposModificados.includes('cargo')) {
         updateParams.push(finalCargo);
         setClauses.push(`cargo = $${updateParams.length}`);
@@ -3244,6 +3403,18 @@ export default class RhService {
       if (camposModificados.includes('unidad_medica_id')) {
         updateParams.push(finalUnidadId);
         setClauses.push(`unidad_medica_id = $${updateParams.length}`);
+      }
+      if (camposModificados.includes('curp')) {
+        updateParams.push(finalCurp);
+        setClauses.push(`curp = $${updateParams.length}`);
+      }
+      if (camposModificados.includes('rfc')) {
+        updateParams.push(finalRfc);
+        setClauses.push(`rfc = $${updateParams.length}`);
+      }
+      if (camposModificados.includes('fecha_ingreso')) {
+        updateParams.push(finalFechaIngreso);
+        setClauses.push(`fecha_ingreso = $${updateParams.length}`);
       }
       setClauses.push('actualizado_en = NOW()');
 
@@ -3262,12 +3433,13 @@ export default class RhService {
         curp: string | null;
         activo: boolean;
         fecha_baja: unknown;
+        fecha_ingreso?: unknown;
       }>(
         `UPDATE public.persona
             SET ${setClauses.join(', ')}
           WHERE id = $${whereIdx}
           RETURNING id, nombre_completo, nombres, apellidos, cargo, correo_principal,
-                    unidad_medica_id, rfc, curp, activo, fecha_baja`,
+                    unidad_medica_id, rfc, curp, activo, fecha_baja, fecha_ingreso`,
         updateParams
       );
 
@@ -3317,6 +3489,7 @@ export default class RhService {
           curp_masked: curpInfo.masked,
           activo: Boolean(updated.activo),
           fecha_baja: formatDateOnly(updated.fecha_baja),
+          fecha_ingreso: formatDateOnly(updated.fecha_ingreso ?? finalFechaIngreso),
         },
         idempotente: false,
         campos_modificados: camposModificados,
@@ -4070,6 +4243,10 @@ export default class RhService {
 
     const hasOwn = (k: string): boolean => Object.prototype.hasOwnProperty.call(input, k);
 
+    if (hasOwn('fechas') || hasOwn('periodo_id')) {
+      return this.createVacacionRegistroFechasDetalladas(access, personaId, input, auditMeta);
+    }
+
     let adscripcionId: number | null = null;
     if (hasOwn('adscripcion_id') && input.adscripcion_id !== null && input.adscripcion_id !== undefined) {
       if (
@@ -4338,7 +4515,8 @@ export default class RhService {
         `SELECT
            id, persona_id, adscripcion_id, anio_ciclo, periodo_referencia,
            fecha_inicio, fecha_fin, dias_registrados, documento_referencia,
-           observaciones, estado, motivo_anulacion, anulado_en, creado_en, actualizado_en
+           observaciones, estado, motivo_anulacion, anulado_en, creado_en, actualizado_en,
+           periodo_id, modo_registro
          FROM public.rh_vacacion_registro
         WHERE id = $1
           AND persona_id = $2
@@ -4391,6 +4569,17 @@ export default class RhService {
           RETURNING anulado_en, actualizado_en`,
         [motivoAnulacion, rawUserId, registroId, personaId]
       );
+
+      if (String(current.modo_registro ?? '') === 'FECHAS_DETALLADAS') {
+        await client.query(
+          `UPDATE public.rh_vacacion_registro_fecha
+              SET activo = FALSE
+            WHERE registro_id = $1
+              AND persona_id = $2
+              AND activo = TRUE`,
+          [registroId, personaId]
+        );
+      }
 
       const updatedMeta = updateRes.rows[0] ?? {};
       const auditPayload = {
@@ -4575,6 +4764,1272 @@ export default class RhService {
       total,
     };
   }
+
+  private parseLoteAdscripcionesInput(rawBody: Record<string, unknown>): {
+    unidadItems: Array<{
+      persona_id: number;
+      vigente_desde: string | null;
+      vigente_hasta: string | null;
+      matricula: string | null;
+      puesto: string | null;
+      turno: string | null;
+      jornada: string | null;
+      horario: string | null;
+      observaciones: string | null;
+      validationError: string | null;
+    }>;
+  } {
+    const ALLOWED_DEFAULT_KEYS = new Set([
+      'vigente_desde',
+      'vigente_hasta',
+      'matricula',
+      'puesto',
+      'turno',
+      'jornada',
+      'horario',
+      'observaciones',
+    ]);
+    const ALLOWED_ITEM_KEYS = new Set(['persona_id', ...ALLOWED_DEFAULT_KEYS]);
+
+    const defaultsRaw =
+      rawBody.defaults !== undefined && rawBody.defaults !== null ? rawBody.defaults : {};
+    if (typeof defaultsRaw !== 'object' || Array.isArray(defaultsRaw)) {
+      throw new RhHttpError(400, 'La propiedad "defaults" debe ser un objeto válido');
+    }
+    const defaultsObj = defaultsRaw as Record<string, unknown>;
+    for (const k of Object.keys(defaultsObj)) {
+      if (!ALLOWED_DEFAULT_KEYS.has(k)) {
+        throw new RhHttpError(400, `Propiedad no permitida en defaults: ${k}`);
+      }
+    }
+
+    if (!Array.isArray(rawBody.items) || rawBody.items.length === 0) {
+      throw new RhHttpError(400, 'El lote debe incluir al menos un trabajador en "items"');
+    }
+    if (rawBody.items.length > 100) {
+      throw new RhHttpError(400, 'El lote no puede exceder 100 trabajadores por solicitud');
+    }
+
+    const seenIds = new Set<number>();
+    const parsedItems: Array<{
+      persona_id: number;
+      vigente_desde: string | null;
+      vigente_hasta: string | null;
+      matricula: string | null;
+      puesto: string | null;
+      turno: string | null;
+      jornada: string | null;
+      horario: string | null;
+      observaciones: string | null;
+      validationError: string | null;
+    }> = [];
+
+    const hasOwn = (obj: Record<string, unknown>, k: string): boolean =>
+      Object.prototype.hasOwnProperty.call(obj, k);
+
+    for (let idx = 0; idx < rawBody.items.length; idx++) {
+      const entry = rawBody.items[idx];
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        throw new RhHttpError(400, `Elemento inválido en items[${idx}]`);
+      }
+      const itemObj = entry as Record<string, unknown>;
+      for (const k of Object.keys(itemObj)) {
+        if (!ALLOWED_ITEM_KEYS.has(k)) {
+          throw new RhHttpError(400, `Propiedad no permitida en items[${idx}]: ${k}`);
+        }
+      }
+
+      const rawPid = itemObj.persona_id;
+      if (typeof rawPid !== 'number' || !Number.isSafeInteger(rawPid) || rawPid <= 0) {
+        throw new RhHttpError(400, `Identificador persona_id inválido en items[${idx}]`);
+      }
+      if (seenIds.has(rawPid)) {
+        throw new RhHttpError(400, `Identificador persona_id duplicado en el lote: ${rawPid}`);
+      }
+      seenIds.add(rawPid);
+
+      const pick = (k: string): unknown => (hasOwn(itemObj, k) ? itemObj[k] : defaultsObj[k]);
+
+      let validationError: string | null = null;
+      let vigenteDesde: string | null = null;
+      let vigenteHasta: string | null = null;
+      let matricula: string | null = null;
+      let puesto: string | null = null;
+      let turno: string | null = null;
+      let jornada: string | null = null;
+      let horario: string | null = null;
+      let observaciones: string | null = null;
+
+      try {
+        vigenteDesde = parseStrictIsoDate(pick('vigente_desde'), 'vigente_desde');
+        const rawHasta = pick('vigente_hasta');
+        if (rawHasta !== null && rawHasta !== undefined && String(rawHasta).trim() !== '') {
+          vigenteHasta = parseStrictIsoDate(rawHasta, 'vigente_hasta');
+          if (vigenteHasta < vigenteDesde) {
+            throw new RhHttpError(400, 'La fecha "vigente_hasta" no puede ser anterior a "vigente_desde"');
+          }
+        }
+        matricula = normalizeOptionalVarchar(pick('matricula'), 'matricula', 64);
+        puesto = normalizeOptionalVarchar(pick('puesto'), 'puesto', 160);
+        turno = normalizeOptionalVarchar(pick('turno'), 'turno', 60);
+        jornada = normalizeOptionalVarchar(pick('jornada'), 'jornada', 80);
+        horario = normalizeOptionalVarchar(pick('horario'), 'horario', 120);
+        observaciones = normalizeOptionalVarchar(pick('observaciones'), 'observaciones', 2000);
+      } catch (err) {
+        validationError = err instanceof RhHttpError ? err.message : 'Datos laborales inválidos';
+      }
+
+      parsedItems.push({
+        persona_id: rawPid,
+        vigente_desde: vigenteDesde,
+        vigente_hasta: vigenteHasta,
+        matricula,
+        puesto,
+        turno,
+        jornada,
+        horario,
+        observaciones,
+        validationError,
+      });
+    }
+
+    return { unidadItems: parsedItems };
+  }
+
+  async validarLoteAdscripcionesPorUnidad(
+    access: RhAccessContext,
+    unidadId: number,
+    rawBody: Record<string, unknown>
+  ): Promise<RhLoteAdscripcionValidarResult> {
+    if (access.grantedBy !== 'RECURSOS_HUMANOS' || access.scope !== 'GLOBAL') {
+      throw new RhHttpError(
+        403,
+        'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para validar lotes de vinculación laboral'
+      );
+    }
+
+    const { unidadItems } = this.parseLoteAdscripcionesInput(rawBody);
+
+    const umRes = await pool.query<{ id: number; nombre: string; cluesimb: string | null }>(
+      `SELECT id, nombre, cluesimb FROM public.unidad_medica WHERE id = $1 AND activo = TRUE LIMIT 1`,
+      [unidadId]
+    );
+    if (!umRes.rowCount) {
+      throw new RhHttpError(404, 'Unidad de trabajo no encontrada o inactiva');
+    }
+
+    const personaIds = unidadItems.map((i) => i.persona_id);
+
+    const personasRes = await pool.query<{ id: number; activo: boolean }>(
+      `SELECT id, activo FROM public.persona WHERE id = ANY($1::int[])`,
+      [personaIds]
+    );
+    const personaMap = new Map<number, { id: number; activo: boolean }>();
+    for (const row of personasRes.rows) {
+      personaMap.set(Number(row.id), { id: Number(row.id), activo: Boolean(row.activo) });
+    }
+
+    const adsRes = await pool.query<{
+      persona_id: number;
+      unidad_medica_id: number;
+      activo: boolean;
+      vigente_desde: unknown;
+      vigente_hasta: unknown;
+      current_date_iso: unknown;
+    }>(
+      `SELECT persona_id, unidad_medica_id, activo, vigente_desde, vigente_hasta,
+              CURRENT_DATE::text AS current_date_iso
+         FROM public.rh_adscripcion_laboral
+        WHERE persona_id = ANY($1::int[])
+          AND activo = TRUE`,
+      [personaIds]
+    );
+
+    const activeSameUnit = new Set<number>();
+    const vigenteOtherUnit = new Set<number>();
+    const fallbackToday = new Date().toISOString().slice(0, 10);
+
+    for (const a of adsRes.rows) {
+      const pid = Number(a.persona_id);
+      const umId = Number(a.unidad_medica_id);
+      const today = formatDateOnly(a.current_date_iso) ?? fallbackToday;
+      const desde = formatDateOnly(a.vigente_desde) ?? '';
+      const hasta = formatDateOnly(a.vigente_hasta);
+      if (umId === unidadId) {
+        activeSameUnit.add(pid);
+      } else if (desde <= today && (hasta === null || hasta >= today)) {
+        vigenteOtherUnit.add(pid);
+      }
+    }
+
+    const resultados: RhLoteValidacionItemDto[] = [];
+    let elegibles = 0;
+    let yaVinculadas = 0;
+    let inactivas = 0;
+    let conflictos = 0;
+    let invalidos = 0;
+
+    for (const item of unidadItems) {
+      const p = personaMap.get(item.persona_id);
+      if (!p) {
+        invalidos++;
+        resultados.push({
+          persona_id: item.persona_id,
+          estado: 'DATOS_INVALIDOS',
+          detalle: 'Persona no encontrada en el directorio institucional',
+        });
+        continue;
+      }
+      if (!p.activo) {
+        inactivas++;
+        resultados.push({
+          persona_id: item.persona_id,
+          estado: 'PERSONA_INACTIVA',
+          detalle: 'La persona se encuentra inactiva en el padrón institucional',
+        });
+        continue;
+      }
+      if (item.validationError) {
+        invalidos++;
+        resultados.push({
+          persona_id: item.persona_id,
+          estado: 'DATOS_INVALIDOS',
+          detalle: item.validationError,
+        });
+        continue;
+      }
+      if (activeSameUnit.has(item.persona_id)) {
+        yaVinculadas++;
+        resultados.push({
+          persona_id: item.persona_id,
+          estado: 'YA_VINCULADA',
+          detalle: 'La persona ya cuenta con una adscripción activa en esta unidad',
+        });
+        continue;
+      }
+      if (vigenteOtherUnit.has(item.persona_id)) {
+        conflictos++;
+        resultados.push({
+          persona_id: item.persona_id,
+          estado: 'CONFLICTO_ADSCRIPCION',
+          detalle: 'La persona tiene una adscripción vigente en otra unidad',
+        });
+        continue;
+      }
+      elegibles++;
+      resultados.push({
+        persona_id: item.persona_id,
+        estado: 'ELEGIBLE',
+        detalle: null,
+      });
+    }
+
+    return {
+      unidad_id: unidadId,
+      total_solicitados: unidadItems.length,
+      elegibles,
+      ya_vinculadas: yaVinculadas,
+      personas_inactivas: inactivas,
+      conflictos_adscripcion: conflictos,
+      datos_invalidos: invalidos,
+      resultados,
+    };
+  }
+
+  async createLoteAdscripcionesPorUnidad(
+    access: RhAccessContext,
+    unidadId: number,
+    rawBody: Record<string, unknown>,
+    auditMeta: RhAuditMeta
+  ): Promise<RhLoteAdscripcionEjecucionResult> {
+    if (access.grantedBy !== 'RECURSOS_HUMANOS' || access.scope !== 'GLOBAL') {
+      throw new RhHttpError(
+        403,
+        'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para ejecutar vinculación múltiple laboral'
+      );
+    }
+
+    const rawUserId = typeof auditMeta?.userId === 'string' ? auditMeta.userId.trim() : '';
+    if (!UUID_REGEX.test(rawUserId)) {
+      throw new RhHttpError(401, 'Unauthorized');
+    }
+
+    const { unidadItems } = this.parseLoteAdscripcionesInput(rawBody);
+
+    const umRes = await pool.query<{ id: number; nombre: string; cluesimb: string | null }>(
+      `SELECT id, nombre, cluesimb FROM public.unidad_medica WHERE id = $1 AND activo = TRUE LIMIT 1`,
+      [unidadId]
+    );
+    if (!umRes.rowCount) {
+      throw new RhHttpError(404, 'Unidad de trabajo no encontrada o inactiva');
+    }
+
+    const loteId = crypto.randomUUID();
+    // Ordenar por persona_id ASC para adquirir bloqueos en orden determinista y evitar deadlocks
+    const orderedItems = [...unidadItems].sort((a, b) => a.persona_id - b.persona_id);
+
+    const resultados: RhLoteEjecucionItemDto[] = [];
+    let creadas = 0;
+    let omitidas = 0;
+    let errores = 0;
+
+    for (const item of orderedItems) {
+      if (item.validationError || !item.vigente_desde) {
+        errores++;
+        resultados.push({
+          persona_id: item.persona_id,
+          resultado: 'ERROR_VALIDACION',
+          adscripcion_laboral_id: null,
+          detalle: item.validationError || 'Datos laborales inválidos',
+        });
+        continue;
+      }
+
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        const pRes = await client.query<{ id: number; activo: boolean }>(
+          `SELECT id, activo FROM public.persona WHERE id = $1 FOR UPDATE`,
+          [item.persona_id]
+        );
+        if (!pRes.rowCount) {
+          await client.query('ROLLBACK');
+          errores++;
+          resultados.push({
+            persona_id: item.persona_id,
+            resultado: 'ERROR_VALIDACION',
+            adscripcion_laboral_id: null,
+            detalle: 'Persona no encontrada en el directorio institucional',
+          });
+          continue;
+        }
+        if (pRes.rows[0].activo !== true) {
+          await client.query('ROLLBACK');
+          errores++;
+          resultados.push({
+            persona_id: item.persona_id,
+            resultado: 'PERSONA_INACTIVA',
+            adscripcion_laboral_id: null,
+            detalle: 'No se puede vincular una persona inactiva en el padrón',
+          });
+          continue;
+        }
+
+        const dupRes = await client.query<{ id: number }>(
+          `SELECT id
+             FROM public.rh_adscripcion_laboral
+            WHERE persona_id = $1
+              AND unidad_medica_id = $2
+              AND activo = TRUE
+            LIMIT 1`,
+          [item.persona_id, unidadId]
+        );
+        if (dupRes.rowCount) {
+          await client.query('ROLLBACK');
+          omitidas++;
+          resultados.push({
+            persona_id: item.persona_id,
+            resultado: 'OMITIDA_DUPLICADO',
+            adscripcion_laboral_id: Number(dupRes.rows[0].id),
+            detalle: 'La persona ya tiene una adscripción activa en esta unidad',
+          });
+          continue;
+        }
+
+        const insertRes = await client.query<{ id: number }>(
+          `INSERT INTO public.rh_adscripcion_laboral (
+             persona_id,
+             unidad_medica_id,
+             matricula,
+             puesto,
+             turno,
+             jornada,
+             horario,
+             vigente_desde,
+             vigente_hasta,
+             activo,
+             observaciones
+           )
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, $10)
+           RETURNING id`,
+          [
+            item.persona_id,
+            unidadId,
+            item.matricula,
+            item.puesto,
+            item.turno,
+            item.jornada,
+            item.horario,
+            item.vigente_desde,
+            item.vigente_hasta,
+            item.observaciones,
+          ]
+        );
+
+        const newAdscripcionId = Number(insertRes.rows[0].id);
+
+        await client.query(
+          `INSERT INTO public.app_audit_logs (user_id, action, resource, ip, user_agent, payload)
+           VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+          [
+            rawUserId,
+            'RH_CREATE_ADSCRIPCION',
+            `rh_adscripcion_laboral:${newAdscripcionId}`,
+            auditMeta.ip ?? null,
+            auditMeta.userAgent ?? null,
+            JSON.stringify({
+              lote_id: loteId,
+              adscripcion_laboral_id: newAdscripcionId,
+              persona_id: item.persona_id,
+              unidad_medica_id: unidadId,
+              vigente_desde: item.vigente_desde,
+              vigente_hasta: item.vigente_hasta,
+            }),
+          ]
+        );
+
+        await client.query('COMMIT');
+        creadas++;
+        resultados.push({
+          persona_id: item.persona_id,
+          resultado: 'CREADA',
+          adscripcion_laboral_id: newAdscripcionId,
+          detalle: null,
+        });
+      } catch {
+        try {
+          await client.query('ROLLBACK');
+        } catch {
+          // Ignore rollback failure
+        }
+        errores++;
+        resultados.push({
+          persona_id: item.persona_id,
+          resultado: 'ERROR_INTERNO',
+          adscripcion_laboral_id: null,
+          detalle: 'Error al registrar la adscripción laboral',
+        });
+      } finally {
+        client.release();
+      }
+    }
+
+    return {
+      lote_id: loteId,
+      unidad_id: unidadId,
+      total_solicitados: orderedItems.length,
+      creadas,
+      omitidas,
+      errores,
+      resultados,
+    };
+  }
+
+  // ===========================================================================
+  // RH-VAC-02: Kardex vacacional institucional (periodos, bolsas, fechas discontinuas)
+  // ===========================================================================
+
+  async listVacacionPeriodos(
+    access: RhAccessContext,
+    filters: { anio?: number | null } = {}
+  ): Promise<{ items: RhVacacionPeriodoDto[] }> {
+    if (access.grantedBy !== 'RECURSOS_HUMANOS' || access.scope !== 'GLOBAL') {
+      throw new RhHttpError(
+        403,
+        'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para consultar periodos vacacionales'
+      );
+    }
+
+    const params: unknown[] = [];
+    let where = '';
+    if (filters.anio != null) {
+      params.push(filters.anio);
+      where = `WHERE anio = $1`;
+    }
+
+    const res = await pool.query<any>(
+      `SELECT id, anio, numero_periodo, clave, nombre, fecha_inicio, fecha_fin,
+              dias_base_provisionales, activo, observaciones
+         FROM public.rh_vacacion_periodo
+         ${where}
+        ORDER BY anio DESC, numero_periodo ASC`,
+      params
+    );
+
+    return {
+      items: res.rows.map((r) => ({
+        id: Number(r.id),
+        anio: Number(r.anio),
+        numero_periodo: Number(r.numero_periodo) as 1 | 2,
+        clave: String(r.clave),
+        nombre: String(r.nombre),
+        fecha_inicio: formatDateOnly(r.fecha_inicio) ?? '',
+        fecha_fin: formatDateOnly(r.fecha_fin) ?? '',
+        dias_base_provisionales: Number(r.dias_base_provisionales),
+        activo: Boolean(r.activo),
+        observaciones: r.observaciones != null ? String(r.observaciones) : null,
+      })),
+    };
+  }
+
+  async listVacacionBolsasPersona(
+    access: RhAccessContext,
+    personaId: number,
+    filters: { anio?: number | null; periodoId?: number | null } = {}
+  ): Promise<{ persona_id: number; items: RhVacacionBolsaItemDto[] }> {
+    if (access.grantedBy !== 'RECURSOS_HUMANOS' || access.scope !== 'GLOBAL') {
+      throw new RhHttpError(
+        403,
+        'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para consultar bolsas vacacionales'
+      );
+    }
+
+    const personaRes = await pool.query<{ id: number }>(
+      `SELECT id FROM public.persona WHERE id = $1 LIMIT 1`,
+      [personaId]
+    );
+    if (!personaRes.rowCount) {
+      throw new RhHttpError(404, 'Persona no encontrada en el directorio institucional');
+    }
+
+    const params: unknown[] = [personaId];
+    const conds: string[] = [];
+    if (filters.anio != null) {
+      params.push(filters.anio);
+      conds.push(`p.anio = $${params.length}`);
+    }
+    if (filters.periodoId != null) {
+      params.push(filters.periodoId);
+      conds.push(`p.id = $${params.length}`);
+    }
+    const whereClause = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : '';
+
+    const res = await pool.query<any>(
+      `SELECT
+         p.id AS periodo_id,
+         p.anio,
+         p.numero_periodo,
+         p.clave AS periodo_clave,
+         p.nombre AS periodo_nombre,
+         p.fecha_inicio AS periodo_fecha_inicio,
+         p.fecha_fin AS periodo_fecha_fin,
+         p.dias_base_provisionales,
+         b.id AS bolsa_id,
+         b.dias_asignados,
+         b.estado_asignacion,
+         b.justificacion_ajuste,
+         b.calendario_laboral_codigo,
+         b.actualizado_en
+       FROM public.rh_vacacion_periodo p
+       LEFT JOIN public.rh_vacacion_bolsa b
+         ON b.periodo_id = p.id
+        AND b.persona_id = $1
+       ${whereClause}
+       ORDER BY p.anio DESC, p.numero_periodo ASC`,
+      params
+    );
+
+    return {
+      persona_id: personaId,
+      items: res.rows.map((r) => {
+        const existe = r.bolsa_id != null;
+        return {
+          periodo_id: Number(r.periodo_id),
+          anio: Number(r.anio),
+          numero_periodo: Number(r.numero_periodo) as 1 | 2,
+          periodo_clave: String(r.periodo_clave),
+          periodo_nombre: String(r.periodo_nombre),
+          periodo_fecha_inicio: formatDateOnly(r.periodo_fecha_inicio) ?? '',
+          periodo_fecha_fin: formatDateOnly(r.periodo_fecha_fin) ?? '',
+          dias_base_provisionales: Number(r.dias_base_provisionales),
+          bolsa_id: existe ? Number(r.bolsa_id) : null,
+          dias_asignados: existe ? Number(r.dias_asignados) : null,
+          estado_asignacion: existe
+            ? (String(r.estado_asignacion) as 'PROVISIONAL' | 'CONFIRMADA' | 'AJUSTADA')
+            : 'INEXISTENTE',
+          justificacion_ajuste: r.justificacion_ajuste != null ? String(r.justificacion_ajuste) : null,
+          calendario_laboral_codigo:
+            r.calendario_laboral_codigo != null ? String(r.calendario_laboral_codigo) : null,
+          actualizado_en: r.actualizado_en != null ? new Date(r.actualizado_en).toISOString() : null,
+        };
+      }),
+    };
+  }
+
+  async upsertVacacionBolsaPersona(
+    access: RhAccessContext,
+    personaId: number,
+    periodoId: number,
+    input: Record<string, unknown>,
+    auditMeta: RhAuditMeta
+  ): Promise<{ bolsa: RhVacacionBolsaItemDto }> {
+    if (access.grantedBy !== 'RECURSOS_HUMANOS' || access.scope !== 'GLOBAL') {
+      throw new RhHttpError(
+        403,
+        'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para administrar bolsas vacacionales'
+      );
+    }
+
+    const rawUserId = typeof auditMeta?.userId === 'string' ? auditMeta.userId.trim() : '';
+    if (!UUID_REGEX.test(rawUserId)) {
+      throw new RhHttpError(401, 'Unauthorized');
+    }
+
+    const rawDias = input.dias_asignados;
+    if (typeof rawDias !== 'number' || !Number.isInteger(rawDias) || rawDias < 0 || rawDias > 60) {
+      throw new RhHttpError(400, 'El campo "dias_asignados" debe ser un número entero entre 0 y 60');
+    }
+
+    const rawEstado = typeof input.estado_asignacion === 'string' ? input.estado_asignacion.trim().toUpperCase() : '';
+    if (!['PROVISIONAL', 'CONFIRMADA', 'AJUSTADA'].includes(rawEstado)) {
+      throw new RhHttpError(
+        400,
+        'El campo "estado_asignacion" debe ser PROVISIONAL, CONFIRMADA o AJUSTADA'
+      );
+    }
+
+    const justificacion = normalizeOptionalVarchar(
+      input.justificacion_ajuste,
+      'justificacion_ajuste',
+      1000
+    );
+    if (rawEstado === 'AJUSTADA' && !justificacion) {
+      throw new RhHttpError(
+        400,
+        'El campo "justificacion_ajuste" es obligatorio cuando estado_asignacion es AJUSTADA'
+      );
+    }
+
+    const calendarioCodigo = normalizeOptionalVarchar(
+      input.calendario_laboral_codigo,
+      'calendario_laboral_codigo',
+      40
+    );
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const personaRes = await client.query<{ id: number }>(
+        `SELECT id FROM public.persona WHERE id = $1 FOR UPDATE`,
+        [personaId]
+      );
+      if (!personaRes.rowCount) {
+        throw new RhHttpError(404, 'Persona no encontrada en el directorio institucional');
+      }
+
+      const periodoRes = await client.query<any>(
+        `SELECT id, anio, numero_periodo, clave, nombre, fecha_inicio, fecha_fin, dias_base_provisionales
+           FROM public.rh_vacacion_periodo
+          WHERE id = $1
+          LIMIT 1`,
+        [periodoId]
+      );
+      if (!periodoRes.rowCount) {
+        throw new RhHttpError(404, 'Periodo vacacional institucional no encontrado');
+      }
+      const periodo = periodoRes.rows[0];
+
+      const upsertRes = await client.query<any>(
+        `INSERT INTO public.rh_vacacion_bolsa (
+           persona_id, periodo_id, dias_asignados, estado_asignacion,
+           justificacion_ajuste, calendario_laboral_codigo, creado_por, actualizado_por
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+         ON CONFLICT (persona_id, periodo_id)
+         DO UPDATE SET
+           dias_asignados = EXCLUDED.dias_asignados,
+           estado_asignacion = EXCLUDED.estado_asignacion,
+           justificacion_ajuste = EXCLUDED.justificacion_ajuste,
+           calendario_laboral_codigo = EXCLUDED.calendario_laboral_codigo,
+           actualizado_por = EXCLUDED.actualizado_por,
+           actualizado_en = NOW()
+         RETURNING id, dias_asignados, estado_asignacion, justificacion_ajuste, calendario_laboral_codigo, actualizado_en`,
+        [personaId, periodoId, rawDias, rawEstado, justificacion, calendarioCodigo, rawUserId]
+      );
+
+      const saved = upsertRes.rows[0];
+
+      await client.query(
+        `INSERT INTO public.app_audit_logs (user_id, action, resource, ip, user_agent, payload)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+        [
+          rawUserId,
+          'RH_UPSERT_VACACION_BOLSA',
+          'rh_vacacion_bolsa',
+          auditMeta.ip ?? null,
+          auditMeta.userAgent ?? null,
+          JSON.stringify({
+            bolsa_id: Number(saved.id),
+            persona_id: personaId,
+            periodo_id: periodoId,
+            dias_asignados: Number(saved.dias_asignados),
+            estado_asignacion: String(saved.estado_asignacion),
+          }),
+        ]
+      );
+
+      await client.query('COMMIT');
+
+      return {
+        bolsa: {
+          periodo_id: Number(periodo.id),
+          anio: Number(periodo.anio),
+          numero_periodo: Number(periodo.numero_periodo) as 1 | 2,
+          periodo_clave: String(periodo.clave),
+          periodo_nombre: String(periodo.nombre),
+          periodo_fecha_inicio: formatDateOnly(periodo.fecha_inicio) ?? '',
+          periodo_fecha_fin: formatDateOnly(periodo.fecha_fin) ?? '',
+          dias_base_provisionales: Number(periodo.dias_base_provisionales),
+          bolsa_id: Number(saved.id),
+          dias_asignados: Number(saved.dias_asignados),
+          estado_asignacion: String(saved.estado_asignacion) as 'PROVISIONAL' | 'CONFIRMADA' | 'AJUSTADA',
+          justificacion_ajuste: saved.justificacion_ajuste != null ? String(saved.justificacion_ajuste) : null,
+          calendario_laboral_codigo:
+            saved.calendario_laboral_codigo != null ? String(saved.calendario_laboral_codigo) : null,
+          actualizado_en: saved.actualizado_en != null ? new Date(saved.actualizado_en).toISOString() : null,
+        },
+      };
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async getVacacionKardexPersona(
+    access: RhAccessContext,
+    personaId: number,
+    periodoId: number
+  ): Promise<RhVacacionKardexResponse> {
+    if (access.grantedBy !== 'RECURSOS_HUMANOS' || access.scope !== 'GLOBAL') {
+      throw new RhHttpError(
+        403,
+        'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para consultar el kardex vacacional'
+      );
+    }
+
+    const personaRes = await pool.query<{ id: number }>(
+      `SELECT id FROM public.persona WHERE id = $1 LIMIT 1`,
+      [personaId]
+    );
+    if (!personaRes.rowCount) {
+      throw new RhHttpError(404, 'Persona no encontrada en el directorio institucional');
+    }
+
+    const periodoRes = await pool.query<any>(
+      `SELECT id, anio, numero_periodo, clave, nombre, fecha_inicio, fecha_fin,
+              dias_base_provisionales, activo, observaciones
+         FROM public.rh_vacacion_periodo
+        WHERE id = $1
+        LIMIT 1`,
+      [periodoId]
+    );
+    if (!periodoRes.rowCount) {
+      throw new RhHttpError(404, 'Periodo vacacional institucional no encontrado');
+    }
+    const per = periodoRes.rows[0];
+
+    const bolsaRes = await pool.query<any>(
+      `SELECT id, dias_asignados, estado_asignacion, justificacion_ajuste, calendario_laboral_codigo, actualizado_en
+         FROM public.rh_vacacion_bolsa
+        WHERE persona_id = $1
+          AND periodo_id = $2
+        LIMIT 1`,
+      [personaId, periodoId]
+    );
+    const bolsaRow = bolsaRes.rows[0] ?? null;
+
+    const movRes = await pool.query<any>(
+      `SELECT id, persona_id, adscripcion_id, anio_ciclo, periodo_referencia,
+              periodo_id, modo_registro, fecha_inicio, fecha_fin, dias_registrados,
+              documento_referencia, observaciones, estado, motivo_anulacion,
+              anulado_en, creado_en, actualizado_en
+         FROM public.rh_vacacion_registro
+        WHERE persona_id = $1
+          AND periodo_id = $2
+        ORDER BY fecha_inicio ASC, id ASC`,
+      [personaId, periodoId]
+    );
+
+    const movIds = movRes.rows.map((r) => Number(r.id));
+    const fechasByRegistro = new Map<number, RhVacacionFechaDto[]>();
+
+    if (movIds.length > 0) {
+      const fechasRes = await pool.query<any>(
+        `SELECT id, registro_id, fecha, computable, motivo_exclusion, activo
+           FROM public.rh_vacacion_registro_fecha
+          WHERE registro_id = ANY($1::int[])
+          ORDER BY fecha ASC, id ASC`,
+        [movIds]
+      );
+      for (const f of fechasRes.rows) {
+        const regId = Number(f.registro_id);
+        const list = fechasByRegistro.get(regId) ?? [];
+        list.push({
+          id: Number(f.id),
+          fecha: formatDateOnly(f.fecha) ?? '',
+          computable: Boolean(f.computable),
+          motivo_exclusion: f.motivo_exclusion != null ? String(f.motivo_exclusion) : null,
+          activo: Boolean(f.activo),
+        });
+        fechasByRegistro.set(regId, list);
+      }
+    }
+
+    let diasComputablesRegistrados = 0;
+    const movimientos: RhVacacionKardexMovimientoDto[] = movRes.rows.map((r) => {
+      const regId = Number(r.id);
+      const estado = String(r.estado) as 'REGISTRADO' | 'ANULADO';
+      const dias = Number(r.dias_registrados);
+      if (estado === 'REGISTRADO') {
+        diasComputablesRegistrados += dias;
+      }
+      return {
+        id: regId,
+        persona_id: Number(r.persona_id),
+        adscripcion_id: r.adscripcion_id != null ? Number(r.adscripcion_id) : null,
+        periodo_id: r.periodo_id != null ? Number(r.periodo_id) : null,
+        modo_registro: (r.modo_registro ?? 'RANGO_HISTORICO') as 'RANGO_HISTORICO' | 'FECHAS_DETALLADAS',
+        fecha_inicio: formatDateOnly(r.fecha_inicio) ?? '',
+        fecha_fin: formatDateOnly(r.fecha_fin) ?? '',
+        dias_registrados: dias,
+        documento_referencia: r.documento_referencia != null ? String(r.documento_referencia) : null,
+        observaciones: r.observaciones != null ? String(r.observaciones) : null,
+        estado,
+        motivo_anulacion: r.motivo_anulacion != null ? String(r.motivo_anulacion) : null,
+        anulado_en: r.anulado_en != null ? new Date(r.anulado_en).toISOString() : null,
+        creado_en: r.creado_en != null ? new Date(r.creado_en).toISOString() : '',
+        actualizado_en: r.actualizado_en != null ? new Date(r.actualizado_en).toISOString() : '',
+        fechas: fechasByRegistro.get(regId) ?? [],
+      };
+    });
+
+    const diasAsignados = bolsaRow ? Number(bolsaRow.dias_asignados) : null;
+    const estadoBolsa = bolsaRow
+      ? (String(bolsaRow.estado_asignacion) as 'PROVISIONAL' | 'CONFIRMADA' | 'AJUSTADA')
+      : 'INEXISTENTE';
+
+    return {
+      persona_id: personaId,
+      periodo: {
+        id: Number(per.id),
+        anio: Number(per.anio),
+        numero_periodo: Number(per.numero_periodo) as 1 | 2,
+        clave: String(per.clave),
+        nombre: String(per.nombre),
+        fecha_inicio: formatDateOnly(per.fecha_inicio) ?? '',
+        fecha_fin: formatDateOnly(per.fecha_fin) ?? '',
+        dias_base_provisionales: Number(per.dias_base_provisionales),
+        activo: Boolean(per.activo),
+        observaciones: per.observaciones != null ? String(per.observaciones) : null,
+      },
+      resumen: {
+        estado_bolsa: estadoBolsa,
+        es_provisional: estadoBolsa === 'PROVISIONAL',
+        dias_asignados: diasAsignados,
+        dias_computables_registrados: diasComputablesRegistrados,
+        saldo_administrativo: diasAsignados !== null ? diasAsignados - diasComputablesRegistrados : null,
+        justificacion_ajuste: bolsaRow?.justificacion_ajuste != null ? String(bolsaRow.justificacion_ajuste) : null,
+      },
+      movimientos,
+    };
+  }
+
+  private async createVacacionRegistroFechasDetalladas(
+    access: RhAccessContext,
+    personaId: number,
+    input: Record<string, unknown>,
+    auditMeta: RhAuditMeta
+  ): Promise<RhCreateVacacionResult> {
+    const rawUserId = typeof auditMeta?.userId === 'string' ? auditMeta.userId.trim() : '';
+
+    const rawPeriodoId = input.periodo_id;
+    if (typeof rawPeriodoId !== 'number' || !Number.isInteger(rawPeriodoId) || rawPeriodoId <= 0) {
+      throw new RhHttpError(400, 'El campo "periodo_id" es obligatorio y debe ser un entero positivo');
+    }
+
+    if (!Array.isArray(input.fechas) || input.fechas.length === 0) {
+      throw new RhHttpError(400, 'El campo "fechas" debe ser un arreglo con al menos una fecha');
+    }
+
+    const parsedFechas: Array<{ fecha: string; computable: boolean; motivo_exclusion: string | null }> = [];
+    const seenDates = new Set<string>();
+    let computablesCount = 0;
+
+    for (const rawItem of input.fechas) {
+      if (!rawItem || typeof rawItem !== 'object' || Array.isArray(rawItem)) {
+        throw new RhHttpError(400, 'Cada elemento de "fechas" debe ser un objeto válido');
+      }
+      const itemObj = rawItem as Record<string, unknown>;
+      const fechaIso = parseStrictIsoDate(itemObj.fecha, 'fechas[].fecha');
+      if (seenDates.has(fechaIso)) {
+        throw new RhHttpError(400, `La fecha "${fechaIso}" está duplicada dentro del mismo movimiento`);
+      }
+      seenDates.add(fechaIso);
+
+      const computable = itemObj.computable === undefined ? true : itemObj.computable;
+      if (typeof computable !== 'boolean') {
+        throw new RhHttpError(400, 'El campo "fechas[].computable" debe ser booleano');
+      }
+
+      const motivoExclusion = normalizeOptionalVarchar(
+        itemObj.motivo_exclusion,
+        'fechas[].motivo_exclusion',
+        200
+      );
+      if (!computable && !motivoExclusion) {
+        throw new RhHttpError(
+          400,
+          `La fecha excluida "${fechaIso}" requiere un "motivo_exclusion" obligatorio`
+        );
+      }
+      if (computable) {
+        computablesCount += 1;
+      }
+      parsedFechas.push({
+        fecha: fechaIso,
+        computable,
+        motivo_exclusion: computable ? null : motivoExclusion,
+      });
+    }
+
+    if (computablesCount <= 0) {
+      throw new RhHttpError(
+        400,
+        'El movimiento debe incluir al menos una fecha computable (dias_registrados > 0)'
+      );
+    }
+
+    parsedFechas.sort((a, b) => a.fecha.localeCompare(b.fecha));
+    const fechaInicio = parsedFechas[0].fecha;
+    const fechaFin = parsedFechas[parsedFechas.length - 1].fecha;
+
+    let adscripcionId: number | null = null;
+    if (input.adscripcion_id !== undefined && input.adscripcion_id !== null) {
+      if (typeof input.adscripcion_id !== 'number' || !Number.isInteger(input.adscripcion_id) || input.adscripcion_id <= 0) {
+        throw new RhHttpError(400, 'El campo "adscripcion_id" debe ser un entero positivo o nulo');
+      }
+      adscripcionId = input.adscripcion_id;
+    }
+
+    const documentoReferencia = normalizeOptionalVarchar(
+      input.documento_referencia,
+      'documento_referencia',
+      120
+    );
+    const observaciones = normalizeOptionalVarchar(input.observaciones, 'observaciones', 2000);
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const personaRes = await client.query<{ id: number }>(
+        `SELECT id FROM public.persona WHERE id = $1 FOR UPDATE`,
+        [personaId]
+      );
+      if (!personaRes.rowCount) {
+        throw new RhHttpError(404, 'Persona no encontrada en el directorio institucional');
+      }
+
+      if (adscripcionId !== null) {
+        const adsRes = await client.query<{ id: number }>(
+          `SELECT id FROM public.rh_adscripcion_laboral WHERE id = $1 AND persona_id = $2 LIMIT 1`,
+          [adscripcionId, personaId]
+        );
+        if (!adsRes.rowCount) {
+          throw new RhHttpError(400, 'La adscripción especificada no pertenece a la persona');
+        }
+      }
+
+      const periodoRes = await client.query<any>(
+        `SELECT id, anio, numero_periodo, clave, nombre, fecha_inicio, fecha_fin
+           FROM public.rh_vacacion_periodo
+          WHERE id = $1
+          LIMIT 1`,
+        [rawPeriodoId]
+      );
+      if (!periodoRes.rowCount) {
+        throw new RhHttpError(404, 'Periodo vacacional institucional no encontrado');
+      }
+      const periodo = periodoRes.rows[0];
+      const perInicio = formatDateOnly(periodo.fecha_inicio) ?? '';
+      const perFin = formatDateOnly(periodo.fecha_fin) ?? '';
+
+      for (const f of parsedFechas) {
+        if (f.fecha < perInicio || f.fecha > perFin) {
+          throw new RhHttpError(
+            400,
+            `La fecha "${f.fecha}" está fuera del periodo institucional ${periodo.clave} (${perInicio} a ${perFin})`
+          );
+        }
+      }
+
+      const bolsaRes = await client.query<any>(
+        `SELECT id, dias_asignados, estado_asignacion
+           FROM public.rh_vacacion_bolsa
+          WHERE persona_id = $1
+            AND periodo_id = $2
+          FOR UPDATE`,
+        [personaId, rawPeriodoId]
+      );
+      if (!bolsaRes.rowCount) {
+        throw new RhHttpError(
+          409,
+          'La persona no cuenta con una bolsa vacacional asignada para este periodo institucional'
+        );
+      }
+      const bolsa = bolsaRes.rows[0];
+      const diasAsignados = Number(bolsa.dias_asignados);
+
+      const consumidosRes = await client.query<{ consumidos: string | number }>(
+        `SELECT COALESCE(SUM(dias_registrados), 0)::int AS consumidos
+           FROM public.rh_vacacion_registro
+          WHERE persona_id = $1
+            AND periodo_id = $2
+            AND estado = 'REGISTRADO'`,
+        [personaId, rawPeriodoId]
+      );
+      const diasConsumidos = Number(consumidosRes.rows[0]?.consumidos ?? 0);
+      const saldoDisponible = diasAsignados - diasConsumidos;
+
+      if (computablesCount > saldoDisponible) {
+        throw new RhHttpError(
+          409,
+          `Saldo insuficiente en la bolsa del periodo ${periodo.clave}: disponibles ${saldoDisponible} día(s), solicitados ${computablesCount}`
+        );
+      }
+
+      const computablesDates = parsedFechas.filter((f) => f.computable).map((f) => f.fecha);
+      const dupRes = await client.query<{ fecha: unknown }>(
+        `SELECT fecha
+           FROM public.rh_vacacion_registro_fecha
+          WHERE persona_id = $1
+            AND periodo_id = $2
+            AND activo = TRUE
+            AND computable = TRUE
+            AND fecha = ANY($3::date[])
+          LIMIT 1`,
+        [personaId, rawPeriodoId, computablesDates]
+      );
+      if (dupRes.rowCount) {
+        const dupDate = formatDateOnly(dupRes.rows[0].fecha) ?? '';
+        throw new RhHttpError(
+          409,
+          `La fecha computable "${dupDate}" ya está registrada en otro movimiento activo de este periodo`
+        );
+      }
+
+      const insertRegRes = await client.query<any>(
+        `INSERT INTO public.rh_vacacion_registro (
+           persona_id, adscripcion_id, anio_ciclo, periodo_referencia,
+           periodo_id, modo_registro, fecha_inicio, fecha_fin,
+           dias_registrados, documento_referencia, observaciones,
+           estado, creado_por, actualizado_por
+         )
+         VALUES ($1, $2, $3, $4, $5, 'FECHAS_DETALLADAS', $6, $7, $8, $9, $10, 'REGISTRADO', $11, $11)
+         RETURNING id, persona_id, adscripcion_id, anio_ciclo, periodo_referencia,
+                   fecha_inicio, fecha_fin, dias_registrados, documento_referencia,
+                   observaciones, estado, motivo_anulacion, anulado_en, creado_en, actualizado_en`,
+        [
+          personaId,
+          adscripcionId,
+          Number(periodo.anio),
+          String(periodo.nombre),
+          rawPeriodoId,
+          fechaInicio,
+          fechaFin,
+          computablesCount,
+          documentoReferencia,
+          observaciones,
+          rawUserId,
+        ]
+      );
+      const createdRow = insertRegRes.rows[0];
+      const registroId = Number(createdRow.id);
+
+      for (const f of parsedFechas) {
+        await client.query(
+          `INSERT INTO public.rh_vacacion_registro_fecha (
+             registro_id, persona_id, periodo_id, fecha, computable, motivo_exclusion, activo
+           )
+           VALUES ($1, $2, $3, $4, $5, $6, TRUE)`,
+          [registroId, personaId, rawPeriodoId, f.fecha, f.computable, f.motivo_exclusion]
+        );
+      }
+
+      await client.query(
+        `INSERT INTO public.app_audit_logs (user_id, action, resource, ip, user_agent, payload)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+        [
+          rawUserId,
+          'RH_CREATE_VACACION_DETALLADA',
+          'rh_vacacion_registro',
+          auditMeta.ip ?? null,
+          auditMeta.userAgent ?? null,
+          JSON.stringify({
+            registro_id: registroId,
+            persona_id: personaId,
+            periodo_id: rawPeriodoId,
+            dias_computables: computablesCount,
+            total_fechas: parsedFechas.length,
+          }),
+        ]
+      );
+
+      await client.query('COMMIT');
+
+      return {
+        registro: {
+          id: registroId,
+          persona_id: Number(createdRow.persona_id),
+          adscripcion_id: createdRow.adscripcion_id != null ? Number(createdRow.adscripcion_id) : null,
+          anio_ciclo: Number(createdRow.anio_ciclo),
+          periodo_referencia: String(createdRow.periodo_referencia),
+          fecha_inicio: formatDateOnly(createdRow.fecha_inicio) ?? fechaInicio,
+          fecha_fin: formatDateOnly(createdRow.fecha_fin) ?? fechaFin,
+          dias_registrados: Number(createdRow.dias_registrados),
+          documento_referencia:
+            createdRow.documento_referencia != null ? String(createdRow.documento_referencia) : null,
+          observaciones: createdRow.observaciones != null ? String(createdRow.observaciones) : null,
+          estado: 'REGISTRADO',
+          motivo_anulacion: null,
+          anulado_en: null,
+          creado_en: createdRow.creado_en != null ? new Date(createdRow.creado_en).toISOString() : '',
+          actualizado_en:
+            createdRow.actualizado_en != null ? new Date(createdRow.actualizado_en).toISOString() : '',
+        },
+        tiene_superposicion: false,
+        registros_superpuestos_ids: [],
+      };
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+}
+
+export interface RhVacacionPeriodoDto {
+  id: number;
+  anio: number;
+  numero_periodo: 1 | 2;
+  clave: string;
+  nombre: string;
+  fecha_inicio: string;
+  fecha_fin: string;
+  dias_base_provisionales: number;
+  activo: boolean;
+  observaciones: string | null;
+}
+
+export interface RhVacacionBolsaItemDto {
+  periodo_id: number;
+  anio: number;
+  numero_periodo: 1 | 2;
+  periodo_clave: string;
+  periodo_nombre: string;
+  periodo_fecha_inicio: string;
+  periodo_fecha_fin: string;
+  dias_base_provisionales: number;
+  bolsa_id: number | null;
+  dias_asignados: number | null;
+  estado_asignacion: 'INEXISTENTE' | 'PROVISIONAL' | 'CONFIRMADA' | 'AJUSTADA';
+  justificacion_ajuste: string | null;
+  calendario_laboral_codigo: string | null;
+  actualizado_en: string | null;
+}
+
+export interface RhVacacionFechaDto {
+  id: number;
+  fecha: string;
+  computable: boolean;
+  motivo_exclusion: string | null;
+  activo: boolean;
+}
+
+export interface RhVacacionKardexMovimientoDto {
+  id: number;
+  persona_id: number;
+  adscripcion_id: number | null;
+  periodo_id: number | null;
+  modo_registro: 'RANGO_HISTORICO' | 'FECHAS_DETALLADAS';
+  fecha_inicio: string;
+  fecha_fin: string;
+  dias_registrados: number;
+  documento_referencia: string | null;
+  observaciones: string | null;
+  estado: 'REGISTRADO' | 'ANULADO';
+  motivo_anulacion: string | null;
+  anulado_en: string | null;
+  creado_en: string;
+  actualizado_en: string;
+  fechas: RhVacacionFechaDto[];
+}
+
+export interface RhVacacionKardexResponse {
+  persona_id: number;
+  periodo: RhVacacionPeriodoDto;
+  resumen: {
+    estado_bolsa: 'INEXISTENTE' | 'PROVISIONAL' | 'CONFIRMADA' | 'AJUSTADA';
+    es_provisional: boolean;
+    dias_asignados: number | null;
+    dias_computables_registrados: number;
+    saldo_administrativo: number | null;
+    justificacion_ajuste: string | null;
+  };
+  movimientos: RhVacacionKardexMovimientoDto[];
+}
+
+export type RhLoteValidacionEstado =
+  | 'ELEGIBLE'
+  | 'YA_VINCULADA'
+  | 'PERSONA_INACTIVA'
+  | 'CONFLICTO_ADSCRIPCION'
+  | 'DATOS_INVALIDOS';
+
+export interface RhLoteValidacionItemDto {
+  persona_id: number;
+  estado: RhLoteValidacionEstado;
+  detalle: string | null;
+}
+
+export interface RhLoteAdscripcionValidarResult {
+  unidad_id: number;
+  total_solicitados: number;
+  elegibles: number;
+  ya_vinculadas: number;
+  personas_inactivas: number;
+  conflictos_adscripcion: number;
+  datos_invalidos: number;
+  resultados: RhLoteValidacionItemDto[];
+}
+
+export type RhLoteEjecucionEstado =
+  | 'CREADA'
+  | 'OMITIDA_DUPLICADO'
+  | 'PERSONA_INACTIVA'
+  | 'ERROR_VALIDACION'
+  | 'ERROR_INTERNO';
+
+export interface RhLoteEjecucionItemDto {
+  persona_id: number;
+  resultado: RhLoteEjecucionEstado;
+  adscripcion_laboral_id: number | null;
+  detalle: string | null;
+}
+
+export interface RhLoteAdscripcionEjecucionResult {
+  lote_id: string;
+  unidad_id: number;
+  total_solicitados: number;
+  creadas: number;
+  omitidas: number;
+  errores: number;
+  resultados: RhLoteEjecucionItemDto[];
 }
 
 export type RhAdscripcionPersonaEstadoVigencia = 'VIGENTE' | 'FUTURA' | 'HISTORICA';

@@ -102,6 +102,7 @@ const ALLOWED_CREATE_PERSONA_KEYS: ReadonlySet<string> = new Set([
   'cargo',
   'correo_principal',
   'unidad_medica_id',
+  'fecha_ingreso',
 ]);
 
 const ALLOWED_UPDATE_PERSONA_ESTADO_KEYS: ReadonlySet<string> = new Set(['activo']);
@@ -115,9 +116,14 @@ const ALLOWED_LIST_PERSONAS_QUERY_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 const ALLOWED_UPDATE_PERSONA_GENERAL_KEYS: ReadonlySet<string> = new Set([
+  'nombres',
+  'apellidos',
   'cargo',
   'correo_principal',
   'unidad_medica_id',
+  'curp',
+  'rfc',
+  'fecha_ingreso',
 ]);
 
 const ALLOWED_CREATE_COMISION_KEYS: ReadonlySet<string> = new Set([

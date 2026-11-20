@@ -4106,11 +4106,10 @@ async function run() {
       assert.equal(resEmpty.statusCode, 400);
 
       for (const badBody of [
-        { rfc: 'PGAX800101ZZ9' },
-        { curp: 'PGAX800101MDFR0009' },
         { activo: false },
         { puesto: 'Médico' },
-        { nombres: 'Otro' },
+        { fecha_baja: '2026-11-20' },
+        { user_id: AUTH_USER_UUID },
         { campo_desconocido: 'x' },
       ]) {
         const resBad = createMockRes();
@@ -5306,13 +5305,161 @@ async function run() {
       assert.equal(adsSqlLog.some((q) => /(INSERT|UPDATE|DELETE)/i.test(q)), false);
       passed++;
     }
+
+    // 68 (RH-4A.7A): Edición administrativa ampliada (nombres, apellidos, CURP válida/inválida/duplicada, sin exponer CURP en respuesta ni auditoría)
+    {
+      const rhGlobal = { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' };
+      const editPersonas = new Map([
+        [801, { id: 801, nombre_completo: 'Juan Pérez', nombres: 'Juan', apellidos: 'Pérez', cargo: 'Auxiliar', correo_principal: null, unidad_medica_id: null, rfc: null, curp: null, activo: true, fecha_baja: null }],
+        [802, { id: 802, nombre_completo: 'María López', nombres: 'María', apellidos: 'López', cargo: null, correo_principal: null, unidad_medica_id: null, rfc: null, curp: 'LOMA850202MDFR0002', activo: true, fecha_baja: null }],
+      ]);
+      const editAudits = [];
+      const runEditQuery = async (text, params = []) => {
+        const sql = String(text);
+        if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [], rowCount: 0 };
+        if (sql.includes('FROM public.persona') && sql.includes('FOR UPDATE')) {
+          const p = editPersonas.get(Number(params[0]));
+          return { rows: p ? [{ ...p }] : [], rowCount: p ? 1 : 0 };
+        }
+        if (sql.includes('UPPER(BTRIM(curp)) = $1')) {
+          const curp = String(params[0]);
+          const excludeId = Number(params[1]);
+          const dup = Array.from(editPersonas.values()).find((p) => p.curp === curp && p.id !== excludeId);
+          return { rows: dup ? [{ id: dup.id }] : [], rowCount: dup ? 1 : 0 };
+        }
+        if (sql.includes('UPDATE public.persona')) {
+          const id = Number(params[params.length - 1]);
+          const p = editPersonas.get(id);
+          if (sql.includes('nombres =')) p.nombres = params[0];
+          if (sql.includes('curp =')) {
+            const curpVal = params.find((v) => typeof v === 'string' && v.length === 18);
+            p.curp = curpVal ?? p.curp;
+          }
+          p.nombre_completo = `${p.nombres ?? ''} ${p.apellidos ?? ''}`.trim();
+          return { rows: [{ ...p }], rowCount: 1 };
+        }
+        if (sql.includes('INSERT INTO public.app_audit_logs')) {
+          editAudits.push(String(params[5]));
+          return { rows: [{ id: editAudits.length }], rowCount: 1 };
+        }
+        throw new Error(`Unexpected SQL in RH-4A.7A test: ${sql}`);
+      };
+      pool.connect = async () => ({ query: runEditQuery, release: () => {} });
+
+      // CURP inválida -> 400
+      const resBadCurp = createMockRes();
+      await controller.updatePersonaGeneral(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '801' }, body: { curp: 'INVALIDA' } },
+        resBadCurp
+      );
+      assert.equal(resBadCurp.statusCode, 400);
+
+      // CURP duplicada -> 409
+      const resDupCurp = createMockRes();
+      await controller.updatePersonaGeneral(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '801' }, body: { curp: 'LOMA850202MDFR0002' } },
+        resDupCurp
+      );
+      assert.equal(resDupCurp.statusCode, 409);
+
+      // CURP válida + nombres -> 200, enmascarada en respuesta y ausente en auditoría
+      const resOk = createMockRes();
+      await controller.updatePersonaGeneral(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '801' }, body: { nombres: 'Juan Carlos', curp: 'PEJU800101HDFR0001' } },
+        resOk
+      );
+      assert.equal(resOk.statusCode, 200);
+      assert.equal(resOk.body.persona.tiene_curp, true);
+      assert.equal(resOk.body.persona.curp_masked.endsWith('01'), true);
+      assert.equal(JSON.stringify(resOk.body).includes('PEJU800101HDFR0001'), false);
+      assert.equal(editAudits[0].includes('PEJU800101HDFR0001'), false);
+      passed++;
+    }
+
+    // 69 (RH-4A.7C): fecha_ingreso en alta, edición, limpieza a null, campo omitido conserva valor, validaciones 400 (formato/imposible/rango) y auditoría sin duplicados
+    {
+      const rhGlobal = { scope: 'GLOBAL', clues: [], grantedBy: 'RECURSOS_HUMANOS' };
+      const fiPersonas = new Map([
+        [901, { id: 901, nombre_completo: 'Ana Ruiz', nombres: 'Ana', apellidos: 'Ruiz', cargo: null, correo_principal: null, unidad_medica_id: null, rfc: null, curp: null, activo: true, fecha_baja: null, fecha_ingreso: '2020-03-15' }],
+      ]);
+      const fiAudits = [];
+      const runFiQuery = async (text, params = []) => {
+        const sql = String(text);
+        if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') return { rows: [], rowCount: 0 };
+        if (sql.includes('FROM public.persona') && sql.includes('FOR UPDATE')) {
+          const p = fiPersonas.get(Number(params[0]));
+          return { rows: p ? [{ ...p }] : [], rowCount: p ? 1 : 0 };
+        }
+        if (sql.includes('INSERT INTO public.persona')) {
+          const row = { id: 902, nombre_completo: `${params[0]} ${params[1]}`, nombres: params[0], apellidos: params[1], rfc: params[2], curp: params[3], cargo: params[4], correo_principal: params[5], unidad_medica_id: params[6], fecha_ingreso: params[7], activo: true, fecha_baja: null };
+          fiPersonas.set(902, row);
+          return { rows: [{ ...row }], rowCount: 1 };
+        }
+        if (sql.includes('UPDATE public.persona')) {
+          const id = Number(params[params.length - 1]);
+          const p = fiPersonas.get(id);
+          if (sql.includes('fecha_ingreso =')) {
+            p.fecha_ingreso = params[0];
+          }
+          return { rows: [{ ...p }], rowCount: 1 };
+        }
+        if (sql.includes('INSERT INTO public.app_audit_logs')) {
+          fiAudits.push(String(params[5]));
+          return { rows: [{ id: fiAudits.length }], rowCount: 1 };
+        }
+        throw new Error(`Unexpected SQL in RH-4A.7C test: ${sql}`);
+      };
+      pool.connect = async () => ({ query: runFiQuery, release: () => {} });
+
+      // Validaciones 400: formato inválido, fecha imposible, fuera de rango BD
+      for (const badDate of ['15/03/2020', '2026-02-30', '1939-12-31', '2101-01-01']) {
+        const r = createMockRes();
+        await controller.updatePersonaGeneral(
+          { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '901' }, body: { fecha_ingreso: badDate } },
+          r
+        );
+        assert.equal(r.statusCode, 400);
+      }
+
+      // Alta con fecha_ingreso válida -> 201
+      const resCreate = createMockRes();
+      await controller.createPersona(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, body: { nombres: 'Luis', apellidos: 'Díaz', fecha_ingreso: '2021-05-01' } },
+        resCreate
+      );
+      assert.equal(resCreate.statusCode, 201);
+      assert.equal(resCreate.body.fecha_ingreso, '2021-05-01');
+
+      // Edición sin cambio (misma fecha) -> idempotente=true, sin auditoría adicional
+      const auditsBefore = fiAudits.length;
+      const resSame = createMockRes();
+      await controller.updatePersonaGeneral(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '901' }, body: { fecha_ingreso: '2020-03-15' } },
+        resSame
+      );
+      assert.equal(resSame.statusCode, 200);
+      assert.equal(resSame.body.idempotente, true);
+      assert.equal(fiAudits.length, auditsBefore);
+
+      // Limpieza explícita con null -> 200, fecha_ingreso=null, audita fecha_ingreso
+      const resNull = createMockRes();
+      await controller.updatePersonaGeneral(
+        { user: { sub: AUTH_USER_UUID }, rhAccess: rhGlobal, params: { personaId: '901' }, body: { fecha_ingreso: null } },
+        resNull
+      );
+      assert.equal(resNull.statusCode, 200);
+      assert.equal(resNull.body.persona.fecha_ingreso, null);
+      assert.equal(resNull.body.campos_modificados.includes('fecha_ingreso'), true);
+      assert.equal(fiAudits.length, auditsBefore + 1);
+      passed++;
+    }
   } finally {
     pool.query = originalQuery;
     pool.connect = originalConnect;
   }
 
   console.log(
-    `RH-API.1 + RH-2B.1 + RH-2B.4A + RH-2B.4C + RH-2B.4E + RH-2B.4G.1 + RH-2B.4G.2 + RH-2B.4G.2A + RH-2C.2 + RH-4A.1A + RH-4A.1A.1 + RH-4A.2A + RH-4A.3A + RH-4A.3A.1 + RH-4A.4A + RH-4A.5B TESTS PASSED: ${passed}/67`
+    `RH-API.1 + RH-2B.1 + RH-2B.4A + RH-2B.4C + RH-2B.4E + RH-2B.4G.1 + RH-2B.4G.2 + RH-2B.4G.2A + RH-2C.2 + RH-4A.1A + RH-4A.1A.1 + RH-4A.2A + RH-4A.3A + RH-4A.3A.1 + RH-4A.4A + RH-4A.5B + RH-4A.7A + RH-4A.7C TESTS PASSED: ${passed}/69`
   );
 }
 

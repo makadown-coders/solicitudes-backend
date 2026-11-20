@@ -242,6 +242,7 @@ export interface RhPersonaAdminDto {
   curp_masked: string | null;
   activo: boolean;
   fecha_baja: string | null;
+  fecha_ingreso?: string | null;
 }
 
 export interface RhUpdatePersonaEstadoResult {
@@ -2543,6 +2544,22 @@ export default class RhService {
       hasOwn('curp') && input.curp !== undefined ? normalizeAndValidateCurp(input.curp) : null;
     const cargo = hasOwn('cargo') ? normalizeOptionalVarchar(input.cargo, 'cargo', 100) : null;
 
+    let fechaIngreso: string | null = null;
+    if (hasOwn('fecha_ingreso') && input.fecha_ingreso !== null && input.fecha_ingreso !== undefined) {
+      if (typeof input.fecha_ingreso === 'string' && input.fecha_ingreso.trim() === '') {
+        fechaIngreso = null;
+      } else {
+        const parsedFecha = parseStrictIsoDate(input.fecha_ingreso, 'fecha_ingreso');
+        if (parsedFecha < '1940-01-01' || parsedFecha > '2100-12-31') {
+          throw new RhHttpError(
+            400,
+            'El campo "fecha_ingreso" debe estar entre 1940-01-01 y 2100-12-31'
+          );
+        }
+        fechaIngreso = parsedFecha;
+      }
+    }
+
     let correoPrincipal: string | null = null;
     if (hasOwn('correo_principal') && input.correo_principal !== null && input.correo_principal !== undefined) {
       if (typeof input.correo_principal !== 'string') {
@@ -2599,6 +2616,7 @@ export default class RhService {
         curp: string | null;
         activo: boolean;
         fecha_baja: unknown;
+        fecha_ingreso?: unknown;
       }>(
         `INSERT INTO public.persona (
            nombres,
@@ -2608,9 +2626,10 @@ export default class RhService {
            cargo,
            correo_principal,
            unidad_medica_id,
+           fecha_ingreso,
            activo
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE)
          RETURNING
            id,
            nombre_completo,
@@ -2622,8 +2641,9 @@ export default class RhService {
            rfc,
            curp,
            activo,
-           fecha_baja`,
-        [nombres, apellidos, rfc, curp, cargo, correoPrincipal, unidadMedicaId]
+           fecha_baja,
+           fecha_ingreso`,
+        [nombres, apellidos, rfc, curp, cargo, correoPrincipal, unidadMedicaId, fechaIngreso]
       );
 
       const created = insertRes.rows[0];
@@ -2635,6 +2655,7 @@ export default class RhService {
       if (cargo !== null) camposRegistrados.push('cargo');
       if (correoPrincipal !== null) camposRegistrados.push('correo_principal');
       if (unidadMedicaId !== null) camposRegistrados.push('unidad_medica_id');
+      if (fechaIngreso !== null) camposRegistrados.push('fecha_ingreso');
 
       const auditPayload = {
         persona_id: personaId,
@@ -2675,6 +2696,7 @@ export default class RhService {
         curp_masked: curpInfo.masked,
         activo: Boolean(created.activo),
         fecha_baja: formatDateOnly(created.fecha_baja),
+        fecha_ingreso: formatDateOnly(created.fecha_ingreso ?? fechaIngreso),
       };
     } catch (err: any) {
       try {
@@ -2758,9 +2780,10 @@ export default class RhService {
         curp: string | null;
         activo: boolean;
         fecha_baja: unknown;
+        fecha_ingreso?: unknown;
       }>(
         `SELECT id, nombre_completo, nombres, apellidos, cargo, correo_principal,
-                unidad_medica_id, rfc, curp, activo, fecha_baja
+                unidad_medica_id, rfc, curp, activo, fecha_baja, fecha_ingreso
            FROM public.persona
           WHERE id = $1
             FOR UPDATE`,
@@ -3005,6 +3028,7 @@ export default class RhService {
         p.curp,
         p.activo,
         p.fecha_baja,
+        p.fecha_ingreso,
         COALESCE(acc.tiene_cuenta_activa, FALSE) AS tiene_cuenta_activa,
         COUNT(*) OVER() AS total
       FROM public.persona p
@@ -3050,6 +3074,7 @@ export default class RhService {
         curp_masked: curpInfo.masked,
         activo: Boolean(r.activo),
         fecha_baja: formatDateOnly(r.fecha_baja),
+        fecha_ingreso: formatDateOnly(r.fecha_ingreso),
         tiene_cuenta_activa: Boolean(r.tiene_cuenta_activa),
       };
     });
@@ -3099,10 +3124,57 @@ export default class RhService {
     const hasOwn = (k: string): boolean => Object.prototype.hasOwnProperty.call(patch, k);
 
     const parsedPatch: {
+      nombres?: string;
+      apellidos?: string;
       cargo?: string | null;
       correo_principal?: string | null;
       unidad_medica_id?: number | null;
+      curp?: string | null;
+      rfc?: string | null;
+      fecha_ingreso?: string | null;
     } = {};
+
+    if (hasOwn('fecha_ingreso')) {
+      if (
+        patch.fecha_ingreso === null ||
+        (typeof patch.fecha_ingreso === 'string' && patch.fecha_ingreso.trim() === '')
+      ) {
+        parsedPatch.fecha_ingreso = null;
+      } else {
+        const parsedFecha = parseStrictIsoDate(patch.fecha_ingreso, 'fecha_ingreso');
+        if (parsedFecha < '1940-01-01' || parsedFecha > '2100-12-31') {
+          throw new RhHttpError(
+            400,
+            'El campo "fecha_ingreso" debe estar entre 1940-01-01 y 2100-12-31'
+          );
+        }
+        parsedPatch.fecha_ingreso = parsedFecha;
+      }
+    }
+
+    if (hasOwn('nombres')) {
+      const cleanNombres = normalizeCollapsedPersonNamePart(patch.nombres, 'nombres', 150);
+      if (!cleanNombres) {
+        throw new RhHttpError(400, 'El campo "nombres" no puede estar vacío');
+      }
+      parsedPatch.nombres = cleanNombres;
+    }
+
+    if (hasOwn('apellidos')) {
+      const cleanApellidos = normalizeCollapsedPersonNamePart(patch.apellidos, 'apellidos', 150);
+      if (!cleanApellidos) {
+        throw new RhHttpError(400, 'El campo "apellidos" no puede estar vacío');
+      }
+      parsedPatch.apellidos = cleanApellidos;
+    }
+
+    if (hasOwn('curp')) {
+      parsedPatch.curp = normalizeAndValidateCurp(patch.curp);
+    }
+
+    if (hasOwn('rfc')) {
+      parsedPatch.rfc = normalizeAndValidateRfc(patch.rfc);
+    }
 
     if (hasOwn('cargo')) {
       parsedPatch.cargo = normalizeOptionalVarchar(patch.cargo, 'cargo', 100);
@@ -3155,9 +3227,10 @@ export default class RhService {
         curp: string | null;
         activo: boolean;
         fecha_baja: unknown;
+        fecha_ingreso?: unknown;
       }>(
         `SELECT id, nombre_completo, nombres, apellidos, cargo, correo_principal,
-                unidad_medica_id, rfc, curp, activo, fecha_baja
+                unidad_medica_id, rfc, curp, activo, fecha_baja, fecha_ingreso
            FROM public.persona
           WHERE id = $1
             FOR UPDATE`,
@@ -3169,6 +3242,14 @@ export default class RhService {
       }
 
       const current = personaRes.rows[0];
+      const currentNombres =
+        current.nombres != null && String(current.nombres).trim() !== ''
+          ? String(current.nombres).trim()
+          : null;
+      const currentApellidos =
+        current.apellidos != null && String(current.apellidos).trim() !== ''
+          ? String(current.apellidos).trim()
+          : null;
       const currentCargo =
         current.cargo != null && String(current.cargo).trim() !== ''
           ? String(current.cargo).trim()
@@ -3179,12 +3260,40 @@ export default class RhService {
           : null;
       const currentUnidadId =
         current.unidad_medica_id != null ? Number(current.unidad_medica_id) : null;
+      const currentCurp =
+        current.curp != null && String(current.curp).trim() !== ''
+          ? String(current.curp).trim().toUpperCase()
+          : null;
+      const currentRfc =
+        current.rfc != null && String(current.rfc).trim() !== ''
+          ? String(current.rfc).trim().toUpperCase()
+          : null;
+      const currentFechaIngreso = formatDateOnly(current.fecha_ingreso);
+
+      const finalNombres = hasOwn('nombres') ? parsedPatch.nombres! : currentNombres;
+      const finalApellidos = hasOwn('apellidos') ? parsedPatch.apellidos! : currentApellidos;
+      const finalNombreCompleto =
+        hasOwn('nombres') || hasOwn('apellidos')
+          ? `${finalNombres ?? ''} ${finalApellidos ?? ''}`.trim()
+          : String(current.nombre_completo ?? '');
+
+      if ((hasOwn('nombres') || hasOwn('apellidos')) && (!finalNombreCompleto || finalNombreCompleto.length > 150)) {
+        throw new RhHttpError(
+          400,
+          'La combinación de "nombres" y "apellidos" debe tener entre 1 y 150 caracteres'
+        );
+      }
 
       const finalCargo = hasOwn('cargo') ? parsedPatch.cargo! : currentCargo;
       const finalCorreo = hasOwn('correo_principal') ? parsedPatch.correo_principal! : currentCorreo;
       const finalUnidadId = hasOwn('unidad_medica_id')
         ? parsedPatch.unidad_medica_id!
         : currentUnidadId;
+      const finalCurp = hasOwn('curp') ? parsedPatch.curp! : currentCurp;
+      const finalRfc = hasOwn('rfc') ? parsedPatch.rfc! : currentRfc;
+      const finalFechaIngreso = hasOwn('fecha_ingreso')
+        ? parsedPatch.fecha_ingreso!
+        : currentFechaIngreso;
 
       if (finalUnidadId !== null && finalUnidadId !== currentUnidadId) {
         const umRes = await client.query<{ id: number }>(
@@ -3200,10 +3309,43 @@ export default class RhService {
         }
       }
 
+      if (finalCurp !== null && finalCurp !== currentCurp) {
+        const dupCurp = await client.query<{ id: number }>(
+          `SELECT id
+             FROM public.persona
+            WHERE UPPER(BTRIM(curp)) = $1
+              AND id <> $2
+            LIMIT 1`,
+          [finalCurp, personaId]
+        );
+        if (dupCurp.rowCount) {
+          throw new RhHttpError(409, 'Ya existe otra persona registrada con esa CURP');
+        }
+      }
+
+      if (finalRfc !== null && finalRfc !== currentRfc) {
+        const dupRfc = await client.query<{ id: number }>(
+          `SELECT id
+             FROM public.persona
+            WHERE UPPER(BTRIM(rfc)) = $1
+              AND id <> $2
+            LIMIT 1`,
+          [finalRfc, personaId]
+        );
+        if (dupRfc.rowCount) {
+          throw new RhHttpError(409, 'Ya existe otra persona registrada con ese RFC');
+        }
+      }
+
       const camposModificados: string[] = [];
+      if (finalNombres !== currentNombres) camposModificados.push('nombres');
+      if (finalApellidos !== currentApellidos) camposModificados.push('apellidos');
       if (finalCargo !== currentCargo) camposModificados.push('cargo');
       if (finalCorreo !== currentCorreo) camposModificados.push('correo_principal');
       if (finalUnidadId !== currentUnidadId) camposModificados.push('unidad_medica_id');
+      if (finalCurp !== currentCurp) camposModificados.push('curp');
+      if (finalRfc !== currentRfc) camposModificados.push('rfc');
+      if (finalFechaIngreso !== currentFechaIngreso) camposModificados.push('fecha_ingreso');
 
       if (camposModificados.length === 0) {
         await client.query('COMMIT');
@@ -3224,6 +3366,7 @@ export default class RhService {
             curp_masked: curpInfoNoOp.masked,
             activo: Boolean(current.activo),
             fecha_baja: formatDateOnly(current.fecha_baja),
+            fecha_ingreso: currentFechaIngreso,
           },
           idempotente: true,
           campos_modificados: [],
@@ -3233,6 +3376,18 @@ export default class RhService {
       const setClauses: string[] = [];
       const updateParams: unknown[] = [];
 
+      if (camposModificados.includes('nombres')) {
+        updateParams.push(finalNombres);
+        setClauses.push(`nombres = $${updateParams.length}`);
+      }
+      if (camposModificados.includes('apellidos')) {
+        updateParams.push(finalApellidos);
+        setClauses.push(`apellidos = $${updateParams.length}`);
+      }
+      if (camposModificados.includes('nombres') || camposModificados.includes('apellidos')) {
+        updateParams.push(finalNombreCompleto);
+        setClauses.push(`nombre_completo = $${updateParams.length}`);
+      }
       if (camposModificados.includes('cargo')) {
         updateParams.push(finalCargo);
         setClauses.push(`cargo = $${updateParams.length}`);
@@ -3244,6 +3399,18 @@ export default class RhService {
       if (camposModificados.includes('unidad_medica_id')) {
         updateParams.push(finalUnidadId);
         setClauses.push(`unidad_medica_id = $${updateParams.length}`);
+      }
+      if (camposModificados.includes('curp')) {
+        updateParams.push(finalCurp);
+        setClauses.push(`curp = $${updateParams.length}`);
+      }
+      if (camposModificados.includes('rfc')) {
+        updateParams.push(finalRfc);
+        setClauses.push(`rfc = $${updateParams.length}`);
+      }
+      if (camposModificados.includes('fecha_ingreso')) {
+        updateParams.push(finalFechaIngreso);
+        setClauses.push(`fecha_ingreso = $${updateParams.length}`);
       }
       setClauses.push('actualizado_en = NOW()');
 
@@ -3262,12 +3429,13 @@ export default class RhService {
         curp: string | null;
         activo: boolean;
         fecha_baja: unknown;
+        fecha_ingreso?: unknown;
       }>(
         `UPDATE public.persona
             SET ${setClauses.join(', ')}
           WHERE id = $${whereIdx}
           RETURNING id, nombre_completo, nombres, apellidos, cargo, correo_principal,
-                    unidad_medica_id, rfc, curp, activo, fecha_baja`,
+                    unidad_medica_id, rfc, curp, activo, fecha_baja, fecha_ingreso`,
         updateParams
       );
 
@@ -3317,6 +3485,7 @@ export default class RhService {
           curp_masked: curpInfo.masked,
           activo: Boolean(updated.activo),
           fecha_baja: formatDateOnly(updated.fecha_baja),
+          fecha_ingreso: formatDateOnly(updated.fecha_ingreso ?? finalFechaIngreso),
         },
         idempotente: false,
         campos_modificados: camposModificados,

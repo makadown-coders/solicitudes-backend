@@ -5720,7 +5720,33 @@ export default class RhService {
       'documento_referencia',
       120
     );
-    const observaciones = normalizeOptionalVarchar(input.observaciones, 'observaciones', 2000);
+    const observacionesBase = normalizeOptionalVarchar(input.observaciones, 'observaciones', 1500);
+
+    const esExcepcion = input.es_excepcion_fuera_periodo === true;
+    if (
+      input.es_excepcion_fuera_periodo !== undefined &&
+      typeof input.es_excepcion_fuera_periodo !== 'boolean'
+    ) {
+      throw new RhHttpError(400, 'El campo "es_excepcion_fuera_periodo" debe ser booleano');
+    }
+
+    const justificacionExcepcion = normalizeOptionalVarchar(
+      input.justificacion_excepcion,
+      'justificacion_excepcion',
+      500
+    );
+    if (esExcepcion && !justificacionExcepcion) {
+      throw new RhHttpError(
+        400,
+        'El campo "justificacion_excepcion" es obligatorio cuando se registran vacaciones fuera del periodo de origen'
+      );
+    }
+
+    const observaciones = esExcepcion
+      ? [observacionesBase, `[EXCEPCIÓN FUERA DE PERIODO]: ${justificacionExcepcion}`]
+          .filter((s): s is string => Boolean(s))
+          .join(' | ')
+      : observacionesBase;
 
     const client = await pool.connect();
     try {
@@ -5759,7 +5785,13 @@ export default class RhService {
       const perFin = formatDateOnly(periodo.fecha_fin) ?? '';
 
       for (const f of parsedFechas) {
-        if (f.fecha < perInicio || f.fecha > perFin) {
+        if (f.fecha < perInicio) {
+          throw new RhHttpError(
+            400,
+            `La fecha "${f.fecha}" es anterior al inicio del periodo institucional ${periodo.clave} (${perInicio})`
+          );
+        }
+        if (f.fecha > perFin && !esExcepcion) {
           throw new RhHttpError(
             400,
             `La fecha "${f.fecha}" está fuera del periodo institucional ${periodo.clave} (${perInicio} a ${perFin})`
@@ -5807,18 +5839,17 @@ export default class RhService {
         `SELECT fecha
            FROM public.rh_vacacion_registro_fecha
           WHERE persona_id = $1
-            AND periodo_id = $2
             AND activo = TRUE
             AND computable = TRUE
-            AND fecha = ANY($3::date[])
+            AND fecha = ANY($2::date[])
           LIMIT 1`,
-        [personaId, rawPeriodoId, computablesDates]
+        [personaId, computablesDates]
       );
       if (dupRes.rowCount) {
         const dupDate = formatDateOnly(dupRes.rows[0].fecha) ?? '';
         throw new RhHttpError(
           409,
-          `La fecha computable "${dupDate}" ya está registrada en otro movimiento activo de este periodo`
+          `La fecha computable "${dupDate}" ya está registrada en otro movimiento activo para esta persona`
         );
       }
 
@@ -5875,6 +5906,8 @@ export default class RhService {
             periodo_id: rawPeriodoId,
             dias_computables: computablesCount,
             total_fechas: parsedFechas.length,
+            es_excepcion_fuera_periodo: esExcepcion,
+            justificacion_excepcion: esExcepcion ? justificacionExcepcion : null,
           }),
         ]
       );
@@ -5911,6 +5944,556 @@ export default class RhService {
       client.release();
     }
   }
+
+  /**
+   * Consulta personal de solo lectura de vacaciones del empleado autenticado (`GET /api/rh/mi-vacaciones`).
+   * Resuelve identidad canónicamente vía `app_users.id -> app_users.persona_id -> public.persona.id`
+   * y reutiliza el cálculo de `getVacacionKardexPersona` sin duplicar lógica.
+   */
+  async getMisVacacionesEmpleado(
+    rawUserId: unknown,
+    requestedPeriodoId: number | null = null
+  ): Promise<{
+    periodos: RhVacacionPeriodoDto[];
+    kardex: RhVacacionKardexResponse | null;
+  }> {
+    const userId = typeof rawUserId === 'string' ? rawUserId.trim() : '';
+    if (!UUID_REGEX.test(userId)) {
+      throw new RhHttpError(401, 'Unauthorized');
+    }
+
+    const identityRes = await pool.query<{
+      user_status: string;
+      persona_id: number | null;
+      persona_activo: boolean | null;
+    }>(
+      `SELECT
+         u.status AS user_status,
+         u.persona_id,
+         p.activo AS persona_activo
+       FROM public.app_users u
+       LEFT JOIN public.persona p ON p.id = u.persona_id
+       WHERE u.id = $1
+       LIMIT 1`,
+      [userId]
+    );
+
+    if (!identityRes.rowCount) {
+      throw new RhHttpError(401, 'Unauthorized');
+    }
+    const row = identityRes.rows[0];
+    if (String(row.user_status ?? '').trim().toUpperCase() !== 'ACTIVE') {
+      throw new RhHttpError(403, 'Tu cuenta de usuario no se encuentra activa');
+    }
+    if (row.persona_id == null || row.persona_activo !== true) {
+      throw new RhHttpError(
+        403,
+        'Tu cuenta no está vinculada a una persona institucional activa para consultar vacaciones'
+      );
+    }
+
+    const personaId = Number(row.persona_id);
+    const selfReadAccess: RhAccessContext = {
+      grantedBy: 'RECURSOS_HUMANOS',
+      scope: 'GLOBAL',
+      clues: [],
+    };
+
+    const { items: periodos } = await this.listVacacionPeriodos(selfReadAccess);
+    if (periodos.length === 0) {
+      return { periodos: [], kardex: null };
+    }
+
+    const targetPeriodoId =
+      requestedPeriodoId !== null
+        ? requestedPeriodoId
+        : periodos[0].id;
+
+    const kardex = await this.getVacacionKardexPersona(selfReadAccess, personaId, targetPeriodoId);
+    return { periodos, kardex };
+  }
+
+  // ===========================================================================
+  // RH-ORG-04: Administración visual del organigrama institucional
+  // ===========================================================================
+
+  async listOrganigramaPuestos(access: RhAccessContext): Promise<{
+    version: { id: number; clave: string; nombre: string; estado: string };
+    items: RhOrgPuestoDto[];
+  }> {
+    if (access.grantedBy !== 'RECURSOS_HUMANOS' || access.scope !== 'GLOBAL') {
+      throw new RhHttpError(403, 'Solo RECURSOS_HUMANOS GLOBAL está autorizado para consultar el organigrama');
+    }
+
+    const verRes = await pool.query<any>(
+      `SELECT id, clave, nombre, estado
+         FROM public.rh_org_version
+        WHERE clave = 'ORG-COORDINACION-ESTATAL'
+          AND activo = TRUE
+        LIMIT 1`
+    );
+    if (!verRes.rowCount) {
+      throw new RhHttpError(404, 'La estructura organizacional ORG-COORDINACION-ESTATAL no se encuentra inicializada');
+    }
+    const ver = verRes.rows[0];
+
+    const res = await pool.query<any>(
+      `SELECT id, version_id, puesto_padre_id, denominacion, codigo_nivel,
+              nivel_jerarquico, siglas_area, orden_visual, observaciones, activo
+         FROM public.rh_org_puesto
+        WHERE version_id = $1
+        ORDER BY nivel_jerarquico ASC, orden_visual ASC, id ASC`,
+      [ver.id]
+    );
+
+    return {
+      version: {
+        id: Number(ver.id),
+        clave: String(ver.clave),
+        nombre: String(ver.nombre),
+        estado: String(ver.estado),
+      },
+      items: res.rows.map((r) => this.mapOrgPuestoRow(r)),
+    };
+  }
+
+  async createOrganigramaPuesto(
+    access: RhAccessContext,
+    input: Record<string, unknown>,
+    auditMeta: RhAuditMeta
+  ): Promise<{ puesto: RhOrgPuestoDto }> {
+    if (access.grantedBy !== 'RECURSOS_HUMANOS' || access.scope !== 'GLOBAL') {
+      throw new RhHttpError(403, 'Solo RECURSOS_HUMANOS GLOBAL está autorizado');
+    }
+    const rawUserId = typeof auditMeta?.userId === 'string' ? auditMeta.userId.trim() : '';
+    if (!UUID_REGEX.test(rawUserId)) {
+      throw new RhHttpError(401, 'Unauthorized');
+    }
+
+    const denominacion = normalizeOptionalVarchar(input.denominacion, 'denominacion', 200);
+    if (!denominacion) {
+      throw new RhHttpError(400, 'El campo "denominacion" es obligatorio');
+    }
+
+    const rawPadreId = input.puesto_padre_id;
+    if (typeof rawPadreId !== 'number' || !Number.isInteger(rawPadreId) || rawPadreId <= 0) {
+      throw new RhHttpError(400, 'El campo "puesto_padre_id" es obligatorio y debe ser un entero positivo (solo existe una raíz)');
+    }
+
+    const codigoNivel = normalizeOptionalVarchar(input.codigo_nivel, 'codigo_nivel', 40);
+    const siglasArea = normalizeOptionalVarchar(input.siglas_area, 'siglas_area', 30);
+    const observaciones = normalizeOptionalVarchar(input.observaciones, 'observaciones', 1000);
+    const ordenVisual =
+      typeof input.orden_visual === 'number' && Number.isInteger(input.orden_visual) && input.orden_visual >= 0
+        ? input.orden_visual
+        : 0;
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const verRes = await client.query<{ id: number }>(
+        `SELECT id FROM public.rh_org_version WHERE clave = 'ORG-COORDINACION-ESTATAL' AND activo = TRUE LIMIT 1`
+      );
+      if (!verRes.rowCount) {
+        throw new RhHttpError(404, 'Estructura ORG-COORDINACION-ESTATAL no encontrada');
+      }
+      const versionId = Number(verRes.rows[0].id);
+
+      const padreRes = await client.query<{ id: number; nivel_jerarquico: number }>(
+        `SELECT id, nivel_jerarquico FROM public.rh_org_puesto WHERE id = $1 AND version_id = $2 FOR UPDATE`,
+        [rawPadreId, versionId]
+      );
+      if (!padreRes.rowCount) {
+        throw new RhHttpError(404, 'El puesto padre especificado no existe en ORG-COORDINACION-ESTATAL');
+      }
+      const nivelHijo = Number(padreRes.rows[0].nivel_jerarquico) + 1;
+      if (nivelHijo > 10) {
+        throw new RhHttpError(400, 'Se excede el nivel jerárquico máximo permitido (10)');
+      }
+
+      const dupRes = await client.query<{ id: number }>(
+        `SELECT id FROM public.rh_org_puesto
+          WHERE version_id = $1 AND puesto_padre_id = $2 AND LOWER(BTRIM(denominacion)) = LOWER($3)
+          LIMIT 1`,
+        [versionId, rawPadreId, denominacion]
+      );
+      if (dupRes.rowCount) {
+        throw new RhHttpError(409, 'Ya existe un puesto con la misma denominación bajo este superior');
+      }
+
+      const insRes = await client.query<any>(
+        `INSERT INTO public.rh_org_puesto (
+           version_id, puesto_padre_id, denominacion, codigo_nivel,
+           nivel_jerarquico, siglas_area, orden_visual, observaciones, activo
+         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE)
+         RETURNING id, version_id, puesto_padre_id, denominacion, codigo_nivel,
+                   nivel_jerarquico, siglas_area, orden_visual, observaciones, activo`,
+        [versionId, rawPadreId, denominacion, codigoNivel, nivelHijo, siglasArea, ordenVisual, observaciones]
+      );
+      const created = this.mapOrgPuestoRow(insRes.rows[0]);
+
+      await client.query(
+        `INSERT INTO public.app_audit_logs (user_id, action, resource, ip, user_agent, payload)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+        [
+          rawUserId,
+          'RH_ORG_CREATE_PUESTO',
+          'rh_org_puesto',
+          auditMeta.ip ?? null,
+          auditMeta.userAgent ?? null,
+          JSON.stringify({ puesto_id: created.id, version_id: versionId, puesto_padre_id: rawPadreId, denominacion }),
+        ]
+      );
+
+      await client.query('COMMIT');
+      return { puesto: created };
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async updateOrganigramaPuesto(
+    access: RhAccessContext,
+    puestoId: number,
+    input: Record<string, unknown>,
+    auditMeta: RhAuditMeta
+  ): Promise<{ puesto: RhOrgPuestoDto }> {
+    if (access.grantedBy !== 'RECURSOS_HUMANOS' || access.scope !== 'GLOBAL') {
+      throw new RhHttpError(403, 'Solo RECURSOS_HUMANOS GLOBAL está autorizado');
+    }
+    const rawUserId = typeof auditMeta?.userId === 'string' ? auditMeta.userId.trim() : '';
+    if (!UUID_REGEX.test(rawUserId)) {
+      throw new RhHttpError(401, 'Unauthorized');
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const curRes = await client.query<any>(
+        `SELECT p.id, p.version_id, p.puesto_padre_id, p.denominacion, p.codigo_nivel,
+                p.nivel_jerarquico, p.siglas_area, p.orden_visual, p.observaciones, p.activo
+           FROM public.rh_org_puesto p
+           INNER JOIN public.rh_org_version v ON v.id = p.version_id
+          WHERE p.id = $1 AND v.clave = 'ORG-COORDINACION-ESTATAL'
+          FOR UPDATE`,
+        [puestoId]
+      );
+      if (!curRes.rowCount) {
+        throw new RhHttpError(404, 'Puesto organizacional no encontrado');
+      }
+      const cur = curRes.rows[0];
+
+      const hasOwn = (k: string) => Object.prototype.hasOwnProperty.call(input, k);
+      const nextDenom = hasOwn('denominacion')
+        ? normalizeOptionalVarchar(input.denominacion, 'denominacion', 200)
+        : String(cur.denominacion);
+      if (!nextDenom) {
+        throw new RhHttpError(400, 'El campo "denominacion" no puede estar vacío');
+      }
+      const nextCodigo = hasOwn('codigo_nivel')
+        ? normalizeOptionalVarchar(input.codigo_nivel, 'codigo_nivel', 40)
+        : cur.codigo_nivel;
+      const nextSiglas = hasOwn('siglas_area')
+        ? normalizeOptionalVarchar(input.siglas_area, 'siglas_area', 30)
+        : cur.siglas_area;
+      const nextObs = hasOwn('observaciones')
+        ? normalizeOptionalVarchar(input.observaciones, 'observaciones', 1000)
+        : cur.observaciones;
+      const nextOrden = hasOwn('orden_visual')
+        ? (typeof input.orden_visual === 'number' && Number.isInteger(input.orden_visual) && input.orden_visual >= 0
+            ? input.orden_visual
+            : (() => { throw new RhHttpError(400, 'orden_visual inválido'); })())
+        : Number(cur.orden_visual);
+
+      if (cur.puesto_padre_id != null && nextDenom.toLowerCase() !== String(cur.denominacion).toLowerCase()) {
+        const dupRes = await client.query<{ id: number }>(
+          `SELECT id FROM public.rh_org_puesto
+            WHERE version_id = $1 AND puesto_padre_id = $2 AND id <> $3 AND LOWER(BTRIM(denominacion)) = LOWER($4)
+            LIMIT 1`,
+          [cur.version_id, cur.puesto_padre_id, puestoId, nextDenom]
+        );
+        if (dupRes.rowCount) {
+          throw new RhHttpError(409, 'Ya existe otro puesto con la misma denominación bajo el mismo superior');
+        }
+      }
+
+      const updRes = await client.query<any>(
+        `UPDATE public.rh_org_puesto
+            SET denominacion = $1,
+                codigo_nivel = $2,
+                siglas_area = $3,
+                orden_visual = $4,
+                observaciones = $5,
+                actualizado_en = NOW()
+          WHERE id = $6
+          RETURNING id, version_id, puesto_padre_id, denominacion, codigo_nivel,
+                    nivel_jerarquico, siglas_area, orden_visual, observaciones, activo`,
+        [nextDenom, nextCodigo, nextSiglas, nextOrden, nextObs, puestoId]
+      );
+      const updated = this.mapOrgPuestoRow(updRes.rows[0]);
+
+      await client.query(
+        `INSERT INTO public.app_audit_logs (user_id, action, resource, ip, user_agent, payload)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+        [
+          rawUserId,
+          'RH_ORG_UPDATE_PUESTO',
+          'rh_org_puesto',
+          auditMeta.ip ?? null,
+          auditMeta.userAgent ?? null,
+          JSON.stringify({ puesto_id: puestoId, version_id: Number(cur.version_id), denominacion: nextDenom }),
+        ]
+      );
+
+      await client.query('COMMIT');
+      return { puesto: updated };
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async changeOrganigramaDependencia(
+    access: RhAccessContext,
+    puestoId: number,
+    input: Record<string, unknown>,
+    auditMeta: RhAuditMeta
+  ): Promise<{ puesto: RhOrgPuestoDto }> {
+    if (access.grantedBy !== 'RECURSOS_HUMANOS' || access.scope !== 'GLOBAL') {
+      throw new RhHttpError(403, 'Solo RECURSOS_HUMANOS GLOBAL está autorizado');
+    }
+    const rawUserId = typeof auditMeta?.userId === 'string' ? auditMeta.userId.trim() : '';
+    if (!UUID_REGEX.test(rawUserId)) {
+      throw new RhHttpError(401, 'Unauthorized');
+    }
+
+    const newPadreId = input.puesto_padre_id;
+    if (typeof newPadreId !== 'number' || !Number.isInteger(newPadreId) || newPadreId <= 0) {
+      throw new RhHttpError(400, 'El campo "puesto_padre_id" debe ser un entero positivo');
+    }
+    if (newPadreId === puestoId) {
+      throw new RhHttpError(400, 'Un puesto no puede depender de sí mismo');
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const curRes = await client.query<any>(
+        `SELECT p.id, p.version_id, p.puesto_padre_id, p.denominacion, p.nivel_jerarquico
+           FROM public.rh_org_puesto p
+           INNER JOIN public.rh_org_version v ON v.id = p.version_id
+          WHERE p.id = $1 AND v.clave = 'ORG-COORDINACION-ESTATAL'
+          FOR UPDATE`,
+        [puestoId]
+      );
+      if (!curRes.rowCount) {
+        throw new RhHttpError(404, 'Puesto organizacional no encontrado');
+      }
+      const cur = curRes.rows[0];
+      if (cur.puesto_padre_id == null) {
+        throw new RhHttpError(409, 'No se puede cambiar la dependencia del puesto raíz institucional');
+      }
+      const versionId = Number(cur.version_id);
+
+      const newPadreRes = await client.query<{ id: number; nivel_jerarquico: number }>(
+        `SELECT id, nivel_jerarquico FROM public.rh_org_puesto WHERE id = $1 AND version_id = $2 FOR UPDATE`,
+        [newPadreId, versionId]
+      );
+      if (!newPadreRes.rowCount) {
+        throw new RhHttpError(404, 'El nuevo superior no existe en ORG-COORDINACION-ESTATAL');
+      }
+      const nextNivel = Number(newPadreRes.rows[0].nivel_jerarquico) + 1;
+
+      // Verificar que no exista ciclo
+      const cicloRes = await client.query<{ hay_ciclo: boolean }>(
+        `WITH RECURSIVE ancestros AS (
+           SELECT id, puesto_padre_id, 1 AS prof
+             FROM public.rh_org_puesto
+            WHERE id = $1 AND version_id = $2
+           UNION ALL
+           SELECT p.id, p.puesto_padre_id, a.prof + 1
+             FROM public.rh_org_puesto p
+             INNER JOIN ancestros a ON a.puesto_padre_id = p.id
+            WHERE p.version_id = $2 AND a.prof < 32
+         )
+         SELECT EXISTS (SELECT 1 FROM ancestros WHERE id = $3) AS hay_ciclo`,
+        [newPadreId, versionId, puestoId]
+      );
+      if (cicloRes.rows[0]?.hay_ciclo) {
+        throw new RhHttpError(409, 'El cambio de dependencia genera un ciclo jerárquico');
+      }
+
+      // Si cambia el nivel jerárquico y existen puestos hijos, rechazar explícitamente sin mover descendientes silenciosamente
+      if (nextNivel !== Number(cur.nivel_jerarquico)) {
+        const hijosRes = await client.query<{ cnt: number }>(
+          `SELECT COUNT(*)::int AS cnt FROM public.rh_org_puesto WHERE puesto_padre_id = $1 AND version_id = $2`,
+          [puestoId, versionId]
+        );
+        if (Number(hijosRes.rows[0]?.cnt ?? 0) > 0) {
+          throw new RhHttpError(
+            409,
+            'No se puede cambiar el nivel jerárquico de un puesto que tiene puestos dependientes sin reubicar primero sus descendientes'
+          );
+        }
+      }
+
+      const dupRes = await client.query<{ id: number }>(
+        `SELECT id FROM public.rh_org_puesto
+          WHERE version_id = $1 AND puesto_padre_id = $2 AND id <> $3 AND LOWER(BTRIM(denominacion)) = LOWER($4)
+          LIMIT 1`,
+        [versionId, newPadreId, puestoId, cur.denominacion]
+      );
+      if (dupRes.rowCount) {
+        throw new RhHttpError(409, 'Ya existe un puesto con la misma denominación bajo el nuevo superior');
+      }
+
+      const updRes = await client.query<any>(
+        `UPDATE public.rh_org_puesto
+            SET puesto_padre_id = $1,
+                nivel_jerarquico = $2,
+                actualizado_en = NOW()
+          WHERE id = $3
+          RETURNING id, version_id, puesto_padre_id, denominacion, codigo_nivel,
+                    nivel_jerarquico, siglas_area, orden_visual, observaciones, activo`,
+        [newPadreId, nextNivel, puestoId]
+      );
+      const updated = this.mapOrgPuestoRow(updRes.rows[0]);
+
+      await client.query(
+        `INSERT INTO public.app_audit_logs (user_id, action, resource, ip, user_agent, payload)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+        [
+          rawUserId,
+          'RH_ORG_CHANGE_DEPENDENCIA',
+          'rh_org_puesto',
+          auditMeta.ip ?? null,
+          auditMeta.userAgent ?? null,
+          JSON.stringify({
+            puesto_id: puestoId,
+            version_id: versionId,
+            puesto_padre_anterior: Number(cur.puesto_padre_id),
+            puesto_padre_nuevo: newPadreId,
+          }),
+        ]
+      );
+
+      await client.query('COMMIT');
+      return { puesto: updated };
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async updateOrganigramaPuestoEstado(
+    access: RhAccessContext,
+    puestoId: number,
+    input: Record<string, unknown>,
+    auditMeta: RhAuditMeta
+  ): Promise<{ puesto: RhOrgPuestoDto }> {
+    if (access.grantedBy !== 'RECURSOS_HUMANOS' || access.scope !== 'GLOBAL') {
+      throw new RhHttpError(403, 'Solo RECURSOS_HUMANOS GLOBAL está autorizado');
+    }
+    const rawUserId = typeof auditMeta?.userId === 'string' ? auditMeta.userId.trim() : '';
+    if (!UUID_REGEX.test(rawUserId)) {
+      throw new RhHttpError(401, 'Unauthorized');
+    }
+    if (typeof input.activo !== 'boolean') {
+      throw new RhHttpError(400, 'El campo "activo" debe ser booleano');
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const curRes = await client.query<any>(
+        `SELECT p.id, p.version_id, p.puesto_padre_id, p.activo
+           FROM public.rh_org_puesto p
+           INNER JOIN public.rh_org_version v ON v.id = p.version_id
+          WHERE p.id = $1 AND v.clave = 'ORG-COORDINACION-ESTATAL'
+          FOR UPDATE`,
+        [puestoId]
+      );
+      if (!curRes.rowCount) {
+        throw new RhHttpError(404, 'Puesto organizacional no encontrado');
+      }
+      const cur = curRes.rows[0];
+      if (cur.puesto_padre_id == null && input.activo === false) {
+        throw new RhHttpError(409, 'No se puede deshabilitar el puesto raíz institucional');
+      }
+
+      const updRes = await client.query<any>(
+        `UPDATE public.rh_org_puesto
+            SET activo = $1,
+                actualizado_en = NOW()
+          WHERE id = $2
+          RETURNING id, version_id, puesto_padre_id, denominacion, codigo_nivel,
+                    nivel_jerarquico, siglas_area, orden_visual, observaciones, activo`,
+        [input.activo, puestoId]
+      );
+      const updated = this.mapOrgPuestoRow(updRes.rows[0]);
+
+      await client.query(
+        `INSERT INTO public.app_audit_logs (user_id, action, resource, ip, user_agent, payload)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+        [
+          rawUserId,
+          'RH_ORG_UPDATE_ESTADO',
+          'rh_org_puesto',
+          auditMeta.ip ?? null,
+          auditMeta.userAgent ?? null,
+          JSON.stringify({ puesto_id: puestoId, version_id: Number(cur.version_id), activo: input.activo }),
+        ]
+      );
+
+      await client.query('COMMIT');
+      return { puesto: updated };
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  private mapOrgPuestoRow(r: any): RhOrgPuestoDto {
+    return {
+      id: Number(r.id),
+      version_id: Number(r.version_id),
+      puesto_padre_id: r.puesto_padre_id != null ? Number(r.puesto_padre_id) : null,
+      denominacion: String(r.denominacion),
+      codigo_nivel: r.codigo_nivel != null ? String(r.codigo_nivel) : null,
+      nivel_jerarquico: Number(r.nivel_jerarquico),
+      siglas_area: r.siglas_area != null ? String(r.siglas_area) : null,
+      orden_visual: Number(r.orden_visual ?? 0),
+      observaciones: r.observaciones != null ? String(r.observaciones) : null,
+      activo: Boolean(r.activo),
+    };
+  }
+}
+
+export interface RhOrgPuestoDto {
+  id: number;
+  version_id: number;
+  puesto_padre_id: number | null;
+  denominacion: string;
+  codigo_nivel: string | null;
+  nivel_jerarquico: number;
+  siglas_area: string | null;
+  orden_visual: number;
+  observaciones: string | null;
+  activo: boolean;
 }
 
 export interface RhVacacionPeriodoDto {

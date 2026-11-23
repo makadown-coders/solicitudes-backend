@@ -3096,9 +3096,9 @@ async function run() {
 
       // Verificar que TODOS los demás endpoints administrativos en rhRouter conservan requireAuth + requireRhAccess (stack.length === 3)
       const adminRoutes = rhRouter.stack.filter(
-        (l) => l.route && l.route.path !== '/mi-contexto'
+        (l) => l.route && l.route.path !== '/mi-contexto' && l.route.path !== '/mi-vacaciones'
       );
-      assert.equal(adminRoutes.length, 25);
+      assert.equal(adminRoutes.length, 30);
       for (const layer of adminRoutes) {
         assert.equal(
           layer.route.stack.length,
@@ -5713,6 +5713,16 @@ async function run() {
         if (s === 'BEGIN' || s === 'COMMIT' || s === 'ROLLBACK') {
           return { rows: [], rowCount: 0 };
         }
+        if (s.includes('FROM public.app_users u') && s.includes('LEFT JOIN public.persona p')) {
+          const uid = String(params[0]);
+          if (uid === '22222222-2222-4222-8222-222222222222') {
+            return { rows: [{ user_status: 'ACTIVE', persona_id: 777, persona_activo: true }], rowCount: 1 };
+          }
+          if (uid === '33333333-3333-4333-8333-333333333333') {
+            return { rows: [{ user_status: 'ACTIVE', persona_id: null, persona_activo: null }], rowCount: 1 };
+          }
+          return { rows: [], rowCount: 0 };
+        }
         if (s.includes('FROM public.rh_vacacion_periodo') && !s.includes('LEFT JOIN public.rh_vacacion_bolsa')) {
           if (s.includes('WHERE id = $1')) {
             const p = vacPeriodos.find((x) => x.id === Number(params[0]));
@@ -5775,10 +5785,11 @@ async function run() {
             .reduce((acc, r) => acc + r.dias_registrados, 0);
           return { rows: [{ consumidos: sum }], rowCount: 1 };
         }
-        if (s.includes('FROM public.rh_vacacion_registro_fecha') && s.includes('ANY($3::date[])')) {
-          const [pid, perId, dates] = params;
+        if (s.includes('FROM public.rh_vacacion_registro_fecha') && (s.includes('ANY($2::date[])') || s.includes('ANY($3::date[])'))) {
+          const pid = Number(params[0]);
+          const dates = params.length === 2 ? params[1] : params[2];
           const hit = vacFechas.find(
-            (f) => f.persona_id === Number(pid) && f.periodo_id === Number(perId) && f.activo && f.computable && dates.includes(f.fecha)
+            (f) => f.persona_id === pid && f.activo && f.computable && dates.includes(f.fecha)
           );
           return { rows: hit ? [{ fecha: hit.fecha }] : [], rowCount: hit ? 1 : 0 };
         }
@@ -6008,6 +6019,236 @@ async function run() {
       assert.equal(resKardexAfter.body.resumen.dias_computables_registrados, 0);
       assert.equal(resKardexAfter.body.resumen.saldo_administrativo, 10);
       passed++;
+
+      // 78 (RH-VAC-06): Excepción fuera de periodo de origen (2024-P2 con fechas 2026) + rechazo sin justificación (400) + rechazo fecha anterior (400) + duplicado entre periodos (409)
+      vacPeriodos.push({
+        id: 24,
+        anio: 2024,
+        numero_periodo: 2,
+        clave: '2024-P2',
+        nombre: 'Segundo periodo 2024',
+        fecha_inicio: '2024-07-01',
+        fecha_fin: '2024-12-31',
+        dias_base_provisionales: 10,
+        activo: true,
+        observaciones: null,
+      });
+      vacBolsas.set('777:24', {
+        id: 302,
+        persona_id: 777,
+        periodo_id: 24,
+        dias_asignados: 10,
+        estado_asignacion: 'PROVISIONAL',
+        justificacion_ajuste: null,
+        calendario_laboral_codigo: null,
+        actualizado_en: new Date().toISOString(),
+      });
+
+      // Sin justificación -> 400
+      const resExcNoJust = createMockRes();
+      await controller.createVacacionPersona(
+        {
+          user: { sub: rhGlobalUserId },
+          rhAccess: rhGlobalAccess,
+          params: { personaId: '777' },
+          body: {
+            periodo_id: 24,
+            es_excepcion_fuera_periodo: true,
+            fechas: [{ fecha: '2026-12-10', computable: true }],
+          },
+        },
+        resExcNoJust
+      );
+      assert.equal(resExcNoJust.statusCode, 400);
+
+      // Fecha anterior al inicio del periodo -> 400
+      const resExcAnt = createMockRes();
+      await controller.createVacacionPersona(
+        {
+          user: { sub: rhGlobalUserId },
+          rhAccess: rhGlobalAccess,
+          params: { personaId: '777' },
+          body: {
+            periodo_id: 24,
+            es_excepcion_fuera_periodo: true,
+            justificacion_excepcion: 'Autorización excepcional',
+            fechas: [{ fecha: '2024-06-15', computable: true }],
+          },
+        },
+        resExcAnt
+      );
+      assert.equal(resExcAnt.statusCode, 400);
+
+      // Fecha posterior 2026-12-10 cargada a 2024-P2 con excepción y justificación -> 201
+      const resExcOk = createMockRes();
+      await controller.createVacacionPersona(
+        {
+          user: { sub: rhGlobalUserId },
+          rhAccess: rhGlobalAccess,
+          params: { personaId: '777' },
+          body: {
+            periodo_id: 24,
+            es_excepcion_fuera_periodo: true,
+            justificacion_excepcion: 'Vacaciones pendientes 2024 disfrutadas en 2026',
+            fechas: [{ fecha: '2026-12-10', computable: true }],
+          },
+        },
+        resExcOk
+      );
+      assert.equal(resExcOk.statusCode, 201);
+      assert.equal(resExcOk.body.registro.observaciones.includes('EXCEPCIÓN FUERA DE PERIODO'), true);
+
+      // Misma fecha 2026-12-10 en otro periodo (2026-P2) -> 409 (prevención de doble consumo entre periodos)
+      const resCrossDup = createMockRes();
+      await controller.createVacacionPersona(
+        {
+          user: { sub: rhGlobalUserId },
+          rhAccess: rhGlobalAccess,
+          params: { personaId: '777' },
+          body: {
+            periodo_id: 2,
+            fechas: [{ fecha: '2026-12-10', computable: true }],
+          },
+        },
+        resCrossDup
+      );
+      assert.equal(resCrossDup.statusCode, 409);
+      passed++;
+
+      // 79 (RH-VAC-07B): Consulta personal GET /api/rh/mi-vacaciones (vinculado -> 200, sin vinculación -> 403, parámetro persona_id -> 400)
+      const resSelfBadParam = createMockRes();
+      await controller.miVacaciones(
+        { user: { sub: '22222222-2222-4222-8222-222222222222' }, query: { persona_id: '999' } },
+        resSelfBadParam
+      );
+      assert.equal(resSelfBadParam.statusCode, 400);
+
+      const resSelfUnlinked = createMockRes();
+      await controller.miVacaciones(
+        { user: { sub: '33333333-3333-4333-8333-333333333333' }, query: {} },
+        resSelfUnlinked
+      );
+      assert.equal(resSelfUnlinked.statusCode, 403);
+
+      const resSelfOk = createMockRes();
+      await controller.miVacaciones(
+        { user: { sub: '22222222-2222-4222-8222-222222222222' }, query: { periodoId: '24' } },
+        resSelfOk
+      );
+      assert.equal(resSelfOk.statusCode, 200);
+      assert.equal(resSelfOk.headers['cache-control'], 'no-store');
+      assert.equal(resSelfOk.body.periodos.length, 2);
+      assert.equal(resSelfOk.body.kardex.periodo.clave, '2024-P2');
+      assert.equal(resSelfOk.body.kardex.resumen.dias_computables_registrados, 1);
+      passed++;
+    }
+
+    // =========================================================================
+    // 80-81 (RH-ORG-04): Administración visual del organigrama institucional
+    // =========================================================================
+    {
+      const orgPuestos = [
+        { id: 1, version_id: 1, puesto_padre_id: null, denominacion: 'Coordinador Estatal IMSS-Bienestar', codigo_nivel: 'K11', nivel_jerarquico: 1, siglas_area: 'UPECE', orden_visual: 1, observaciones: null, activo: true },
+        { id: 2, version_id: 1, puesto_padre_id: 1, denominacion: 'Jefe de Servicios Administrativos y Finanzas', codigo_nivel: 'M11', nivel_jerarquico: 2, siglas_area: 'SAF', orden_visual: 1, observaciones: null, activo: true },
+        { id: 3, version_id: 1, puesto_padre_id: 2, denominacion: 'Departamento de Tecnologías de la Información', codigo_nivel: 'CF80003', nivel_jerarquico: 3, siglas_area: 'SAF', orden_visual: 1, observaciones: null, activo: true },
+      ];
+      let nextOrgId = 10;
+      const orgAudits = [];
+
+      const handleOrgQuery = async (sql, params = []) => {
+        const s = String(sql);
+        if (s === 'BEGIN' || s === 'COMMIT' || s === 'ROLLBACK') return { rows: [], rowCount: 0 };
+        if (s.includes('FROM public.rh_org_version')) {
+          return { rows: [{ id: 1, clave: 'ORG-COORDINACION-ESTATAL', nombre: 'Estructura organizacional de Coordinación Estatal', estado: 'VIGENTE' }], rowCount: 1 };
+        }
+        if (s.includes('FROM public.rh_org_puesto') && s.includes('ORDER BY nivel_jerarquico')) {
+          return { rows: orgPuestos, rowCount: orgPuestos.length };
+        }
+        if (s.includes('FROM public.rh_org_puesto') && s.includes('WHERE id = $1 AND version_id = $2')) {
+          const p = orgPuestos.find((x) => x.id === Number(params[0]));
+          return { rows: p ? [p] : [], rowCount: p ? 1 : 0 };
+        }
+        if (s.includes('FROM public.rh_org_puesto p') && s.includes('WHERE p.id = $1')) {
+          const p = orgPuestos.find((x) => x.id === Number(params[0]));
+          return { rows: p ? [p] : [], rowCount: p ? 1 : 0 };
+        }
+        if (s.includes('LOWER(BTRIM(denominacion)) = LOWER(')) {
+          const padreId = Number(params[1]);
+          const denom = String(params[params.length - 1]).toLowerCase();
+          const excludeId = params.length === 4 ? Number(params[2]) : -1;
+          const hit = orgPuestos.find((x) => x.puesto_padre_id === padreId && x.id !== excludeId && x.denominacion.toLowerCase() === denom);
+          return { rows: hit ? [{ id: hit.id }] : [], rowCount: hit ? 1 : 0 };
+        }
+        if (s.includes('INSERT INTO public.rh_org_puesto')) {
+          const [verId, padreId, denom, cod, nivel, siglas, orden, obs] = params;
+          const row = { id: ++nextOrgId, version_id: Number(verId), puesto_padre_id: Number(padreId), denominacion: String(denom), codigo_nivel: cod ?? null, nivel_jerarquico: Number(nivel), siglas_area: siglas ?? null, orden_visual: Number(orden), observaciones: obs ?? null, activo: true };
+          orgPuestos.push(row);
+          return { rows: [row], rowCount: 1 };
+        }
+        if (s.includes('UPDATE public.rh_org_puesto') && s.includes('SET activo = $1')) {
+          const p = orgPuestos.find((x) => x.id === Number(params[1]));
+          if (p) p.activo = Boolean(params[0]);
+          return { rows: p ? [p] : [], rowCount: p ? 1 : 0 };
+        }
+        if (s.includes('INSERT INTO public.app_audit_logs')) {
+          orgAudits.push({ action: params[1], payload: JSON.parse(params[5]) });
+          return { rows: [], rowCount: 1 };
+        }
+        return { rows: [], rowCount: 0 };
+      };
+
+      pool.query = handleOrgQuery;
+      pool.connect = async () => ({ query: handleOrgQuery, release: () => {} });
+
+      const rhGlobalUserId = '11111111-1111-4111-8111-111111111111';
+      const rhGlobalAccess = { grantedBy: 'RECURSOS_HUMANOS', scope: 'GLOBAL', clues: [] };
+      const rhCluesAccess = { grantedBy: 'RECURSOS_HUMANOS', scope: 'CLUES', clues: ['BCIMS000001'] };
+
+      // 80: Consulta árbol + RBAC (RH CLUES -> 403, RH GLOBAL -> 200)
+      const resOrgClues = createMockRes();
+      await controller.listOrganigramaPuestos({ user: { sub: rhGlobalUserId }, rhAccess: rhCluesAccess }, resOrgClues);
+      assert.equal(resOrgClues.statusCode, 403);
+
+      const resOrgList = createMockRes();
+      await controller.listOrganigramaPuestos({ user: { sub: rhGlobalUserId }, rhAccess: rhGlobalAccess }, resOrgList);
+      assert.equal(resOrgList.statusCode, 200);
+      assert.equal(resOrgList.headers['cache-control'], 'no-store');
+      assert.equal(resOrgList.body.items.length, 3);
+      passed++;
+
+      // 81: Alta de puesto + rechazo duplicado (409) + rechazo deshabilitar raíz (409) + deshabilitar puesto (200 + auditoría)
+      const resOrgCreate = createMockRes();
+      await controller.createOrganigramaPuesto(
+        { user: { sub: rhGlobalUserId }, rhAccess: rhGlobalAccess, body: { puesto_padre_id: 3, denominacion: 'Oficina de Sistemas', codigo_nivel: 'CF80010' } },
+        resOrgCreate
+      );
+      assert.equal(resOrgCreate.statusCode, 201);
+      assert.equal(resOrgCreate.body.puesto.nivel_jerarquico, 4);
+
+      const resOrgDup = createMockRes();
+      await controller.createOrganigramaPuesto(
+        { user: { sub: rhGlobalUserId }, rhAccess: rhGlobalAccess, body: { puesto_padre_id: 3, denominacion: 'Oficina de Sistemas', codigo_nivel: 'CF80010' } },
+        resOrgDup
+      );
+      assert.equal(resOrgDup.statusCode, 409);
+
+      const resDisRoot = createMockRes();
+      await controller.updateOrganigramaPuestoEstado(
+        { user: { sub: rhGlobalUserId }, rhAccess: rhGlobalAccess, params: { puestoId: '1' }, body: { activo: false } },
+        resDisRoot
+      );
+      assert.equal(resDisRoot.statusCode, 409);
+
+      const resDisChild = createMockRes();
+      await controller.updateOrganigramaPuestoEstado(
+        { user: { sub: rhGlobalUserId }, rhAccess: rhGlobalAccess, params: { puestoId: String(resOrgCreate.body.puesto.id) }, body: { activo: false } },
+        resDisChild
+      );
+      assert.equal(resDisChild.statusCode, 200);
+      assert.equal(resDisChild.body.puesto.activo, false);
+      assert.equal(orgAudits.some((a) => a.action === 'RH_ORG_CREATE_PUESTO'), true);
+      assert.equal(orgAudits.some((a) => a.action === 'RH_ORG_UPDATE_ESTADO'), true);
+      passed++;
     }
   } finally {
     pool.query = originalQuery;
@@ -6015,7 +6256,7 @@ async function run() {
   }
 
   console.log(
-    `RH-API.1 + RH-2B.1 + RH-2B.4A + RH-2B.4C + RH-2B.4E + RH-2B.4G.1 + RH-2B.4G.2 + RH-2B.4G.2A + RH-2C.2 + RH-4A.1A + RH-4A.1A.1 + RH-4A.2A + RH-4A.3A + RH-4A.3A.1 + RH-4A.4A + RH-4A.5B + RH-4A.7A + RH-4A.7C + BUGFIX + RH-UX-04B + RH-VAC-02 TESTS PASSED: ${passed}/77`
+    `RH-API.1 + RH-2B.1 + RH-2B.4A + RH-2B.4C + RH-2B.4E + RH-2B.4G.1 + RH-2B.4G.2 + RH-2B.4G.2A + RH-2C.2 + RH-4A.1A + RH-4A.1A.1 + RH-4A.2A + RH-4A.3A + RH-4A.3A.1 + RH-4A.4A + RH-4A.5B + RH-4A.7A + RH-4A.7C + BUGFIX + RH-UX-04B + RH-VAC-02 + RH-VAC-06 + RH-VAC-07B + RH-ORG-04 TESTS PASSED: ${passed}/81`
   );
 }
 

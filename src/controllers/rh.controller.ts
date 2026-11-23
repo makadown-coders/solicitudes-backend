@@ -161,6 +161,8 @@ const ALLOWED_CREATE_VACACION_KEYS: ReadonlySet<string> = new Set([
   'periodo_referencia',
   'periodo_id',
   'fechas',
+  'es_excepcion_fuera_periodo',
+  'justificacion_excepcion',
   'fecha_inicio',
   'fecha_fin',
   'dias_registrados',
@@ -1805,6 +1807,301 @@ export default class RhController {
       }
       console.error('Error en GET /api/rh/personas/:personaId/vacaciones/kardex');
       res.status(500).json({ error: 'Error interno al consultar el kardex vacacional' });
+    }
+  }
+
+  /**
+   * Consulta personal de solo lectura de vacaciones del empleado autenticado (`GET /api/rh/mi-vacaciones`).
+   * Nunca acepta identificadores de otra persona; resuelve la identidad únicamente desde `req.user.sub`.
+   */
+  async miVacaciones(req: RhAuthenticatedRequest, res: Response): Promise<void> {
+    if (typeof req.user?.sub !== 'string' || !req.user.sub.trim()) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const queryObj = (req.query ?? {}) as Record<string, unknown>;
+    const allowedKeys = new Set(['periodoId']);
+    for (const key of Object.keys(queryObj)) {
+      if (!allowedKeys.has(key)) {
+        res.status(400).json({ error: `Parámetro de consulta no permitido: ${key}` });
+        return;
+      }
+    }
+
+    const rawPeriodoId = extractSingleStringQuery(queryObj.periodoId)?.trim() ?? null;
+    let periodoId: number | null = null;
+    if (rawPeriodoId) {
+      const parsed = parseUnidadIdParam(rawPeriodoId);
+      if (parsed === null) {
+        res.status(400).json({ error: 'Parámetro periodoId inválido' });
+        return;
+      }
+      periodoId = parsed;
+    }
+
+    try {
+      const result = await this.service.getMisVacacionesEmpleado(req.user.sub.trim(), periodoId);
+      if (typeof res.set === 'function') {
+        res.set('Cache-Control', 'no-store');
+      }
+      res.status(200).json(result);
+    } catch (err) {
+      if (err instanceof RhHttpError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      console.error('Error en GET /api/rh/mi-vacaciones');
+      res.status(500).json({ error: 'Error interno al consultar tus vacaciones' });
+    }
+  }
+
+  // ===========================================================================
+  // RH-ORG-04: Administración visual del organigrama institucional (RH GLOBAL)
+  // ===========================================================================
+
+  async listOrganigramaPuestos(req: RhAuthenticatedRequest, res: Response): Promise<void> {
+    if (typeof req.user?.sub !== 'string' || !req.user.sub.trim()) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    if (!req.rhAccess || req.rhAccess.grantedBy !== 'RECURSOS_HUMANOS' || req.rhAccess.scope !== 'GLOBAL') {
+      res.status(403).json({
+        error: 'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para consultar el organigrama institucional',
+      });
+      return;
+    }
+
+    try {
+      const result = await this.service.listOrganigramaPuestos(req.rhAccess);
+      if (typeof res.set === 'function') {
+        res.set('Cache-Control', 'no-store');
+      }
+      res.status(200).json(result);
+    } catch (err) {
+      if (err instanceof RhHttpError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      console.error('Error en GET /api/rh/organigrama/puestos');
+      res.status(500).json({ error: 'Error interno al consultar el organigrama institucional' });
+    }
+  }
+
+  async createOrganigramaPuesto(req: RhAuthenticatedRequest, res: Response): Promise<void> {
+    if (typeof req.user?.sub !== 'string' || !req.user.sub.trim()) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    if (!req.rhAccess || req.rhAccess.grantedBy !== 'RECURSOS_HUMANOS' || req.rhAccess.scope !== 'GLOBAL') {
+      res.status(403).json({
+        error: 'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para crear puestos organizacionales',
+      });
+      return;
+    }
+
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      res.status(400).json({ error: 'Payload inválido' });
+      return;
+    }
+    const allowed = new Set(['puesto_padre_id', 'denominacion', 'codigo_nivel', 'siglas_area', 'orden_visual', 'observaciones']);
+    for (const key of Object.keys(body)) {
+      if (!allowed.has(key)) {
+        res.status(400).json({ error: `Propiedad no permitida: ${key}` });
+        return;
+      }
+    }
+
+    try {
+      const result = await this.service.createOrganigramaPuesto(
+        req.rhAccess,
+        body as Record<string, unknown>,
+        {
+          userId: req.user.sub.trim(),
+          ip: typeof req.ip === 'string' ? req.ip : null,
+          userAgent: typeof req.get === 'function' ? req.get('User-Agent') ?? null : null,
+        }
+      );
+      if (typeof res.set === 'function') {
+        res.set('Cache-Control', 'no-store');
+      }
+      res.status(201).json(result);
+    } catch (err) {
+      if (err instanceof RhHttpError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      console.error('Error en POST /api/rh/organigrama/puestos');
+      res.status(500).json({ error: 'Error interno al crear el puesto organizacional' });
+    }
+  }
+
+  async updateOrganigramaPuesto(req: RhAuthenticatedRequest, res: Response): Promise<void> {
+    if (typeof req.user?.sub !== 'string' || !req.user.sub.trim()) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    if (!req.rhAccess || req.rhAccess.grantedBy !== 'RECURSOS_HUMANOS' || req.rhAccess.scope !== 'GLOBAL') {
+      res.status(403).json({
+        error: 'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para editar puestos organizacionales',
+      });
+      return;
+    }
+
+    const puestoId = parseUnidadIdParam(req.params?.puestoId);
+    if (puestoId === null) {
+      res.status(400).json({ error: 'Identificador de puesto inválido' });
+      return;
+    }
+
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      res.status(400).json({ error: 'Payload inválido' });
+      return;
+    }
+    const allowed = new Set(['denominacion', 'codigo_nivel', 'siglas_area', 'orden_visual', 'observaciones']);
+    for (const key of Object.keys(body)) {
+      if (!allowed.has(key)) {
+        res.status(400).json({ error: `Propiedad no permitida: ${key}` });
+        return;
+      }
+    }
+
+    try {
+      const result = await this.service.updateOrganigramaPuesto(
+        req.rhAccess,
+        puestoId,
+        body as Record<string, unknown>,
+        {
+          userId: req.user.sub.trim(),
+          ip: typeof req.ip === 'string' ? req.ip : null,
+          userAgent: typeof req.get === 'function' ? req.get('User-Agent') ?? null : null,
+        }
+      );
+      if (typeof res.set === 'function') {
+        res.set('Cache-Control', 'no-store');
+      }
+      res.status(200).json(result);
+    } catch (err) {
+      if (err instanceof RhHttpError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      console.error('Error en PATCH /api/rh/organigrama/puestos/:puestoId');
+      res.status(500).json({ error: 'Error interno al editar el puesto organizacional' });
+    }
+  }
+
+  async changeOrganigramaDependencia(req: RhAuthenticatedRequest, res: Response): Promise<void> {
+    if (typeof req.user?.sub !== 'string' || !req.user.sub.trim()) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    if (!req.rhAccess || req.rhAccess.grantedBy !== 'RECURSOS_HUMANOS' || req.rhAccess.scope !== 'GLOBAL') {
+      res.status(403).json({
+        error: 'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para cambiar dependencias jerárquicas',
+      });
+      return;
+    }
+
+    const puestoId = parseUnidadIdParam(req.params?.puestoId);
+    if (puestoId === null) {
+      res.status(400).json({ error: 'Identificador de puesto inválido' });
+      return;
+    }
+
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      res.status(400).json({ error: 'Payload inválido' });
+      return;
+    }
+    const allowed = new Set(['puesto_padre_id']);
+    for (const key of Object.keys(body)) {
+      if (!allowed.has(key)) {
+        res.status(400).json({ error: `Propiedad no permitida: ${key}` });
+        return;
+      }
+    }
+
+    try {
+      const result = await this.service.changeOrganigramaDependencia(
+        req.rhAccess,
+        puestoId,
+        body as Record<string, unknown>,
+        {
+          userId: req.user.sub.trim(),
+          ip: typeof req.ip === 'string' ? req.ip : null,
+          userAgent: typeof req.get === 'function' ? req.get('User-Agent') ?? null : null,
+        }
+      );
+      if (typeof res.set === 'function') {
+        res.set('Cache-Control', 'no-store');
+      }
+      res.status(200).json(result);
+    } catch (err) {
+      if (err instanceof RhHttpError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      console.error('Error en PATCH /api/rh/organigrama/puestos/:puestoId/dependencia');
+      res.status(500).json({ error: 'Error interno al cambiar la dependencia del puesto' });
+    }
+  }
+
+  async updateOrganigramaPuestoEstado(req: RhAuthenticatedRequest, res: Response): Promise<void> {
+    if (typeof req.user?.sub !== 'string' || !req.user.sub.trim()) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    if (!req.rhAccess || req.rhAccess.grantedBy !== 'RECURSOS_HUMANOS' || req.rhAccess.scope !== 'GLOBAL') {
+      res.status(403).json({
+        error: 'Solo el personal con alcance estatal RECURSOS_HUMANOS GLOBAL está autorizado para habilitar o deshabilitar puestos',
+      });
+      return;
+    }
+
+    const puestoId = parseUnidadIdParam(req.params?.puestoId);
+    if (puestoId === null) {
+      res.status(400).json({ error: 'Identificador de puesto inválido' });
+      return;
+    }
+
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      res.status(400).json({ error: 'Payload inválido' });
+      return;
+    }
+    const allowed = new Set(['activo']);
+    for (const key of Object.keys(body)) {
+      if (!allowed.has(key)) {
+        res.status(400).json({ error: `Propiedad no permitida: ${key}` });
+        return;
+      }
+    }
+
+    try {
+      const result = await this.service.updateOrganigramaPuestoEstado(
+        req.rhAccess,
+        puestoId,
+        body as Record<string, unknown>,
+        {
+          userId: req.user.sub.trim(),
+          ip: typeof req.ip === 'string' ? req.ip : null,
+          userAgent: typeof req.get === 'function' ? req.get('User-Agent') ?? null : null,
+        }
+      );
+      if (typeof res.set === 'function') {
+        res.set('Cache-Control', 'no-store');
+      }
+      res.status(200).json(result);
+    } catch (err) {
+      if (err instanceof RhHttpError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      console.error('Error en PATCH /api/rh/organigrama/puestos/:puestoId/estado');
+      res.status(500).json({ error: 'Error interno al actualizar el estado del puesto' });
     }
   }
 }

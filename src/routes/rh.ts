@@ -15,6 +15,12 @@ router.get(
 );
 
 router.get(
+  '/mi-vacaciones',
+  requireAuth,
+  controller.miVacaciones.bind(controller)
+);
+
+router.get(
   '/unidades-autorizadas',
   requireAuth,
   requireRhAccess(),
@@ -187,6 +193,41 @@ router.post(
   requireAuth,
   requireRhAccess(),
   controller.createLoteAdscripcionesPorUnidad.bind(controller)
+);
+
+router.get(
+  '/organigrama/puestos',
+  requireAuth,
+  requireRhAccess(),
+  controller.listOrganigramaPuestos.bind(controller)
+);
+
+router.post(
+  '/organigrama/puestos',
+  requireAuth,
+  requireRhAccess(),
+  controller.createOrganigramaPuesto.bind(controller)
+);
+
+router.patch(
+  '/organigrama/puestos/:puestoId',
+  requireAuth,
+  requireRhAccess(),
+  controller.updateOrganigramaPuesto.bind(controller)
+);
+
+router.patch(
+  '/organigrama/puestos/:puestoId/dependencia',
+  requireAuth,
+  requireRhAccess(),
+  controller.changeOrganigramaDependencia.bind(controller)
+);
+
+router.patch(
+  '/organigrama/puestos/:puestoId/estado',
+  requireAuth,
+  requireRhAccess(),
+  controller.updateOrganigramaPuestoEstado.bind(controller)
 );
 
 export default router;

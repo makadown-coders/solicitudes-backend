@@ -66,6 +66,7 @@ export interface RhListQueryOpts {
   q?: string | null;
   page?: number;
   pageSize?: number;
+  situacion?: 'ACTIVOS' | 'BAJAS' | 'TODOS' | null;
 }
 
 export interface RhCreateAdscripcionInput {
@@ -932,6 +933,12 @@ export default class RhService {
 
     const params: unknown[] = [unidad.id];
     const conditions: string[] = ['al.unidad_medica_id = $1'];
+
+    if (opts.situacion === 'ACTIVOS') {
+      conditions.push('(p.activo IS TRUE AND p.fecha_baja IS NULL)');
+    } else if (opts.situacion === 'BAJAS') {
+      conditions.push('(p.activo IS FALSE OR p.fecha_baja IS NOT NULL)');
+    }
 
     const q = typeof opts.q === 'string' ? opts.q.trim() : '';
     if (q.length > 0) {

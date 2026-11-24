@@ -258,11 +258,23 @@ export default class RhController {
       return;
     }
 
+    let situacion: 'ACTIVOS' | 'BAJAS' | 'TODOS' | null = null;
+    const rawSit = (req.query as Record<string, unknown> | undefined)?.situacion;
+    if (rawSit !== undefined && rawSit !== null && rawSit !== '') {
+      const normSit = typeof rawSit === 'string' ? rawSit.trim().toUpperCase() : '';
+      if (normSit !== 'ACTIVOS' && normSit !== 'BAJAS' && normSit !== 'TODOS') {
+        res.status(400).json({ error: 'Parámetro "situacion" inválido (ACTIVOS, BAJAS o TODOS)' });
+        return;
+      }
+      situacion = normSit;
+    }
+
     try {
       const result = await this.service.listPersonalPorUnidad(req.rhAccess, unidadId, {
         q: parsedQuery.q,
         page: parsedQuery.page,
         pageSize: parsedQuery.pageSize,
+        situacion,
       });
       res.status(200).json(result);
     } catch (err) {

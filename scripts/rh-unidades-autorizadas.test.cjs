@@ -3098,7 +3098,7 @@ async function run() {
       const adminRoutes = rhRouter.stack.filter(
         (l) => l.route && l.route.path !== '/mi-contexto' && l.route.path !== '/mi-vacaciones'
       );
-      assert.equal(adminRoutes.length, 30);
+      assert.equal(adminRoutes.length, 36);
       for (const layer of adminRoutes) {
         assert.equal(
           layer.route.stack.length,

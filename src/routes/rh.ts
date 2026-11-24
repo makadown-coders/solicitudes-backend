@@ -2,9 +2,11 @@ import { Router } from 'express';
 import { requireAuth } from '../auth/requireAuth';
 import { requireRhAccess } from '../auth/requireRhAccess';
 import RhController from '../controllers/rh.controller';
+import RhAsistenciaController from '../controllers/rh-asistencia.controller';
 
 const router = Router();
 const controller = new RhController();
+const asistenciaController = new RhAsistenciaController();
 
 // Autogestión del empleado autenticado (/rh): requiere sesión válida y persona institucional activa,
 // sin exigir rol administrativo RECURSOS_HUMANOS ni ADMIN_TIC.
@@ -228,6 +230,51 @@ router.patch(
   requireAuth,
   requireRhAccess(),
   controller.updateOrganigramaPuestoEstado.bind(controller)
+);
+
+// Control administrativo de entrega/recepción mensual de listas de asistencia (RH-ASIS-03)
+router.get(
+  '/asistencia/seguimiento',
+  requireAuth,
+  requireRhAccess(),
+  asistenciaController.seguimientoMensual.bind(asistenciaController)
+);
+
+router.get(
+  '/asistencia/resumen',
+  requireAuth,
+  requireRhAccess(),
+  asistenciaController.resumenMensual.bind(asistenciaController)
+);
+
+router.patch(
+  '/asistencia/personas/:personaId/periodos/:anio/:mes/recepcion',
+  requireAuth,
+  requireRhAccess(),
+  asistenciaController.confirmarRecepcion.bind(asistenciaController)
+);
+
+router.patch(
+  '/asistencia/personas/:personaId/periodos/:anio/:mes/estado',
+  requireAuth,
+  requireRhAccess(),
+  asistenciaController.actualizarEstado.bind(asistenciaController)
+);
+
+// Endpoint temporal de importación histórica auditada 2026 (RH-ASIS-05B2)
+router.post(
+  '/asistencia/migracion-2026/importar',
+  requireAuth,
+  requireRhAccess(),
+  asistenciaController.importarHistorico2026.bind(asistenciaController)
+);
+
+// Reporte institucional XLSX anual y mensual de asistencia (RH-ASIS-06)
+router.get(
+  '/asistencia/reporte-anual.xlsx',
+  requireAuth,
+  requireRhAccess(),
+  asistenciaController.exportarReporteAnualXlsx.bind(asistenciaController)
 );
 
 export default router;

@@ -2,6 +2,7 @@ import { pool } from '../db/pool';
 import { Almacen, Cabecera, Centro, Consulta, Despacho, Detalle } from '../models/solicitudes/primer-nivel/Surtimiento';
 import { cabeceraElegible, conciliar, detectarSustituciones, rangoUltimos30 } from './surtimiento-calculo';
 import HomologosService from './homologos.service';
+import { cargarDesgloseProgramatico } from './surtimiento-programatico';
 
 export async function analizar(input: Consulta) {
   const client=await pool.connect();
@@ -97,6 +98,9 @@ export async function analizar(input: Consulta) {
       FROM diario d LEFT JOIN public.unidad_medica u ON u.id=d.destino
       LEFT JOIN public.unidad_medica o ON o.id=d.origen`,[JSON.stringify(ventanas),corte]);
     const informe=conciliar({...consulta,ventanas},corte,centros,almacenes,cab,detalle,salidas);
+    informe.desgloseProgramatico = await cargarDesgloseProgramatico(
+      client, informe.filas, cab.filter(c => cabeceraElegible(consulta, c)), detalle,
+    );
     const clavesFaltantes=Array.from(new Set(informe.filas
       .filter(f=>f.pendiente!==null && f.pendiente>0 && !!f.clave).map(f=>f.clave)));
     const relaciones=clavesFaltantes.length

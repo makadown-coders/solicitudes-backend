@@ -7,9 +7,11 @@ import ConcentradoPrimerNivelController from '../controllers/concentrado-primer-
 import AbastoProgramasNecesidadesController from '../controllers/abasto-programas-necesidades.controller';
 
 import { analizarSurtimiento } from '../controllers/surtimiento-primer-nivel.controller';
+import { concentradoSegundoNivel } from '../controllers/concentrado-segundo-nivel.controller';
 
 const r = Router();
 r.post('/primer-nivel/surtimiento', analizarSurtimiento);
+r.post('/segundo-nivel/concentrado-necesidades', concentradoSegundoNivel);
 const c = new SolicitudesController();
 const aps = new NecesidadesPrimerNivelApsController();
 const preventivos = new NecesidadesPrimerNivelProgramasPreventivosController();

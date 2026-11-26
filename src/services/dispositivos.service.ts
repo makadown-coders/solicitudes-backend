@@ -89,8 +89,13 @@ export default class DispositivosService {
               EXISTS (
                 SELECT 1 FROM dispositivo_nic n
                   WHERE n.dispositivo_id = filtrado.id
-                    AND n.mac ILIKE '%'||$3||'%'
-                    OR n.mac_norm ILIKE '%'||regexp_replace($3, '[^0-9A-Fa-f]', '', 'g')||'%'
+                    AND (
+                      n.mac ILIKE '%'||$3||'%'
+                      OR (
+                        regexp_replace($3, '[^0-9A-Fa-f]', '', 'g') <> ''
+                        AND n.mac_norm ILIKE '%'||lower(regexp_replace($3, '[^0-9A-Fa-f]', '', 'g'))||'%'
+                      )
+                    )
               )
        ))
          AND ($4::int IS NULL OR estado_dispositivo_id = $4) 
@@ -117,9 +122,12 @@ export default class DispositivosService {
   }
 
   async create(payload: Dispositivo) {
+    const client = await pool.connect();
+    let rollbackFailed = false;
     try {
+      await client.query('BEGIN');
       const { unidad_medica_id, tipo_dispositivo_id, ip, conexion, serial, marca, modelo, observaciones } = payload;
-      const { rows } = await pool.query(
+      const { rows } = await client.query(
         `INSERT INTO dispositivo
         (unidad_medica_id, tipo_dispositivo_id, ip, conexion, serial, marca, modelo, observaciones)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
@@ -129,7 +137,7 @@ export default class DispositivosService {
 
       const dispositivoId = rows[0].id;
       // Insertar nuevo asignacion_dispositivo vacío para indicar que está sin asignar
-      await pool.query(
+      await client.query(
         `INSERT INTO asignacion_dispositivo
            (dispositivo_id, persona_id, lugar_especifico, estado_dispositivo_id, fecha_asignacion, observaciones)
          VALUES ($1,$2,$3,$4, COALESCE($5::timestamptz, NOW()), $6)
@@ -144,10 +152,19 @@ export default class DispositivosService {
         ]
       );
 
+      await client.query('COMMIT');
       return rows[0];
     } catch (e) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        rollbackFailed = true;
+        console.error('Error al ejecutar ROLLBACK en create():', rollbackError);
+      }
       console.error(e);
       throw e;
+    } finally {
+      client.release(rollbackFailed);
     }
   }
 

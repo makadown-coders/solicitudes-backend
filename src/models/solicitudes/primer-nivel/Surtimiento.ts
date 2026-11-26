@@ -25,4 +25,20 @@ export interface SustitucionPotencial {
   estado: 'Relación única' | 'Múltiples candidatos' | 'Sustituta para varios faltantes' | 'Múltiples candidatos y sustituta compartida';
   ambigua: boolean;
 }
-export interface Informe { corte: string; modalidad: Modalidad; solicitudesDesde: string; solicitudesHasta: string; almacenes: Almacen[]; filas: Fila[]; incidencias: string[]; limitacionesTemporales: string[]; sinSolicitud: Fila[]; ventanas: Ventana[]; sustituciones: SustitucionPotencial[] }
+export interface FilaProgramatica {
+  clues: string;
+  clave: string;
+  vertiente: 'APS' | 'PROGRAMAS_PREVENTIVOS';
+  programa: string | null;
+  programaNombre: string | null;
+  cantidad: number;
+  evidencia: 'REGISTRADA' | 'INFERIDA' | 'MIXTA';
+  condicion: 'EXCLUSIVO' | 'COMPARTIDO' | 'POR VALIDAR';
+  ramificaciones: string[];
+  surtido: number | null;
+  pendiente: number | null;
+  excedente: number | null;
+  cobertura: number | null;
+  relacion: number | null;
+}
+export interface Informe { corte: string; modalidad: Modalidad; solicitudesDesde: string; solicitudesHasta: string; almacenes: Almacen[]; filas: Fila[]; incidencias: string[]; limitacionesTemporales: string[]; sinSolicitud: Fila[]; ventanas: Ventana[]; sustituciones: SustitucionPotencial[]; desgloseProgramatico?: FilaProgramatica[] }

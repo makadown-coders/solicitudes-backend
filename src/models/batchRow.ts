@@ -14,7 +14,7 @@ export type BatchPayload = {
 };
 
 export type TemporalExistenciaRow = {
-  fuente: 'SAS'|'SALUS';
+  fuente: 'SAS' | 'SALUS' | 'SALUS_INDICADORES' | 'FARMACIAS';
   alias_sas?: string | null;
   cluessa?: string | null;
   cluesimb?: string | null;

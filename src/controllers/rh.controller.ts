@@ -1822,6 +1822,39 @@ export default class RhController {
     }
   }
 
+  async miVacacionesFechas(req: RhAuthenticatedRequest, res: Response): Promise<void> {
+    res.set('Cache-Control', 'no-store');
+    const userId = typeof req.user?.sub === 'string' ? req.user.sub.trim() : '';
+    if (!userId) {
+      res.status(401).json({ error: 'Sesión no válida' });
+      return;
+    }
+    const query = req.query ?? {};
+    if (Object.keys(query).some((key) => key !== 'anio' && key !== 'mes')) {
+      res.status(400).json({ error: 'Los únicos parámetros permitidos son "anio" y "mes"' });
+      return;
+    }
+    const { anio: rawAnio, mes: rawMes } = query;
+    const anio = typeof rawAnio === 'string' && /^\d+$/.test(rawAnio) ? Number(rawAnio) : NaN;
+    const mes = typeof rawMes === 'string' && /^\d+$/.test(rawMes) ? Number(rawMes) : NaN;
+    if (!Number.isInteger(anio) || anio < 2020 || anio > 2100 ||
+        !Number.isInteger(mes) || mes < 1 || mes > 12) {
+      res.status(400).json({ error: 'Indica un año entre 2020 y 2100 y un mes entre 1 y 12' });
+      return;
+    }
+    try {
+      const result = await this.service.getMisFechasVacacionales(userId, anio, mes);
+      res.status(200).json(result);
+    } catch (err) {
+      if (err instanceof RhHttpError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      console.error('Error en GET /api/rh/mi-vacaciones/fechas');
+      res.status(500).json({ error: 'No se pudieron consultar tus fechas vacacionales' });
+    }
+  }
+
   /**
    * Consulta personal de solo lectura de vacaciones del empleado autenticado (`GET /api/rh/mi-vacaciones`).
    * Nunca acepta identificadores de otra persona; resuelve la identidad únicamente desde `req.user.sub`.

@@ -425,6 +425,105 @@ function buildResumen(
 }
 
 export default class RhAsistenciaService {
+  async getMiHistorial(userId: string, anio: number, ahora = new Date()) {
+    if (!UUID_REGEX.test(userId)) throw new RhHttpError(401, 'Sesión no válida');
+    validatePeriodo(anio, 1);
+    const { rows } = await pool.query<{
+      cuenta_activa: boolean;
+      persona_activa: boolean | null;
+      fecha_ingreso: string | null;
+      fecha_baja: string | null;
+      mes: number | null;
+      estado_control: RhAsistenciaEstadoControl | null;
+      origen_registro: RhAsistenciaSeguimientoItem['origen_registro'];
+      fecha_recepcion: unknown;
+      tiene_adscripcion: boolean;
+      vinculo_posterior_baja: boolean;
+    }>(`
+      SELECT identidad.cuenta_activa, p.activo AS persona_activa,
+             p.fecha_ingreso::text, p.fecha_baja::text, m.mes,
+             c.estado AS estado_control, c.origen_registro, c.fecha_recepcion,
+             EXISTS (
+               SELECT 1 FROM public.rh_adscripcion_laboral al
+               WHERE al.persona_id = p.id
+                 AND al.vigente_desde < m.inicio + interval '1 month'
+                 AND (al.vigente_hasta IS NULL OR al.vigente_hasta >= m.inicio)
+             ) AS tiene_adscripcion,
+             EXISTS (
+               SELECT 1 FROM public.rh_adscripcion_laboral al
+               WHERE al.persona_id = p.id
+                 AND al.vigente_desde < m.inicio + interval '1 month'
+                 AND (al.vigente_hasta IS NULL OR al.vigente_hasta > p.fecha_baja)
+             ) AS vinculo_posterior_baja
+      FROM public.app_users u
+      CROSS JOIN LATERAL (SELECT upper(btrim(u.status::text)) = 'ACTIVE' AS cuenta_activa) identidad
+      LEFT JOIN public.persona p ON p.id = u.persona_id AND p.activo IS TRUE
+      LEFT JOIN LATERAL (
+        SELECT mes, make_date($2::int, mes, 1) AS inicio
+        FROM generate_series(1, 12) AS serie(mes)
+      ) m ON p.id IS NOT NULL AND identidad.cuenta_activa
+      LEFT JOIN public.rh_asistencia_entrega_mensual c
+        ON c.persona_id = p.id AND c.anio = $2 AND c.mes = m.mes
+      WHERE u.id = $1::uuid
+      ORDER BY m.mes
+    `, [userId, anio]);
+    if (!rows.length) throw new RhHttpError(401, 'Cuenta de usuario no encontrada');
+    if (!rows[0].cuenta_activa || rows[0].persona_activa !== true) {
+      throw new RhHttpError(403, 'Tu cuenta debe estar activa y vinculada a una persona institucional activa');
+    }
+
+    const partes = new Intl.DateTimeFormat('es-MX', {
+      timeZone: 'America/Tijuana', year: 'numeric', month: 'numeric',
+    }).formatToParts(ahora);
+    const anioLocal = Number(partes.find(({ type }) => type === 'year')?.value);
+    const mesLocal = Number(partes.find(({ type }) => type === 'month')?.value);
+    const ultimoMesCerrado = anio < anioLocal ? 12 : anio > anioLocal ? 0 : mesLocal - 1;
+    const resumen = {
+      sin_recepcion_registrada: [] as number[],
+      requieren_atencion: [] as number[],
+      no_corresponden: [] as number[],
+      recibidas: [] as number[],
+    };
+    const meses = rows.map((row) => {
+      const mes = Number(row.mes);
+      const { firstDay, lastDay } = monthBounds(anio, mes);
+      const ingreso = row.fecha_ingreso;
+      const baja = row.fecha_baja;
+      const estado = row.estado_control;
+      const antesDelIngreso = Boolean(ingreso && ingreso > lastDay);
+      const despuesDeLaBaja = Boolean(baja && baja < firstDay);
+      let elegibilidad: 'EVALUABLE' | 'NO_CORRESPONDE' | 'INCIERTA' = 'INCIERTA';
+      if (estado === 'RECIBIDA') {
+        if (!antesDelIngreso && !despuesDeLaBaja) elegibilidad = 'EVALUABLE';
+      } else if (estado === 'NO_APLICA') {
+        elegibilidad = 'NO_CORRESPONDE';
+      } else if (antesDelIngreso) {
+        if (!estado && !row.tiene_adscripcion) elegibilidad = 'NO_CORRESPONDE';
+      } else if (despuesDeLaBaja) {
+        if (!estado && !row.vinculo_posterior_baja && (!ingreso || (baja && ingreso <= baja))) {
+          elegibilidad = 'NO_CORRESPONDE';
+        }
+      } else if (estado || (ingreso && row.tiene_adscripcion)) {
+        elegibilidad = 'EVALUABLE';
+      }
+      const esMesCerrado = mes <= ultimoMesCerrado;
+      const requiereAtencion = estado === 'OBSERVADA' || estado === 'ENTREGADA_DECLARADA' ||
+        (esMesCerrado && elegibilidad === 'INCIERTA');
+      if (esMesCerrado) {
+        if (estado === 'RECIBIDA') resumen.recibidas.push(mes);
+        if (requiereAtencion) resumen.requieren_atencion.push(mes);
+        else if (elegibilidad === 'NO_CORRESPONDE') resumen.no_corresponden.push(mes);
+        else if (estado !== 'RECIBIDA') resumen.sin_recepcion_registrada.push(mes);
+      }
+      return {
+        mes, estado_control: estado, elegibilidad, origen_registro: row.origen_registro,
+        fecha_recepcion: toIsoTimestamp(row.fecha_recepcion),
+        es_mes_cerrado: esMesCerrado, requiere_atencion: requiereAtencion,
+      };
+    });
+    return { anio, ultimo_mes_cerrado: ultimoMesCerrado, meses, resumen };
+  }
+
   async getMatrizAnual(query: Omit<RhAsistenciaSeguimientoQuery, 'mes' | 'estado'>) {
     const { anio, unidadId = null, situacion = 'TODOS', page = 1 } = query;
     validatePeriodo(anio, 1);

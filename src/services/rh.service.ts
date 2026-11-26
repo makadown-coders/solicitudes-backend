@@ -5952,6 +5952,50 @@ export default class RhService {
     }
   }
 
+  async getMisFechasVacacionales(userId: string, anio: number, mes: number): Promise<{
+    anio: number;
+    mes: number;
+    fechas: string[];
+  }> {
+    if (!UUID_REGEX.test(userId)) throw new RhHttpError(401, 'Sesión no válida');
+    const { rows } = await pool.query<{
+      cuenta_activa: boolean | null;
+      persona_activa: boolean | null;
+      fechas: string[];
+    }>(`
+      SELECT identidad.cuenta_activa, p.activo AS persona_activa,
+             ARRAY(
+               SELECT to_char(dia.fecha, 'YYYY-MM-DD')
+               FROM (
+                 SELECT DISTINCT f.fecha
+                 FROM public.rh_vacacion_registro_fecha f
+                 JOIN public.rh_vacacion_registro r
+                   ON r.id = f.registro_id AND r.persona_id = f.persona_id
+                 WHERE f.persona_id = p.id
+                   AND identidad.cuenta_activa
+                   AND p.activo IS TRUE
+                   AND r.estado = 'REGISTRADO'
+                   AND f.activo IS TRUE AND f.computable IS TRUE
+                   AND f.fecha >= limite.inicio
+                   AND f.fecha < (limite.inicio + interval '1 month')::date
+               ) dia
+               ORDER BY dia.fecha
+             ) AS fechas
+      FROM public.app_users u
+      LEFT JOIN public.persona p ON p.id = u.persona_id
+      CROSS JOIN LATERAL (SELECT upper(btrim(u.status::text)) = 'ACTIVE' AS cuenta_activa) identidad
+      CROSS JOIN (SELECT make_date($2::int, $3::int, 1) AS inicio) limite
+      WHERE u.id = $1::uuid
+    `, [userId, anio, mes]);
+    const row = rows[0];
+    if (!row) throw new RhHttpError(401, 'Sesión no válida');
+    if (!row.cuenta_activa) throw new RhHttpError(403, 'Tu cuenta de usuario no se encuentra activa');
+    if (row.persona_activa !== true) {
+      throw new RhHttpError(403, 'Tu cuenta no está vinculada a una persona institucional activa para consultar vacaciones');
+    }
+    return { anio, mes, fechas: row.fechas };
+  }
+
   /**
    * Consulta personal de solo lectura de vacaciones del empleado autenticado (`GET /api/rh/mi-vacaciones`).
    * Resuelve identidad canónicamente vía `app_users.id -> app_users.persona_id -> public.persona.id`

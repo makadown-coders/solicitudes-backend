@@ -80,6 +80,30 @@ export default class RhAsistenciaController {
     res.status(500).json({ error: fallbackMessage });
   }
 
+  async miHistorial(req: RhAuthenticatedRequest, res: Response): Promise<void> {
+    res.set('Cache-Control', 'no-store');
+    const userId = typeof req.user?.sub === 'string' ? req.user.sub.trim() : '';
+    if (!userId) {
+      res.status(401).json({ error: 'Sesión no válida' });
+      return;
+    }
+    const query = req.query ?? {};
+    if (Object.keys(query).some((key) => key !== 'anio')) {
+      res.status(400).json({ error: 'El único parámetro permitido es "anio"' });
+      return;
+    }
+    const anio = parsePositiveIntParam(query.anio);
+    if (anio === null) {
+      res.status(400).json({ error: 'El parámetro "anio" debe ser un entero entre 2020 y 2100' });
+      return;
+    }
+    try {
+      res.status(200).json(await this.service.getMiHistorial(userId, anio));
+    } catch (err) {
+      this.handleError(res, err, 'Error al consultar tu historial de listas de asistencia');
+    }
+  }
+
   async matrizAnual(req: RhAuthenticatedRequest, res: Response): Promise<void> {
     res.set('Cache-Control', 'no-store');
     if (!this.ensureRhGlobal(req, res, 'consultar la matriz anual de listas de asistencia')) return;

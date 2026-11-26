@@ -3096,7 +3096,9 @@ async function run() {
 
       // Verificar que TODOS los demás endpoints administrativos en rhRouter conservan requireAuth + requireRhAccess (stack.length === 3)
       const adminRoutes = rhRouter.stack.filter(
-        (l) => l.route && l.route.path !== '/mi-contexto' && l.route.path !== '/mi-vacaciones'
+        (l) => l.route && ![
+          '/mi-contexto', '/mi-vacaciones', '/mi-vacaciones/fechas', '/mi-asistencia/historial',
+        ].includes(l.route.path)
       );
       assert.equal(adminRoutes.length, 37);
       assert.ok(adminRoutes.some(

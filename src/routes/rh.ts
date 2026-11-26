@@ -23,6 +23,18 @@ router.get(
 );
 
 router.get(
+  '/mi-vacaciones/fechas',
+  requireAuth,
+  controller.miVacacionesFechas.bind(controller)
+);
+
+router.get(
+  '/mi-asistencia/historial',
+  requireAuth,
+  asistenciaController.miHistorial.bind(asistenciaController)
+);
+
+router.get(
   '/unidades-autorizadas',
   requireAuth,
   requireRhAccess(),

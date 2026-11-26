@@ -425,6 +425,130 @@ function buildResumen(
 }
 
 export default class RhAsistenciaService {
+  async getMatrizAnual(query: Omit<RhAsistenciaSeguimientoQuery, 'mes' | 'estado'>) {
+    const { anio, unidadId = null, situacion = 'TODOS', page = 1 } = query;
+    validatePeriodo(anio, 1);
+    const pageSize = Math.min(query.pageSize ?? 20, 100);
+    const q = normalizeText(query.q);
+    const result = await pool.query<Pick<RawSeguimientoRow,
+      'persona_id' | 'nombre_completo' | 'activo_actual' | 'fecha_baja' | 'fecha_ingreso' |
+      'cargo_directorio' | 'directorio_unidad_id' | 'directorio_unidad_nombre' |
+      'control_id' | 'control_unidad_id' | 'estado_control' | 'fecha_recepcion' |
+      'origen_registro' | 'excepcion_administrativa' | 'motivo_excepcion' |
+      'adscripcion_ref_id' | 'adscripcion_ref_unidad_id'
+    > & { mes: number; total: string }>(`
+      WITH universo AS (
+        SELECT p.id AS persona_id, p.nombre_completo, p.activo AS activo_actual,
+               p.fecha_baja, p.fecha_ingreso, p.cargo AS cargo_directorio,
+               p.unidad_medica_id AS directorio_unidad_id
+        FROM public.persona p
+        WHERE ($3::text IS NULL OR p.nombre_completo ILIKE $3)
+          AND CASE $4::text
+            WHEN 'ACTIVOS' THEN p.activo IS TRUE AND p.fecha_baja IS NULL
+            WHEN 'BAJAS' THEN p.activo IS FALSE OR p.fecha_baja IS NOT NULL
+            ELSE TRUE
+          END
+          AND ($2::int IS NULL OR EXISTS (
+            SELECT 1 FROM public.rh_asistencia_entrega_mensual c
+            WHERE c.persona_id = p.id AND c.anio = $1::int AND c.unidad_medica_id = $2
+          ) OR EXISTS (
+            SELECT 1 FROM public.rh_adscripcion_laboral al
+            WHERE al.persona_id = p.id AND al.unidad_medica_id = $2
+              AND al.vigente_desde < make_date($1 + 1, 1, 1)
+              AND (al.vigente_hasta IS NULL OR al.vigente_hasta >= make_date($1, 1, 1))
+          ))
+      ), pagina AS (
+        SELECT * FROM universo ORDER BY nombre_completo, persona_id
+        LIMIT $5 OFFSET (($6::bigint - 1) * $5::bigint)
+      )
+      SELECT totales.total, p.*, um.nombre AS directorio_unidad_nombre, m.mes,
+             c.id AS control_id, c.unidad_medica_id AS control_unidad_id,
+             c.estado AS estado_control, c.fecha_recepcion, c.origen_registro,
+             c.excepcion_administrativa, c.motivo_excepcion,
+             al_ref.id AS adscripcion_ref_id, al_ref.unidad_medica_id AS adscripcion_ref_unidad_id
+      FROM (SELECT COUNT(*) AS total FROM universo) totales
+      LEFT JOIN pagina p ON TRUE
+      LEFT JOIN public.unidad_medica um ON um.id = p.directorio_unidad_id
+      LEFT JOIN generate_series(1, 12) AS m(mes) ON p.persona_id IS NOT NULL
+      LEFT JOIN public.rh_asistencia_entrega_mensual c
+        ON c.persona_id = p.persona_id AND c.anio = $1 AND c.mes = m.mes
+      LEFT JOIN LATERAL (
+        SELECT al.id, al.unidad_medica_id
+        FROM public.rh_adscripcion_laboral al
+        WHERE al.persona_id = p.persona_id
+          AND al.vigente_desde < make_date($1, m.mes, 1) + interval '1 month'
+          AND (al.vigente_hasta IS NULL OR al.vigente_hasta >= make_date($1, m.mes, 1))
+        ORDER BY al.activo DESC, al.vigente_desde DESC, al.id DESC
+        LIMIT 1
+      ) al_ref ON TRUE
+      ORDER BY p.nombre_completo, p.persona_id, m.mes
+    `, [anio, unidadId, q ? `%${q}%` : null, situacion, pageSize, page]);
+
+    type Celda = Pick<RhAsistenciaSeguimientoItem,
+      'estado_control' | 'situacion_seguimiento' | 'origen_registro' | 'control_id' |
+      'fecha_recepcion' | 'excepcion_administrativa' | 'motivo_excepcion' | 'unidad_medica_id'
+    > & { mes: number };
+    const personas = new Map<number, {
+      persona_id: number;
+      nombre_completo: string;
+      puesto_referencia: string | null;
+      unidad_medica_id: number | null;
+      unidad_medica_nombre: string | null;
+      situacion_actual: 'ACTIVO' | 'BAJA' | null;
+      fecha_ingreso: string | null;
+      meses: Celda[];
+    }>();
+    for (const row of result.rows) {
+      if (row.persona_id === null) continue;
+      const personaId = Number(row.persona_id);
+      let persona = personas.get(personaId);
+      if (!persona) {
+        persona = {
+          persona_id: personaId,
+          nombre_completo: row.nombre_completo,
+          puesto_referencia: row.cargo_directorio,
+          fecha_ingreso: toIsoDateOnly(row.fecha_ingreso),
+          unidad_medica_id: row.directorio_unidad_id,
+          unidad_medica_nombre: row.directorio_unidad_nombre,
+          situacion_actual: row.fecha_baja || row.activo_actual === false
+            ? 'BAJA' : row.activo_actual ? 'ACTIVO' : null,
+          meses: [],
+        };
+        personas.set(personaId, persona);
+      }
+      const celda = evaluateRow({
+        ...row,
+        directorio_unidad_id: null,
+        directorio_unidad_nombre: null,
+        control_unidad_nombre: null,
+        control_adscripcion_id: null,
+        adscripcion_ref_unidad_nombre: null,
+        adscripcion_ref_puesto: null,
+        recibido_por: null,
+        observaciones: null,
+        generado_docx_en: null,
+        generaciones_docx_count: null,
+        entrega_declarada_en: null,
+        actualizado_en: null,
+      }, anio, row.mes);
+      persona.meses.push({
+        mes: row.mes,
+        unidad_medica_id: celda.unidad_medica_id,
+        estado_control: celda.estado_control,
+        situacion_seguimiento: celda.situacion_seguimiento,
+        origen_registro: celda.origen_registro,
+        control_id: celda.control_id,
+        fecha_recepcion: celda.fecha_recepcion,
+        excepcion_administrativa: celda.excepcion_administrativa,
+        motivo_excepcion: celda.motivo_excepcion,
+      });
+    }
+    return {
+      anio, unidad_medica_id: unidadId, situacion, items: Array.from(personas.values()),
+      page, pageSize, total: Number(result.rows[0]?.total ?? 0),
+    };
+  }
+
   /**
    * Consulta de solo lectura para seguimiento mensual de listas de asistencia.
    * Nunca crea registros en `rh_asistencia_entrega_mensual`.

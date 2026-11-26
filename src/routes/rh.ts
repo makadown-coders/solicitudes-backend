@@ -234,6 +234,13 @@ router.patch(
 
 // Control administrativo de entrega/recepción mensual de listas de asistencia (RH-ASIS-03)
 router.get(
+  '/asistencia/matriz-anual',
+  requireAuth,
+  requireRhAccess(),
+  asistenciaController.matrizAnual.bind(asistenciaController)
+);
+
+router.get(
   '/asistencia/seguimiento',
   requireAuth,
   requireRhAccess(),

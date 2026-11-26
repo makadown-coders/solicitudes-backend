@@ -80,6 +80,46 @@ export default class RhAsistenciaController {
     res.status(500).json({ error: fallbackMessage });
   }
 
+  async matrizAnual(req: RhAuthenticatedRequest, res: Response): Promise<void> {
+    res.set('Cache-Control', 'no-store');
+    if (!this.ensureRhGlobal(req, res, 'consultar la matriz anual de listas de asistencia')) return;
+
+    const query = (req.query ?? {}) as Record<string, unknown>;
+    const anio = parsePositiveIntParam(query.anio);
+    const unidad = parseOptionalPositiveIntQuery(query.unidadId);
+    const page = parseOptionalPositiveIntQuery(query.page);
+    const pageSize = parseOptionalPositiveIntQuery(query.pageSize);
+    const situacion = typeof query.situacion === 'string'
+      ? query.situacion.trim().toUpperCase() || 'TODOS'
+      : query.situacion ?? 'TODOS';
+    if (anio === null || anio < 2020 || anio > 2100) {
+      res.status(400).json({ error: 'El parámetro "anio" debe ser un entero entre 2020 y 2100' });
+      return;
+    }
+    if (!unidad.ok || (unidad.value !== null && unidad.value > 2147483647) || !page.ok || !pageSize.ok) {
+      res.status(400).json({ error: 'Parámetros de unidad o paginación inválidos' });
+      return;
+    }
+    if (situacion !== 'ACTIVOS' && situacion !== 'BAJAS' && situacion !== 'TODOS') {
+      res.status(400).json({ error: 'Parámetro "situacion" inválido (ACTIVOS, BAJAS o TODOS)' });
+      return;
+    }
+    if (query.q !== undefined && typeof query.q !== 'string') {
+      res.status(400).json({ error: 'El parámetro "q" debe ser texto' });
+      return;
+    }
+    try {
+      const data = await this.service.getMatrizAnual({
+        anio, unidadId: unidad.value, situacion: situacion as RhAsistenciaSituacionFiltro,
+        q: typeof query.q === 'string' ? query.q : null,
+        page: page.value ?? 1, pageSize: pageSize.value ?? 20,
+      });
+      res.status(200).json(data);
+    } catch (err) {
+      this.handleError(res, err, 'Error al consultar la matriz anual de asistencia');
+    }
+  }
+
   async seguimientoMensual(req: RhAuthenticatedRequest, res: Response): Promise<void> {
     res.set('Cache-Control', 'no-store');
     if (!this.ensureRhGlobal(req, res, 'consultar el seguimiento mensual de listas de asistencia')) {

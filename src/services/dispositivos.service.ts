@@ -1,6 +1,8 @@
 
 // src/services/dispositivos.service.ts
 import { pool } from '../db/pool';
+import { cerrarAsignacionVigente, conDispositivoBloqueado } from './asignacion-transaccion';
+import { EdicionTecnicaDesactualizada, prepararEdicionTecnica } from './dispositivo-tecnico';
 import { Dispositivo, DispositivoRow, DispositivoRowEx } from '../models/dispositivo.model';
 
 export default class DispositivosService {
@@ -121,7 +123,7 @@ export default class DispositivosService {
     return { items, page, pageSize, total };
   }
 
-  async create(payload: Dispositivo) {
+  async create(payload: Dispositivo, creadoPor: string | null = null) {
     const client = await pool.connect();
     let rollbackFailed = false;
     try {
@@ -139,8 +141,8 @@ export default class DispositivosService {
       // Insertar nuevo asignacion_dispositivo vacío para indicar que está sin asignar
       await client.query(
         `INSERT INTO asignacion_dispositivo
-           (dispositivo_id, persona_id, lugar_especifico, estado_dispositivo_id, fecha_asignacion, observaciones)
-         VALUES ($1,$2,$3,$4, COALESCE($5::timestamptz, NOW()), $6)
+           (dispositivo_id, persona_id, lugar_especifico, estado_dispositivo_id, fecha_asignacion, observaciones, creado_por, unidad_medica_id)
+         VALUES ($1,$2,$3,$4, COALESCE($5::timestamptz, NOW()), $6, $7, $8)
          RETURNING id`,
         [
           +dispositivoId,
@@ -148,7 +150,9 @@ export default class DispositivosService {
           'sin asignar',
           3, // en resguardo
           null,
-          'Dispositivo creado sin asignación inicial.'
+          'Dispositivo creado sin asignación inicial.',
+          creadoPor,
+          unidad_medica_id ?? null
         ]
       );
 
@@ -174,7 +178,11 @@ export default class DispositivosService {
    * @returns 
    */
   async byId(id: number) {
-    const dev = await pool.query(`SELECT * FROM dispositivo WHERE id=$1`, [id]);
+    const dev = await pool.query(`
+      SELECT d.*, u.nombre AS unidad_medica
+      FROM dispositivo d LEFT JOIN unidad_medica u ON u.id = d.unidad_medica_id
+      WHERE d.id = $1
+    `, [id]);
     if (!dev.rowCount) return null;
 
     const nics = await pool.query(`
@@ -195,7 +203,7 @@ export default class DispositivosService {
    ORDER BY p.id`, [id]);
 
     const asig = await pool.query(`
-      SELECT a.*, p.nombre_completo, ed.nombre AS estado_nombre
+      SELECT a.*, p.nombre_completo, p.unidad_medica_id AS persona_unidad_medica_id, ed.nombre AS estado_nombre
         FROM asignacion_dispositivo a
         LEFT JOIN persona p ON p.id = a.persona_id
         LEFT JOIN estado_dispositivo ed ON ed.id = a.estado_dispositivo_id
@@ -224,9 +232,12 @@ export default class DispositivosService {
     marca?: string | null;
     modelo?: string | null;
     nics?: any;
+    clear_fields?: unknown;
+    expected_values?: unknown;
   }) {
     const norm = (s: string) => (s || '').replace(/[^0-9a-f]/gi, '').toLowerCase();
-    const { id, ip, conexion, observaciones, serial, marca, modelo, nics } = payload;
+    const { id, nics } = payload;
+    const { cambios, esperados } = prepararEdicionTecnica(payload, payload.clear_fields, payload.expected_values);
     const desired = Array.isArray(nics)
       ? nics
         .map((m: any) => ({
@@ -241,20 +252,26 @@ export default class DispositivosService {
       : [];
 
     const client = await pool.connect();
+    let rollbackFailed = false;
     try {
-      await client.query('BEGIN');
+      await client.query('BEGIN ISOLATION LEVEL READ COMMITTED');
+      await client.query('SELECT id FROM dispositivo WHERE id = $1 FOR UPDATE', [id]);
 
-      // 1) Actualiza campos del dispositivo (solo los enviados)
-      await client.query(`
-      UPDATE dispositivo
-         SET ip = COALESCE($2, ip),
-             conexion = COALESCE($3, conexion),
-             observaciones = COALESCE($4, observaciones),
-             serial = COALESCE($5, serial),
-             marca = COALESCE($6, marca),
-             modelo = COALESCE($7, modelo)
-       WHERE id = $1
-    `, [id, ip ?? null, conexion ?? null, observaciones ?? null, serial ?? null, marca ?? null, modelo ?? null]);
+      if (esperados.length) {
+        const comparaciones = esperados.map(({ campo }, i) => `${campo} IS NOT DISTINCT FROM $${i + 2} AS ${campo}`);
+        const { rows: [coincide] } = await client.query(
+          `SELECT ${comparaciones.join(', ')} FROM dispositivo WHERE id = $1`,
+          [id, ...esperados.map(({ valor }) => valor)],
+        );
+        const conflictos = esperados.filter(({ campo }) => coincide?.[campo] !== true).map(({ campo }) => campo);
+        if (conflictos.length) throw new EdicionTecnicaDesactualizada(conflictos);
+      }
+
+      if (cambios.length) {
+        const columnas = cambios.map(({ campo }, i) => `${campo} = $${i + 2}`);
+        await client.query(`UPDATE dispositivo SET ${columnas.join(', ')} WHERE id = $1`,
+          [id, ...cambios.map(({ valor }) => valor)]);
+      }
 
       // 2) Si vinieron NICs: sincroniza (reemplazo declarativo)
       if (Array.isArray(nics)) {
@@ -319,10 +336,15 @@ export default class DispositivosService {
       await client.query('COMMIT');
       return { ok: true, id };
     } catch (e) {
-      await client.query('ROLLBACK');
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        rollbackFailed = true;
+        console.error('Error al ejecutar ROLLBACK de la edición técnica:', rollbackError);
+      }
       throw e;
     } finally {
-      client.release();
+      client.release(rollbackFailed);
     }
   }
 
@@ -334,50 +356,39 @@ export default class DispositivosService {
     lugar_especifico?: string | null;
     estado_dispositivo_id?: number | null;
     fecha_asignacion?: string | null; // ISO
-  }) {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-
+    asignacion_vigente_esperada_id?: number | null;
+  }, creadoPor: string | null = null) {
+    return conDispositivoBloqueado(payload.dispositivo_id, async (client, unidadActual) => {
+      await cerrarAsignacionVigente(client, payload.dispositivo_id, unidadActual, payload.asignacion_vigente_esperada_id);
+      const destino = payload.unidad_medica_id ?? unidadActual;
       // (opcional) mover el dispositivo de unidad si viene
-      if (payload.unidad_medica_id) {
+      if (Number(destino) !== unidadActual) {
         await client.query(
           `UPDATE dispositivo SET unidad_medica_id=$2
          WHERE id=$1`,
-          [payload.dispositivo_id, payload.unidad_medica_id]
+          [payload.dispositivo_id, destino]
         );
       }
-
-      // Cerrar la asignación anterior (si existe activa)
-      await client.query(`
-        UPDATE asignacion_dispositivo
-           SET fecha_retiro = NOW()
-         WHERE dispositivo_id=$1 AND fecha_retiro IS NULL
-      `, [payload.dispositivo_id]);
 
       // Insertar nueva
       const { rows } = await client.query(
         `INSERT INTO asignacion_dispositivo
-           (dispositivo_id, persona_id, lugar_especifico, estado_dispositivo_id, fecha_asignacion)
-         VALUES ($1,$2,$3,$4, COALESCE($5::timestamptz, NOW()))
+           (dispositivo_id, persona_id, lugar_especifico, estado_dispositivo_id, fecha_asignacion, creado_por, unidad_medica_id)
+         VALUES ($1,$2,$3,$4, COALESCE($5::timestamptz, statement_timestamp()), $6, $7)
          RETURNING id`,
         [
           payload.dispositivo_id,
           payload.persona_id ?? null,
           payload.lugar_especifico ?? null,
           payload.estado_dispositivo_id ?? null,
-          payload.fecha_asignacion ?? null
+          payload.fecha_asignacion ?? null,
+          creadoPor,
+          destino
         ]
       );
 
-      await client.query('COMMIT');
       return rows[0];
-    } catch (e) {
-      await client.query('ROLLBACK');
-      throw e;
-    } finally {
-      client.release();
-    }
+    });
   }
 
   // ========= MONITORES =========

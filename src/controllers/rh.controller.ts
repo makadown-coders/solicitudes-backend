@@ -1,6 +1,7 @@
 import type { Response } from 'express';
 import type { RhAuthenticatedRequest } from '../auth/requireRhAccess';
 import RhService, { RhHttpError } from '../services/rh.service';
+import { RhOrgOcupacionService } from '../services/rh-org-ocupacion.service';
 
 function isInvalidNonStringQuery(val: unknown): boolean {
   return val !== undefined && val !== null && typeof val !== 'string';
@@ -1905,6 +1906,50 @@ export default class RhController {
   // RH-ORG-04: Administración visual del organigrama institucional (RH GLOBAL)
   // ===========================================================================
 
+  private readonly ocupaciones = new RhOrgOcupacionService();
+
+  async getOrganigramaOcupacion(req: RhAuthenticatedRequest, res: Response): Promise<void> {
+    await this.atenderOrganigramaOcupacion(req, res, false);
+  }
+
+  async patchOrganigramaOcupacion(req: RhAuthenticatedRequest, res: Response): Promise<void> {
+    await this.atenderOrganigramaOcupacion(req, res, true);
+  }
+
+  private async atenderOrganigramaOcupacion(
+    req: RhAuthenticatedRequest, res: Response, actualizar: boolean
+  ): Promise<void> {
+    res.set('Cache-Control', 'no-store');
+    const operador = req.user?.sub;
+    if (typeof operador !== 'string' || !operador.trim()) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    if (req.rhAccess?.grantedBy !== 'RECURSOS_HUMANOS' || req.rhAccess.scope !== 'GLOBAL') {
+      res.status(403).json({ error: 'Solo RECURSOS_HUMANOS GLOBAL puede administrar ocupaciones' });
+      return;
+    }
+    try {
+      const rawId = req.params.puestoId;
+      const puestoId = typeof rawId === 'string' && /^\d+$/.test(rawId) ? Number(rawId) : NaN;
+      const result = actualizar
+        ? await this.ocupaciones.actualizar(puestoId, req.body, {
+          userId: operador.trim(),
+          ip: req.ip ?? null,
+          userAgent: req.get('User-Agent') ?? null,
+        })
+        : await this.ocupaciones.consultar(puestoId);
+      res.status(200).json(result);
+    } catch (err) {
+      if (err instanceof RhHttpError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
+      console.error('Error en /api/rh/organigrama/puestos/:puestoId/ocupacion');
+      res.status(500).json({ error: 'Error interno al procesar la ocupación del puesto' });
+    }
+  }
+
   async listOrganigramaPuestos(req: RhAuthenticatedRequest, res: Response): Promise<void> {
     if (typeof req.user?.sub !== 'string' || !req.user.sub.trim()) {
       res.status(401).json({ error: 'Unauthorized' });
@@ -1918,7 +1963,7 @@ export default class RhController {
     }
 
     try {
-      const result = await this.service.listOrganigramaPuestos(req.rhAccess);
+      const result = await this.service.listOrganigramaPuestos(req.rhAccess, req.query?.incluirOcupacion === 'true');
       if (typeof res.set === 'function') {
         res.set('Cache-Control', 'no-store');
       }

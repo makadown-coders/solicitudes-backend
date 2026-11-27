@@ -223,6 +223,20 @@ router.post(
   controller.createOrganigramaPuesto.bind(controller)
 );
 
+router.get(
+  '/organigrama/puestos/:puestoId/ocupacion',
+  requireAuth,
+  requireRhAccess(),
+  controller.getOrganigramaOcupacion.bind(controller)
+);
+
+router.patch(
+  '/organigrama/puestos/:puestoId/ocupacion',
+  requireAuth,
+  requireRhAccess(),
+  controller.patchOrganigramaOcupacion.bind(controller)
+);
+
 router.patch(
   '/organigrama/puestos/:puestoId',
   requireAuth,

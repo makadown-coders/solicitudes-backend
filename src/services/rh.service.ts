@@ -6068,7 +6068,7 @@ export default class RhService {
   // RH-ORG-04: Administración visual del organigrama institucional
   // ===========================================================================
 
-  async listOrganigramaPuestos(access: RhAccessContext): Promise<{
+  async listOrganigramaPuestos(access: RhAccessContext, incluirOcupacion = false): Promise<{
     version: { id: number; clave: string; nombre: string; estado: string };
     items: RhOrgPuestoDto[];
   }> {
@@ -6079,8 +6079,9 @@ export default class RhService {
     const verRes = await pool.query<any>(
       `SELECT id, clave, nombre, estado
          FROM public.rh_org_version
-        WHERE clave = 'ORG-COORDINACION-ESTATAL'
-          AND activo = TRUE
+        WHERE activo = TRUE AND ${incluirOcupacion
+          ? "unidad_medica_id = 177 AND estado = 'VIGENTE'"
+          : "clave = 'ORG-COORDINACION-ESTATAL'"}
         LIMIT 1`
     );
     if (!verRes.rowCount) {
@@ -6089,11 +6090,14 @@ export default class RhService {
     const ver = verRes.rows[0];
 
     const res = await pool.query<any>(
-      `SELECT id, version_id, puesto_padre_id, denominacion, codigo_nivel,
-              nivel_jerarquico, siglas_area, orden_visual, observaciones, activo
-         FROM public.rh_org_puesto
-        WHERE version_id = $1
-        ORDER BY nivel_jerarquico ASC, orden_visual ASC, id ASC`,
+      `SELECT p.id, p.version_id, p.puesto_padre_id, p.denominacion, p.codigo_nivel,
+              p.nivel_jerarquico, p.siglas_area, p.orden_visual, p.observaciones, p.activo
+              ${incluirOcupacion ? ", COALESCE(o.estado, 'SIN_VINCULAR') AS estado_ocupacion, o.persona_id, persona.nombre_completo AS nombre_ocupante" : ''}
+         FROM public.rh_org_puesto p
+         ${incluirOcupacion ? `LEFT JOIN public.rh_org_ocupacion o ON o.puesto_id = p.id
+         LEFT JOIN public.persona persona ON persona.id = o.persona_id` : ''}
+        WHERE p.version_id = $1
+        ORDER BY p.nivel_jerarquico ASC, p.orden_visual ASC, p.id ASC`,
       [ver.id]
     );
 
@@ -6104,7 +6108,14 @@ export default class RhService {
         nombre: String(ver.nombre),
         estado: String(ver.estado),
       },
-      items: res.rows.map((r) => this.mapOrgPuestoRow(r)),
+      items: res.rows.map((r) => ({
+        ...this.mapOrgPuestoRow(r),
+        ...(incluirOcupacion ? {
+          estado_ocupacion: r.estado_ocupacion,
+          persona_id: r.persona_id,
+          nombre_ocupante: r.nombre_ocupante,
+        } : {}),
+      })),
     };
   }
 
@@ -6535,6 +6546,9 @@ export default class RhService {
 }
 
 export interface RhOrgPuestoDto {
+  estado_ocupacion?: 'OCUPADO' | 'VACANTE' | 'SIN_VINCULAR';
+  persona_id?: number | null;
+  nombre_ocupante?: string | null;
   id: number;
   version_id: number;
   puesto_padre_id: number | null;

@@ -424,6 +424,17 @@ function buildResumen(
   };
 }
 
+function protegerRecepcionHistorica(
+  registro: { estado: RhAsistenciaEstadoControl; origen_registro?: string | null } | null,
+  esRecepcionEquivalente = false
+): boolean {
+  const protegida = registro?.estado === 'RECIBIDA' && registro.origen_registro === 'MIGRACION_HISTORICA_EXCEL';
+  if (protegida && !esRecepcionEquivalente) {
+    throw new RhHttpError(409, 'Recepción histórica protegida. No se puede modificar mediante el control ordinario.');
+  }
+  return protegida;
+}
+
 export default class RhAsistenciaService {
   async getMiHistorial(userId: string, anio: number, ahora = new Date()) {
     if (!UUID_REGEX.test(userId)) throw new RhHttpError(401, 'Sesión no válida');
@@ -859,6 +870,7 @@ export default class RhAsistenciaService {
         adscripcion_laboral_id: number | null;
         estado: RhAsistenciaEstadoControl;
         fecha_recepcion: unknown;
+        origen_registro?: string | null;
         recibido_por: string | null;
         observaciones: string | null;
         excepcion_administrativa: boolean;
@@ -882,7 +894,14 @@ export default class RhAsistenciaService {
         const sameFecha = !fechaRecepcionIso || fechaRecepcionIso === existingFechaIso;
         const sameObs = observaciones === null || observaciones === (existing.observaciones ?? null);
 
-        if (sameFecha && sameObs) {
+        const historicaProtegida = protegerRecepcionHistorica(existing,
+          (input.fecha_recepcion === undefined || fechaRecepcionIso === existingFechaIso) &&
+          (input.observaciones === undefined || input.observaciones === (existing.observaciones ?? null)) &&
+          (input.unidad_medica_id === undefined || input.unidad_medica_id === existing.unidad_medica_id) &&
+          (input.adscripcion_laboral_id === undefined || input.adscripcion_laboral_id === existing.adscripcion_laboral_id)
+        );
+
+        if (historicaProtegida || (sameFecha && sameObs)) {
           await client.query('COMMIT');
           return {
             registro: {
@@ -1131,6 +1150,7 @@ export default class RhAsistenciaService {
       );
       const existing = existingRes.rows[0] ?? null;
 
+      protegerRecepcionHistorica(existing);
       if (existing) {
         const sameEstado = existing.estado === targetEstado;
         const sameMotivo = (existing.motivo_excepcion ?? null) === (targetEstado === 'NO_APLICA' ? motivoExcepcion : null);

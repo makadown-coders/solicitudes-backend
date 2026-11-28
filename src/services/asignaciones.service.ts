@@ -1,6 +1,7 @@
 // src/services/asignaciones.service.ts
 import { pool } from '../db/pool';
 import { Asignacion } from '../models/asignacion.model';
+import { cerrarAsignacionVigente, conDispositivoBloqueado } from './asignacion-transaccion';
 
 export default class AsignacionesService {
   async historialPorDispositivo(id: number) {
@@ -92,35 +93,19 @@ export default class AsignacionesService {
    */
   async crear(dispositivo_id: number, payload: Asignacion, creado_por?: string | null) {
     const { persona_id, lugar_especifico, estado_dispositivo_id, observaciones } = payload;
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-
-      // Cierra asignación activa (si existe)
-      await client.query(
-        `UPDATE asignacion_dispositivo
-            SET fecha_retiro = NOW()
-          WHERE dispositivo_id = $1
-            AND fecha_retiro IS NULL`,
-        [dispositivo_id]
-      );
+    return conDispositivoBloqueado(dispositivo_id, async (client, unidadActual) => {
+      await cerrarAsignacionVigente(client, dispositivo_id, unidadActual);
 
       const { rows } = await client.query(
         `INSERT INTO asignacion_dispositivo
-           (dispositivo_id, persona_id, lugar_especifico, estado_dispositivo_id, observaciones, creado_por, fecha_retiro)
-         VALUES ($1,$2,$3,$4,$5,$6,NULL)
+           (dispositivo_id, persona_id, lugar_especifico, estado_dispositivo_id, observaciones, creado_por, fecha_retiro, unidad_medica_id, fecha_asignacion)
+         VALUES ($1,$2,$3,$4,$5,$6,NULL,$7,statement_timestamp())
          RETURNING id`,
-        [dispositivo_id, persona_id ?? null, lugar_especifico ?? null, estado_dispositivo_id, observaciones ?? null, creado_por ?? null]
+        [dispositivo_id, persona_id ?? null, lugar_especifico ?? null, estado_dispositivo_id, observaciones ?? null, creado_por ?? null, unidadActual]
       );
 
-      await client.query('COMMIT');
       return rows[0];
-    } catch (e) {
-      await client.query('ROLLBACK');
-      throw e;
-    } finally {
-      client.release();
-    }
+    });
   }
 
   /**
@@ -128,10 +113,7 @@ export default class AsignacionesService {
    * cierra la activa (fecha_retiro=NOW) y deja fecha_retiro NULL en la nueva.
    */
   async revertir(params: { dispositivo_id: number; asignacion_id: number; creado_por?: string | null }) {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-
+    return conDispositivoBloqueado(params.dispositivo_id, async (client, unidadActual) => {
       const pick = await client.query(
         `SELECT *
            FROM asignacion_dispositivo
@@ -144,19 +126,13 @@ export default class AsignacionesService {
 
       const src = pick.rows[0];
 
-      // Cierra asignación activa actual
-      await client.query(
-        `UPDATE asignacion_dispositivo
-            SET fecha_retiro = NOW()
-          WHERE dispositivo_id = $1 AND fecha_retiro IS NULL`,
-        [params.dispositivo_id]
-      );
+      await cerrarAsignacionVigente(client, params.dispositivo_id, unidadActual);
 
       const ins = await client.query(
         `INSERT INTO asignacion_dispositivo
-           (dispositivo_id, persona_id, lugar_especifico, estado_dispositivo_id, fecha_asignacion, observaciones, creado_por, fecha_retiro)
+           (dispositivo_id, persona_id, lugar_especifico, estado_dispositivo_id, fecha_asignacion, observaciones, creado_por, fecha_retiro, unidad_medica_id)
          VALUES
-           ($1, $2, $3, $4, NOW(), $5, $6, NULL)
+           ($1, $2, $3, $4, statement_timestamp(), $5, $6, NULL, $7)
          RETURNING id`,
         [
           params.dispositivo_id,
@@ -164,17 +140,12 @@ export default class AsignacionesService {
           src.lugar_especifico ?? null,
           src.estado_dispositivo_id ?? null,
           src.observaciones ?? null,
-          params.creado_por ?? src.creado_por ?? null,
+          params.creado_por ?? null,
+          unidadActual,
         ]
       );
 
-      await client.query('COMMIT');
       return { ok: true, asignacion_id: ins.rows[0].id };
-    } catch (e) {
-      await client.query('ROLLBACK');
-      throw e;
-    } finally {
-      client.release();
-    }
+    });
   }
 }

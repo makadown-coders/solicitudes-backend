@@ -3100,7 +3100,7 @@ async function run() {
           '/mi-contexto', '/mi-vacaciones', '/mi-vacaciones/fechas', '/mi-asistencia/historial',
         ].includes(l.route.path)
       );
-      assert.equal(adminRoutes.length, 37);
+      assert.equal(adminRoutes.length, 41);
       assert.ok(adminRoutes.some(
         ({ route }) => route.path === '/asistencia/matriz-anual' && route.methods.get
       ), 'Debe existir GET /asistencia/matriz-anual en rhRouter');
@@ -6166,7 +6166,7 @@ async function run() {
         if (s.includes('FROM public.rh_org_version')) {
           return { rows: [{ id: 1, clave: 'ORG-COORDINACION-ESTATAL', nombre: 'Estructura organizacional de Coordinación Estatal', estado: 'VIGENTE' }], rowCount: 1 };
         }
-        if (s.includes('FROM public.rh_org_puesto') && s.includes('ORDER BY nivel_jerarquico')) {
+        if (s.includes('FROM public.rh_org_puesto') && s.includes('ORDER BY p.nivel_jerarquico')) {
           return { rows: orgPuestos, rowCount: orgPuestos.length };
         }
         if (s.includes('FROM public.rh_org_puesto') && s.includes('WHERE id = $1 AND version_id = $2')) {

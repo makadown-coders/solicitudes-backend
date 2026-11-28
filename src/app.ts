@@ -96,6 +96,8 @@ app.use('/api/solicitudes-config', configRoutes);
 app.use('/api/solicitudes', solicitudesRoutes);
 app.use('/api/existencias-temp', existenciasRoutes);
 app.use('/api/catalogos/tipos-dispositivo', tipoDispositivoRoutes);
+app.use('/api/ti/catalogos/tipos-dispositivo', tipoDispositivoRoutes);
+app.use('/api/ti/catalogos/estados-dispositivo', estadoDispositivoRoutes);
 app.use('/api/ti/personas', personaRoutes);
 app.use('/api/ti', tiUsuariosRoutes);
 app.use('/api/catalogos/tipos-periferico', tipoPerifericoRoutes);

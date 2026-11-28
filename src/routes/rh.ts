@@ -195,6 +195,20 @@ router.get(
   controller.listAdscripcionesPersona.bind(controller)
 );
 
+router.get(
+  '/unidades/:unidadId/personas/:personaId/supervision-directa',
+  requireAuth,
+  requireRhAccess(),
+  controller.getSupervisionDirecta.bind(controller)
+);
+
+router.patch(
+  '/unidades/:unidadId/personas/:personaId/supervision-directa',
+  requireAuth,
+  requireRhAccess(),
+  controller.patchSupervisionDirecta.bind(controller)
+);
+
 router.post(
   '/unidades/:unidadId/adscripciones/lote/validar',
   requireAuth,
@@ -221,6 +235,20 @@ router.post(
   requireAuth,
   requireRhAccess(),
   controller.createOrganigramaPuesto.bind(controller)
+);
+
+router.get(
+  '/organigrama/puestos/:puestoId/ocupacion',
+  requireAuth,
+  requireRhAccess(),
+  controller.getOrganigramaOcupacion.bind(controller)
+);
+
+router.patch(
+  '/organigrama/puestos/:puestoId/ocupacion',
+  requireAuth,
+  requireRhAccess(),
+  controller.patchOrganigramaOcupacion.bind(controller)
 );
 
 router.patch(

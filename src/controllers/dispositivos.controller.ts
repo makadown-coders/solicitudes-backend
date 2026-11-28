@@ -1,5 +1,8 @@
 import { Request, Response } from 'express';
 import DispositivosService from '../services/dispositivos.service';
+import { actorAsignacion } from './asignacion-actor';
+import { ConflictoAsignacion } from '../services/asignacion-transaccion';
+import { EdicionTecnicaDesactualizada, EdicionTecnicaInvalida } from '../services/dispositivo-tecnico';
 
 export default class DispositivosController {
   private svc = new DispositivosService();
@@ -26,7 +29,7 @@ export default class DispositivosController {
 
   create = async (req: Request, res: Response): Promise<void> => {
     try {
-      res.status(201).json(await this.svc.create(req.body));
+      res.status(201).json(await this.svc.create(req.body, actorAsignacion(req.user)));
     } catch (e: any) {
       res.status(400).json({ error: e?.message || 'Error al crear dispositivo' });
     }
@@ -48,7 +51,7 @@ export default class DispositivosController {
   updateBasic = async (req: Request, res: Response): Promise<void> => {
     try {
       const id = Number(req.params.id);
-      const { ip, conexion, observaciones, serial, marca, modelo, nics } = req.body || {};
+      const { ip, conexion, observaciones, serial, marca, modelo, nics, clear_fields, expected_values } = req.body || {};
       const out = await this.svc.updateBasic({
         id,
         ip: ip ?? null,
@@ -57,10 +60,20 @@ export default class DispositivosController {
         serial: serial ?? null,
         marca: marca ?? null,
         modelo: modelo ?? null,
-        nics: nics ?? []
+        nics,
+        clear_fields,
+        expected_values,
       });
       res.json({ ok: true, id: out.id });
     } catch (e: any) {
+      if (e instanceof EdicionTecnicaDesactualizada) {
+        res.status(409).json({ ok: false, error: e.message, codigo: 'DATOS_TECNICOS_DESACTUALIZADOS', campos: e.campos });
+        return;
+      }
+      if (e instanceof EdicionTecnicaInvalida) {
+        res.status(400).json({ ok: false, error: e.message });
+        return;
+      }
       const msg = String(e?.message || '');
       if (msg.includes('dispositivo_nic_mac_norm_uniq') || msg.includes('dispositivo_nic_uq_per_device')) {
         res.status(400).json({ ok: false, error: 'La MAC ya está registrada.' });
@@ -78,7 +91,8 @@ export default class DispositivosController {
         persona_id,
         lugar_especifico,
         estado_dispositivo_id,
-        fecha_asignacion
+        fecha_asignacion,
+        asignacion_vigente_esperada_id
       } = req.body || {};
 
       if (!unidad_medica_id) {
@@ -89,16 +103,26 @@ export default class DispositivosController {
         res.status(400).json({ ok: false, error: 'persona_id o lugar_especifico requerido' });
         return;
       }
+      if (asignacion_vigente_esperada_id != null &&
+          (!Number.isSafeInteger(asignacion_vigente_esperada_id) || asignacion_vigente_esperada_id <= 0)) {
+        res.status(400).json({ ok: false, error: 'Identificador de asignación esperada inválido.' });
+        return;
+      }
       const out = await this.svc.changeAssignment({
         dispositivo_id: id,
         unidad_medica_id: unidad_medica_id ?? null,
         persona_id: persona_id ?? null,
         lugar_especifico: lugar_especifico ?? null,
         estado_dispositivo_id: estado_dispositivo_id ?? null,
-        fecha_asignacion: fecha_asignacion ?? null
-      });
+        fecha_asignacion: fecha_asignacion ?? null,
+        asignacion_vigente_esperada_id
+      }, actorAsignacion(req.user));
       res.json({ ok: true, asignacion_id: out.id });
     } catch (e: any) {
+      if (e instanceof ConflictoAsignacion) {
+        res.status(409).json({ ok: false, error: e.message, codigo: e.codigo });
+        return;
+      }
       res.status(500).json({ ok: false, error: e.message });
     }
   };

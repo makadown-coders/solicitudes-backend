@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import AsignacionesService from '../services/asignaciones.service';
 import { parseIntSafe, parseISOorNull } from '../helpers/helper';
+import { actorAsignacion } from './asignacion-actor';
 
 export default class AsignacionesController {
   private svc = new AsignacionesService();
@@ -29,7 +30,7 @@ export default class AsignacionesController {
   crear = async (req: Request, res: Response): Promise<void> => {
     try {
       const dispositivo_id = Number(req.params.id);
-      const creado_por = (req as any)?.user?.email || (req as any)?.user?.nombre || null;
+      const creado_por = actorAsignacion(req.user);
       res.status(201).json(await this.svc.crear(dispositivo_id, req.body, creado_por));
     } catch (e: any) {
       res.status(400).json({ error: e?.message || 'Error al crear asignación' });
@@ -45,7 +46,7 @@ export default class AsignacionesController {
         return;
       }
 
-      const creado_por = (req as any)?.user?.email || (req as any)?.user?.nombre || null;
+      const creado_por = actorAsignacion(req.user);
 
       const out = await this.svc.revertir({ dispositivo_id, asignacion_id, creado_por });
       res.status(201).json(out);

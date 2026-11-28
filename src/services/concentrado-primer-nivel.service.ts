@@ -17,6 +17,8 @@ import {
 import { clasificarTipoInsumo } from '../helpers/clasificar-tipo-insumo';
 
 const ORIGENES: OrigenCapturaPrimerNivel[] = ['APS', 'PROGRAMA_PREVENTIVO', 'CLAVE'];
+const ZONA_HORARIA_MATRIZ = 'America/Tijuana' as const;
+const FECHA_ISO_REGEX = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 function texto(value: unknown, max = 200): string {
   return String(value ?? '').trim().slice(0, max);
@@ -34,9 +36,82 @@ function normalizarClaveMatriz(value: unknown): string {
     : clave;
 }
 
+export function obtenerHoyTijuana(ahora: Date = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: ZONA_HORARIA_MATRIZ,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(ahora);
+}
+
+function parseFechaIso(iso: string): { year: number; month: number; day: number; utcMs: number } | null {
+  const match = FECHA_ISO_REGEX.exec(iso);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const utcMs = Date.UTC(year, month - 1, day);
+  const check = new Date(utcMs);
+  if (
+    check.getUTCFullYear() !== year
+    || check.getUTCMonth() !== month - 1
+    || check.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return { year, month, day, utcMs };
+}
+
+function formatearFechaIso(year: number, month: number, day: number): string {
+  return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+export function restarUnMesCalendario(iso: string): string {
+  const parsed = parseFechaIso(iso);
+  if (!parsed) throw new Error('Fecha de referencia inválida.');
+  const targetYear = parsed.month === 1 ? parsed.year - 1 : parsed.year;
+  const targetMonth = parsed.month === 1 ? 12 : parsed.month - 1;
+  const diasEnMesObjetivo = new Date(Date.UTC(targetYear, targetMonth, 0)).getUTCDate();
+  const targetDay = Math.min(parsed.day, diasEnMesObjetivo);
+  return formatearFechaIso(targetYear, targetMonth, targetDay);
+}
+
+export function validarRangoFechasMatriz(
+  desdeInput: unknown,
+  hastaInput: unknown,
+  hoyInput?: string
+): { desde: string; hasta: string; dias: number; zonaHoraria: typeof ZONA_HORARIA_MATRIZ } {
+  const hoy = hoyInput ?? obtenerHoyTijuana();
+  const hoyParsed = parseFechaIso(hoy);
+  if (!hoyParsed) throw new Error('No fue posible determinar la fecha actual de America/Tijuana.');
+
+  const desde = texto(desdeInput, 20);
+  const hasta = texto(hastaInput, 20);
+  const desdeParsed = parseFechaIso(desde);
+  const hastaParsed = parseFechaIso(hasta);
+  if (!desdeParsed || !hastaParsed) {
+    throw new Error('Debes indicar fechas válidas en formato YYYY-MM-DD para desde y hasta.');
+  }
+
+  const minDesde = restarUnMesCalendario(hoy);
+  if (desde < minDesde) {
+    throw new Error(`La fecha desde no puede ser anterior a ${minDesde}.`);
+  }
+  if (desde > hoy || hasta > hoy) {
+    throw new Error(`Las fechas no pueden ser posteriores a hoy (${hoy}) en America/Tijuana.`);
+  }
+  if (desde >= hasta) {
+    throw new Error('La fecha desde debe ser estrictamente menor que la fecha hasta.');
+  }
+
+  const dias = Math.round((hastaParsed.utcMs - desdeParsed.utcMs) / 86400000) + 1;
+  return { desde, hasta, dias, zonaHoraria: ZONA_HORARIA_MATRIZ };
+}
+
 export default class ConcentradoPrimerNivelService {
-  async matrizDistribucion(monthsInput: unknown): Promise<MatrizDistribucionPrimerNivelResponse> {
-    const months = Math.min(12, Math.max(1, parseIntSafe(monthsInput, 1)));
+  async matrizDistribucion(input: { desde?: unknown; hasta?: unknown }): Promise<MatrizDistribucionPrimerNivelResponse> {
+    const rango = validarRangoFechasMatriz(input?.desde, input?.hasta);
     const cluesConfiguradas = RUTAS_PRIMER_NIVEL_PROVISIONALES.flatMap(ruta => [...ruta.clues]);
 
     const [agregado, catalogoUnidades, existenciasAlmacenes] = await Promise.all([
@@ -72,7 +147,8 @@ export default class ConcentradoPrimerNivelService {
           SELECT s.id, u.cluesimb, u.unidad, u.jurisdiccion
           FROM public.solicitud_bitacora s
           JOIN unidades_primer_nivel u ON u.cluesimb = UPPER(TRIM(s.cluesimb))
-          WHERE s.created_day BETWEEN CURRENT_DATE - make_interval(months => $1::int) AND CURRENT_DATE
+          WHERE s.created_at >= ($1::date::timestamp AT TIME ZONE 'America/Tijuana')
+            AND s.created_at < (($2::date + 1)::timestamp AT TIME ZONE 'America/Tijuana')
         ),
         capturas AS (
           SELECT sp.cluesimb, sp.unidad, sp.jurisdiccion,
@@ -175,7 +251,7 @@ export default class ConcentradoPrimerNivelService {
         GROUP BY c.jurisdiccion, c.cluesimb, c.clave
         HAVING COALESCE(SUM(c.piezas), 0) > 0
         ORDER BY c.jurisdiccion, c.clave, c.cluesimb
-      `, [months]),
+      `, [rango.desde, rango.hasta]),
       pool.query(`
         SELECT DISTINCT ON (UPPER(TRIM(um.cluesimb)))
                UPPER(TRIM(um.cluesimb)) AS cluesimb,
@@ -379,7 +455,7 @@ export default class ConcentradoPrimerNivelService {
 
     return {
       mode: 'matriz-distribucion-primer-nivel',
-      window: { months },
+      window: rango,
       generadoEn: new Date().toISOString(),
       snapshotExistencias: fecha(existenciasAlmacenes.rows.reduce<Date | null>((maximo, row) => {
         const actual = row.snapshot_existencias ? new Date(row.snapshot_existencias) : null;

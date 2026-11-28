@@ -195,6 +195,20 @@ router.get(
   controller.listAdscripcionesPersona.bind(controller)
 );
 
+router.get(
+  '/unidades/:unidadId/personas/:personaId/supervision-directa',
+  requireAuth,
+  requireRhAccess(),
+  controller.getSupervisionDirecta.bind(controller)
+);
+
+router.patch(
+  '/unidades/:unidadId/personas/:personaId/supervision-directa',
+  requireAuth,
+  requireRhAccess(),
+  controller.patchSupervisionDirecta.bind(controller)
+);
+
 router.post(
   '/unidades/:unidadId/adscripciones/lote/validar',
   requireAuth,

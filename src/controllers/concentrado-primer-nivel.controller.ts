@@ -34,7 +34,10 @@ export default class ConcentradoPrimerNivelController {
 
   matrizDistribucion = async (req: Request, res: Response): Promise<void> => {
     try {
-      res.json(await this.service.matrizDistribucion(req.query.months));
+      res.json(await this.service.matrizDistribucion({
+        desde: req.query.desde,
+        hasta: req.query.hasta,
+      }));
     } catch (error: any) {
       console.error('Error generando matriz de distribución de Primer Nivel:', error);
       res.status(400).json({ ok: false, error: 'matriz_distribucion_primer_nivel_failed', detail: error?.message });

@@ -2,6 +2,7 @@ import type { Response } from 'express';
 import type { RhAuthenticatedRequest } from '../auth/requireRhAccess';
 import RhService, { RhHttpError } from '../services/rh.service';
 import { RhOrgOcupacionService } from '../services/rh-org-ocupacion.service';
+import { RhSupervisionDirectaService, RhSupervisionError } from '../services/rh-supervision-directa.service';
 
 function isInvalidNonStringQuery(val: unknown): boolean {
   return val !== undefined && val !== null && typeof val !== 'string';
@@ -1907,6 +1908,58 @@ export default class RhController {
   // ===========================================================================
 
   private readonly ocupaciones = new RhOrgOcupacionService();
+  private readonly supervision = new RhSupervisionDirectaService();
+
+  async getSupervisionDirecta(req: RhAuthenticatedRequest, res: Response): Promise<void> {
+    await this.atenderSupervisionDirecta(req, res, false);
+  }
+
+  async patchSupervisionDirecta(req: RhAuthenticatedRequest, res: Response): Promise<void> {
+    await this.atenderSupervisionDirecta(req, res, true);
+  }
+
+  private async atenderSupervisionDirecta(
+    req: RhAuthenticatedRequest, res: Response, actualizar: boolean
+  ): Promise<void> {
+    res.set('Cache-Control', 'no-store');
+    const operador = req.user?.sub;
+    if (typeof operador !== 'string' || !operador.trim()) {
+      res.status(401).json({ error: 'Sesión requerida', codigo: 'SESION_REQUERIDA' });
+      return;
+    }
+    if (req.rhAccess?.grantedBy !== 'RECURSOS_HUMANOS' || req.rhAccess.scope !== 'GLOBAL') {
+      res.status(403).json({ error: 'Solo RECURSOS_HUMANOS GLOBAL puede administrar supervisión directa', codigo: 'ACCESO_DENEGADO' });
+      return;
+    }
+    try {
+      const unidadId = parseUnidadIdParam(req.params.unidadId) ?? NaN;
+      const personaId = parseUnidadIdParam(req.params.personaId) ?? NaN;
+      const result = actualizar
+        ? await this.supervision.actualizar(unidadId, personaId, req.body, {
+          userId: operador.trim(), ip: req.ip ?? null, userAgent: req.get('User-Agent') ?? null,
+        })
+        : await this.supervision.consultar(unidadId, personaId);
+      res.status(200).json(result);
+    } catch (err) {
+      if (err instanceof RhSupervisionError) {
+        res.status(err.status).json({ error: err.message, codigo: err.codigo });
+        return;
+      }
+      const pgError = err as { code?: string; message?: string; routine?: string } | null;
+      console.error('Error en /api/rh/unidades/:unidadId/personas/:personaId/supervision-directa', {
+        codigo: pgError?.code,
+        rutina: pgError?.routine,
+      });
+      if (pgError?.code === '42P01' && pgError.message?.includes('"public.rh_supervision_directa"')) {
+        res.status(503).json({
+          error: 'La supervisión directa no está disponible. Falta habilitar su tabla en la base de datos conectada al servidor.',
+          codigo: 'SUPERVISION_ESQUEMA_NO_DISPONIBLE',
+        });
+        return;
+      }
+      res.status(500).json({ error: 'Error interno al procesar la supervisión directa', codigo: 'ERROR_INTERNO' });
+    }
+  }
 
   async getOrganigramaOcupacion(req: RhAuthenticatedRequest, res: Response): Promise<void> {
     await this.atenderOrganigramaOcupacion(req, res, false);

@@ -3100,7 +3100,7 @@ async function run() {
           '/mi-contexto', '/mi-vacaciones', '/mi-vacaciones/fechas', '/mi-asistencia/historial',
         ].includes(l.route.path)
       );
-      assert.equal(adminRoutes.length, 39);
+      assert.equal(adminRoutes.length, 41);
       assert.ok(adminRoutes.some(
         ({ route }) => route.path === '/asistencia/matriz-anual' && route.methods.get
       ), 'Debe existir GET /asistencia/matriz-anual en rhRouter');
